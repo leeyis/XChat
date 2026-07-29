@@ -79,8 +79,7 @@
     "allow-update-device-metadata",
     "allow-delete-local-file",
     "allow-open-workspace-file",
-    "allow-reveal-workspace-file",
-    "allow-capture-screenshot"
+    "allow-reveal-workspace-file"
   ],
   "scope": {
     "allow": [

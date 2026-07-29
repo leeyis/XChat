@@ -6,10 +6,22 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
+  fileKind,
   fileStatus,
+  isImageFile,
+  localFileAvailable,
   matchesShortcut,
   shortcutLabelFromEvent,
 } from "./xchat.js";
+import CaptureEditor from "./CaptureEditor.jsx";
+
+const EMOJI_SET = [
+  "😀", "😄", "😂", "🥰", "😎", "🤝", "👍",
+  "👏", "🎉", "❤️", "😮", "😢", "😡", "🤔",
+  "🙏", "💪", "✅", "📎", "💻", "📁", "🚀",
+];
+
+const FILE_KINDS = ["all", "image", "document", "audio", "video", "other"];
 
 const ACTIVE_TRANSFER_STATES = new Set([
   "queued",
@@ -32,6 +44,8 @@ const copy = {
     searchFiles: "搜索文件或来源",
     noConversation: "还没有会话",
     noConversationHint: "发现设备后，可从主机页开始聊天。",
+    noSearchResults: "没有搜索结果",
+    noSearchResultsHint: "换个关键词再试。",
     noMessages: "暂无消息",
     noMessagesHint: "发送一条消息开始对话。",
     send: "发送",
@@ -54,6 +68,19 @@ const copy = {
       active: "进行中",
       failed: "失败",
     },
+    fileKinds: {
+      all: "全部",
+      image: "图片",
+      document: "文档",
+      audio: "音频",
+      video: "视频",
+      other: "其他",
+    },
+    groupSources: "群聊",
+    peerSources: "设备与联系人",
+    allFileSources: "所有设备与群聊",
+    sourceGroup: "群聊",
+    sourceDevice: "设备",
     newGroup: "新建群聊",
     addDevice: "手动添加设备",
     closeList: "关闭列表",
@@ -72,6 +99,14 @@ const copy = {
       shortcut: "快捷键",
     },
     attachment: "附件",
+    emoji: "表情",
+    removeAttachment: "移除附件",
+    attachmentReady: "待发送",
+    imagePreview: "图片预览",
+    localFileUnavailable: "本地文件不可用",
+    previewFile: "预览文件",
+    sentDirection: "我发送的",
+    receivedDirection: "我接收的",
     file: "文件",
     receive: "接收",
     open: "打开",
@@ -144,6 +179,12 @@ const copy = {
     deleteFileAction: "删除文件",
     noMatchingFiles: "没有符合条件的文件",
     noMatchingFilesHint: "调整来源、状态或搜索条件后再试。",
+    noFiles: "还没有文件",
+    noFilesHint: "会话中发送或接收的文件会显示在这里。",
+    previewUnavailable: "此类型暂不支持在线预览，可以打开所在文件夹。",
+    documentPreview: "文档预览",
+    audioPreview: "音频预览",
+    videoPreview: "视频预览",
     backSettingsList: "返回设置列表",
     settingsSubtitle: "本机偏好与网络参数",
     saveSettings: "保存设置",
@@ -177,7 +218,7 @@ const copy = {
     shortcuts: "快捷键",
     captureShortcut: "截屏快捷键",
     captureShortcutHint: "点击输入框后按下字母或数字组合键",
-    captureShortcutFocusedHint: "仅在 XChat 窗口聚焦时生效",
+    captureShortcutFocusedHint: "仅在 Xchat 窗口聚焦时生效",
     groupMembers: (count) => `群成员 · ${count}`,
     editDeviceRemark: "修改设备备注",
     unpinConversation: "取消置顶",
@@ -194,9 +235,9 @@ const copy = {
     endpointHelper: "适用于跨 VLAN 或 WireGuard。保存后会立即尝试连接。",
     saveRemark: "保存备注",
     remarkHelper: "备注绑定设备 UUID，不受 IP 地址变化影响。",
-    connecting: "正在连接 XChat…",
+    connecting: "正在连接 Xchat…",
     reconnecting: "连接已中断，正在重试；已加载的数据仍可查看。",
-    connectionFailed: "无法连接本地 XChat 服务。",
+    connectionFailed: "无法连接本地 Xchat 服务。",
     sendFailed: "发送失败",
     deliveredCount: (delivered, total) => `已送达 ${delivered}/${total}`,
     readCount: (read, total) => `已读 ${read}/${total}`,
@@ -240,6 +281,8 @@ const copy = {
     searchFiles: "Search files or sources",
     noConversation: "No conversations",
     noConversationHint: "Open a discovered host to start chatting.",
+    noSearchResults: "No search results",
+    noSearchResultsHint: "Try another search term.",
     noMessages: "No messages",
     noMessagesHint: "Send a message to start the conversation.",
     send: "Send",
@@ -262,6 +305,19 @@ const copy = {
       active: "In progress",
       failed: "Failed",
     },
+    fileKinds: {
+      all: "All",
+      image: "Images",
+      document: "Documents",
+      audio: "Audio",
+      video: "Video",
+      other: "Other",
+    },
+    groupSources: "Groups",
+    peerSources: "Devices & contacts",
+    allFileSources: "All devices and groups",
+    sourceGroup: "Group",
+    sourceDevice: "Device",
     newGroup: "New group",
     addDevice: "Add device manually",
     closeList: "Close list",
@@ -280,6 +336,14 @@ const copy = {
       shortcut: "Shortcuts",
     },
     attachment: "Attachment",
+    emoji: "Emoji",
+    removeAttachment: "Remove attachment",
+    attachmentReady: "Ready to send",
+    imagePreview: "Image preview",
+    localFileUnavailable: "Local file unavailable",
+    previewFile: "Preview file",
+    sentDirection: "Sent by me",
+    receivedDirection: "Received by me",
     file: "File",
     receive: "Receive",
     open: "Open",
@@ -355,6 +419,12 @@ const copy = {
     deleteFileAction: "Delete file",
     noMatchingFiles: "No matching files",
     noMatchingFilesHint: "Adjust the source, status, or search terms and try again.",
+    noFiles: "No files yet",
+    noFilesHint: "Files sent or received in conversations appear here.",
+    previewUnavailable: "Preview is unavailable for this file type. Open its folder instead.",
+    documentPreview: "Document preview",
+    audioPreview: "Audio preview",
+    videoPreview: "Video preview",
     backSettingsList: "Back to settings",
     settingsSubtitle: "Local preferences and network settings",
     saveSettings: "Save settings",
@@ -388,7 +458,7 @@ const copy = {
     shortcuts: "Shortcuts",
     captureShortcut: "Capture shortcut",
     captureShortcutHint: "Focus this field, then press a letter or number shortcut",
-    captureShortcutFocusedHint: "Works only while the XChat window is focused",
+    captureShortcutFocusedHint: "Works only while the Xchat window is focused",
     groupMembers: (count) => `${count} group ${count === 1 ? "member" : "members"}`,
     editDeviceRemark: "Edit device remark",
     unpinConversation: "Unpin conversation",
@@ -402,12 +472,12 @@ const copy = {
     groupHelper: "Select at least two remote devices that support group chat.",
     deviceAddress: "Device address",
     endpointPlaceholder: "192.168.1.100:8888 or myhost.local",
-    endpointHelper: "For cross-VLAN or WireGuard connections. XChat tries to connect immediately after saving.",
+    endpointHelper: "For cross-VLAN or WireGuard connections. Xchat tries to connect immediately after saving.",
     saveRemark: "Save remark",
     remarkHelper: "The remark is linked to the device UUID and is unaffected by IP address changes.",
-    connecting: "Connecting to XChat…",
+    connecting: "Connecting to Xchat…",
     reconnecting: "Connection interrupted. Retrying; loaded data remains available.",
-    connectionFailed: "Could not connect to the local XChat service.",
+    connectionFailed: "Could not connect to the local Xchat service.",
     sendFailed: "Failed to send",
     deliveredCount: (delivered, total) => `Delivered ${delivered}/${total}`,
     readCount: (read, total) => `Read by ${read}/${total}`,
@@ -524,6 +594,14 @@ function Icon({ name, size = 20 }) {
         </>
       );
       break;
+    case "emoji":
+      body = (
+        <>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M8.5 10h.01M15.5 10h.01M8 14c1 2 2.3 3 4 3s3-1 4-3" />
+        </>
+      );
+      break;
     case "download":
       body = <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" />;
       break;
@@ -540,6 +618,40 @@ function Icon({ name, size = 20 }) {
         <>
           <path d="M6 2h8l4 4v16H6zM14 2v5h5" />
           <path d="M9 13h6M9 17h4" />
+        </>
+      );
+      break;
+    case "eye":
+      body = (
+        <>
+          <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
+          <circle cx="12" cy="12" r="2.5" />
+        </>
+      );
+      break;
+    case "image":
+      body = (
+        <>
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <circle cx="9" cy="9" r="1.5" />
+          <path d="m4 17 5-5 4 4 2-2 5 4" />
+        </>
+      );
+      break;
+    case "audio":
+      body = (
+        <>
+          <path d="M9 18V5l10-2v13" />
+          <circle cx="6" cy="18" r="3" />
+          <circle cx="16" cy="16" r="3" />
+        </>
+      );
+      break;
+    case "video":
+      body = (
+        <>
+          <rect x="3" y="5" width="14" height="14" rx="2" />
+          <path d="m17 10 4-3v10l-4-3Z" />
         </>
       );
       break;
@@ -625,6 +737,95 @@ function formatSize(bytes) {
   if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`;
   if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`;
   return `${(value / 1024 ** 3).toFixed(1)} GB`;
+}
+
+function sourceIdForFile(file) {
+  return file.conversation_id || file.peer_id || file.source_id || "unknown";
+}
+
+function sourceForFile(file, state) {
+  const conversation = state.conversations.find(
+    (item) => item.id === file.conversation_id,
+  );
+  if (conversation?.kind === "group") return conversation;
+  const peerId = file.peer_id || conversation?.peer_id;
+  return (
+    state.devices.find((device) => device.id === peerId) ||
+    conversation?.peer ||
+    conversation ||
+    {
+      id: peerId || sourceIdForFile(file),
+      name: file.peer_name || file.source_name || "",
+    }
+  );
+}
+
+function fileSources(state) {
+  const sources = new Map();
+  for (const file of state.files) {
+    const entity = sourceForFile(file, state);
+    const id = entity?.id || sourceIdForFile(file);
+    const current = sources.get(id);
+    sources.set(id, { id, entity, count: (current?.count || 0) + 1 });
+  }
+  return [...sources.values()].sort((a, b) => {
+    const groupOrder = Number(b.entity?.kind === "group") - Number(a.entity?.kind === "group");
+    return groupOrder || displayName(a.entity).localeCompare(displayName(b.entity));
+  });
+}
+
+function fileMatchesSource(file, sourceId, state) {
+  if (sourceId === "all") return true;
+  return (sourceForFile(file, state)?.id || sourceIdForFile(file)) === sourceId;
+}
+
+function mediaResultUrl(payload) {
+  if (!payload) return { url: "", revoke: false };
+  if (typeof payload === "string") return { url: payload, revoke: false };
+  if (payload.data_url || payload.preview_url) {
+    return { url: payload.data_url || payload.preview_url, revoke: false };
+  }
+  if (payload.blob instanceof Blob) {
+    return { url: URL.createObjectURL(payload.blob), revoke: true };
+  }
+  const bytes = payload.bytes ?? payload.data;
+  if (Array.isArray(bytes) || bytes instanceof Uint8Array) {
+    const blob = new Blob([new Uint8Array(bytes)], {
+      type: payload.mime_type || "application/octet-stream",
+    });
+    return { url: URL.createObjectURL(blob), revoke: true };
+  }
+  return { url: "", revoke: false };
+}
+
+function useMessageMedia(message, workspace, enabled = true) {
+  const [media, setMedia] = useState({ url: "", failed: false });
+  const messageId = message.message_id ?? message.id;
+  useEffect(() => {
+    if (!enabled || messageId == null || !localFileAvailable(message)) {
+      setMedia({ url: "", failed: false });
+      return;
+    }
+    let disposed = false;
+    let objectUrl = "";
+    workspace
+      .dispatch({ type: "media.readMessage", messageId })
+      .then((result) => {
+        if (disposed) return;
+        if (!result.ok) {
+          setMedia({ url: "", failed: true });
+          return;
+        }
+        const value = mediaResultUrl(result.data);
+        if (value.revoke) objectUrl = value.url;
+        setMedia({ url: value.url, failed: !value.url });
+      });
+    return () => {
+      disposed = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [enabled, messageId, workspace]);
+  return media;
 }
 
 function statusText(status, labels) {
@@ -791,6 +992,8 @@ function ListPane({
   onAdd,
   onFileFilter,
   onCloseMobile,
+  settingsSection,
+  onSettingsSection,
 }) {
   const section = state.activeSection;
   const text = query.trim().toLocaleLowerCase();
@@ -806,7 +1009,12 @@ function ListPane({
       .toLocaleLowerCase()
       .includes(text),
   );
-  const fileFilters = Object.entries(labels.fileFilters);
+  const sources = fileSources(state);
+  const chatEmpty =
+    section === "chat" &&
+    !conversations.length &&
+    !(text && state.searchResults.length);
+  const hostsEmpty = section === "hosts" && !devices.length;
 
   return (
     <aside className="list-pane" data-od-id={`${section}-list`}>
@@ -845,7 +1053,11 @@ function ListPane({
           <Icon name="close" />
         </button>
       </header>
-      <div className="list-scroll">
+      <div
+        className={`list-scroll ${
+          chatEmpty || hostsEmpty ? "has-centered-empty" : ""
+        }`}
+      >
         {section === "chat" && (
           <>
             {text && state.searchResults.length > 0 && (
@@ -878,81 +1090,131 @@ function ListPane({
                   key={conversation.id}
                 />
               ))
-            ) : (
-              <ListEmpty title={labels.noConversation} detail={labels.noConversationHint} />
-            )}
+            ) : !text || !state.searchResults.length ? (
+              <ListEmpty
+                title={text ? labels.noSearchResults : labels.noConversation}
+                detail={
+                  text ? labels.noSearchResultsHint : labels.noConversationHint
+                }
+              />
+            ) : null}
           </>
         )}
         {section === "hosts" && (
           <>
-            <div className="list-group-label">
-              {labels.online} · {devices.filter((device) => !device.is_offline).length}
-            </div>
-            {devices
-              .filter((device) => !device.is_offline)
-              .map((device) => (
-                <DeviceRow
-                  device={device}
-                  labels={labels}
-                  selected={device.id === selectedDeviceId}
-                  onOpen={() => onDevice(device.id)}
-                  key={device.id}
-                />
-              ))}
-            <div className="list-group-label">
-              {labels.offline} · {devices.filter((device) => device.is_offline).length}
-            </div>
-            {devices
-              .filter((device) => device.is_offline)
-              .map((device) => (
-                <DeviceRow
-                  device={device}
-                  labels={labels}
-                  selected={device.id === selectedDeviceId}
-                  onOpen={() => onDevice(device.id)}
-                  key={device.id}
-                />
-              ))}
-            {!devices.length && (
-              <ListEmpty title={labels.noDevices} detail={labels.noDevicesHint} />
+            {devices.length ? (
+              <>
+                {devices.some((device) => !device.is_offline) && (
+                  <>
+                    <div className="list-group-label">
+                      {labels.online} ·{" "}
+                      {devices.filter((device) => !device.is_offline).length}
+                    </div>
+                    {devices
+                      .filter((device) => !device.is_offline)
+                      .map((device) => (
+                        <DeviceRow
+                          device={device}
+                          labels={labels}
+                          selected={device.id === selectedDeviceId}
+                          onOpen={() => onDevice(device.id)}
+                          key={device.id}
+                        />
+                      ))}
+                  </>
+                )}
+                {devices.some((device) => device.is_offline) && (
+                  <>
+                    <div className="list-group-label">
+                      {labels.offline} ·{" "}
+                      {devices.filter((device) => device.is_offline).length}
+                    </div>
+                    {devices
+                      .filter((device) => device.is_offline)
+                      .map((device) => (
+                        <DeviceRow
+                          device={device}
+                          labels={labels}
+                          selected={device.id === selectedDeviceId}
+                          onOpen={() => onDevice(device.id)}
+                          key={device.id}
+                        />
+                      ))}
+                  </>
+                )}
+              </>
+            ) : (
+              <ListEmpty
+                title={text ? labels.noSearchResults : labels.noDevices}
+                detail={text ? labels.noSearchResultsHint : labels.noDevicesHint}
+              />
             )}
           </>
         )}
-        {section === "files" &&
-          fileFilters.map(([value, label]) => {
-            const count =
-              value === "all"
-                ? state.files.length
-                : value === "active"
-                  ? state.transfers.filter((item) => ACTIVE_TRANSFER_STATES.has(item.status)).length
-                  : value === "failed"
-                    ? state.transfers.filter((item) => item.status === "failed").length
-                    : state.files.filter((item) => item.direction === value).length;
-            return (
-              <button
-                className={`source-filter ${fileFilter === value ? "selected" : ""}`}
-                onClick={() => onFileFilter(value)}
-                key={value}
-              >
-                <span className="source-icon">
-                  <Icon name={value === "active" ? "download" : "folder"} />
-                </span>
-                <span className="row-main">
-                  <b>{label}</b>
-                  <span className="row-preview">
-                    {value === "all" ? labels.allConversations : labels.filterByStatus}
+        {section === "files" && (
+          <>
+            <button
+              className={`source-filter ${fileFilter === "all" ? "selected" : ""}`}
+              onClick={() => onFileFilter("all")}
+            >
+              <span className="source-icon"><Icon name="folder" /></span>
+              <span className="row-main">
+                <b>{labels.fileFilters.all}</b>
+                <span className="row-preview">{labels.allFileSources}</span>
+              </span>
+              <span className="source-count">{state.files.length}</span>
+            </button>
+            {sources.some((source) => source.entity?.kind === "group") && (
+              <div className="list-group-label">{labels.groupSources}</div>
+            )}
+            {sources
+              .filter((source) => source.entity?.kind === "group")
+              .map(({ id, entity, count }) => (
+                <button
+                  className={`source-filter ${fileFilter === id ? "selected" : ""}`}
+                  onClick={() => onFileFilter(id)}
+                  key={id}
+                >
+                  <Avatar entity={entity} labels={labels} />
+                  <span className="row-main">
+                    <b>{displayName(entity, labels)}</b>
+                    <span className="row-preview">{labels.sourceGroup}</span>
                   </span>
+                  <span className="source-count">{count}</span>
+                </button>
+              ))}
+            {sources.some((source) => source.entity?.kind !== "group") && (
+              <div className="list-group-label">{labels.peerSources}</div>
+            )}
+            {sources
+              .filter((source) => source.entity?.kind !== "group")
+              .map(({ id, entity, count }) => (
+              <button
+                  className={`source-filter ${fileFilter === id ? "selected" : ""}`}
+                  onClick={() => onFileFilter(id)}
+                  key={id}
+              >
+                  <Avatar entity={entity} labels={labels} />
+                <span className="row-main">
+                    <b>{displayName(entity, labels)}</b>
+                    <span className="row-preview">
+                      {entity.hostname || entity.name || labels.sourceDevice}
+                    </span>
                 </span>
                 <span className="source-count">{count}</span>
               </button>
-            );
-          })}
+              ))}
+          </>
+        )}
         {section === "settings" &&
           Object.entries(labels.settingsSections).map(([id, label]) => (
             <button
-              className="settings-nav-row"
+              className={`settings-nav-row ${
+                settingsSection === id ? "selected" : ""
+              }`}
               key={id}
-              onClick={() => document.getElementById(`settings-${id}`)?.scrollIntoView()}
+              onClick={() => onSettingsSection(id)}
+              aria-current={settingsSection === id ? "location" : undefined}
             >
               {label}
             </button>
@@ -983,6 +1245,9 @@ function EmptyState({ icon = "chat", title, detail }) {
 
 function MessageFile({ message, state, workspace, labels }) {
   const status = fileStatus(message);
+  const image = isImageFile(message);
+  const available = localFileAvailable(message);
+  const media = useMessageMedia(message, workspace, image && available);
   const messageId = message.message_id ?? message.id;
   const activeTransfer = state.transfers.find(
     (transfer) =>
@@ -992,16 +1257,42 @@ function MessageFile({ message, state, workspace, labels }) {
       ACTIVE_TRANSFER_STATES.has(transfer.status),
   );
   const direction = message.direction || (message.own ? "outgoing" : "incoming");
-  const canOpen = direction === "incoming" || state.capabilities.openOutgoingFile;
+  const canOpen =
+    available &&
+    (direction === "incoming" || state.capabilities.openOutgoingFile);
+  if (image && media.url) {
+    return (
+      <button
+        className="message-image"
+        type="button"
+        onClick={() => workspace.dispatch({ type: "file.open", file: message })}
+        aria-label={`${labels.openFile}: ${
+          message.file_name || message.content || labels.attachment
+        }`}
+      >
+        <img
+          src={media.url}
+          alt={message.file_name || message.content || labels.imagePreview}
+        />
+      </button>
+    );
+  }
   return (
-    <div className={`message-file ${status === "failed" ? "invalid" : ""}`}>
+    <div
+      className={`message-file ${
+        status === "failed" || !available ? "invalid" : ""
+      }`}
+    >
       <span className="file-icon">
-        <Icon name="file" />
+        <Icon name={image ? "image" : "file"} />
       </span>
       <span className="message-file-main">
         <b>{message.file_name || message.content || labels.attachment}</b>
         <span>
-          {statusText(status, labels) || labels.file} · {formatSize(message.file_size)}
+          {!available
+            ? labels.localFileUnavailable
+            : statusText(status, labels) || labels.file}{" "}
+          · {formatSize(message.file_size)}
         </span>
       </span>
       {["offered", "awaiting_acceptance"].includes(status) && (
@@ -1036,7 +1327,7 @@ function MessageFile({ message, state, workspace, labels }) {
             : labels.cancel}
         </button>
       )}
-      {canOpen && ["accepted", "completed"].includes(status) && (
+      {canOpen && ["accepted", "completed", "sent"].includes(status) && (
         <button onClick={() => workspace.dispatch({ type: "file.open", file: message })}>
           {labels.open}
         </button>
@@ -1045,13 +1336,54 @@ function MessageFile({ message, state, workspace, labels }) {
   );
 }
 
+function DraftAttachment({ attachment, labels, onRemove }) {
+  const [preview, setPreview] = useState(attachment.preview_url || "");
+  useEffect(() => {
+    if (attachment.preview_url || !isImageFile(attachment) || !attachment.file) return;
+    const url = URL.createObjectURL(attachment.file);
+    setPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [attachment]);
+  return (
+    <div className="draft-attachment">
+      {preview && isImageFile(attachment) ? (
+        <img src={preview} alt={attachment.file_name || labels.imagePreview} />
+      ) : (
+        <span className="draft-file-icon">
+          <Icon name={isImageFile(attachment) ? "image" : "file"} />
+        </span>
+      )}
+      <span className="draft-attachment-main">
+        <b>{attachment.file_name || attachment.name || labels.attachment}</b>
+        <small>
+          {formatSize(attachment.file_size)} · {labels.attachmentReady}
+        </small>
+      </span>
+      <button
+        className="icon-button"
+        type="button"
+        onClick={onRemove}
+        aria-label={labels.removeAttachment}
+        title={labels.removeAttachment}
+      >
+        <Icon name="close" size={16} />
+      </button>
+    </div>
+  );
+}
+
 function Composer({ state, conversation, workspace, labels }) {
   const [text, setText] = useState(conversation?.draft || "");
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const [sending, setSending] = useState(false);
   const textarea = useRef(null);
   const input = useRef(null);
+  const emojiPanel = useRef(null);
+  const attachments = state.draftAttachments?.[conversation.id] || [];
 
   useEffect(() => {
     setText(conversation?.draft || "");
+    setEmojiOpen(false);
   }, [conversation?.id]);
 
   useEffect(() => {
@@ -1061,33 +1393,118 @@ function Composer({ state, conversation, workspace, labels }) {
     element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
   }, [text]);
 
+  useEffect(() => {
+    if (!emojiOpen) return;
+    const close = (event) => {
+      if (event.key === "Escape") setEmojiOpen(false);
+      if (
+        event.type === "pointerdown" &&
+        !emojiPanel.current?.contains(event.target) &&
+        !event.target.closest?.("[data-emoji-toggle]")
+      ) {
+        setEmojiOpen(false);
+      }
+    };
+    addEventListener("keydown", close);
+    addEventListener("pointerdown", close);
+    return () => {
+      removeEventListener("keydown", close);
+      removeEventListener("pointerdown", close);
+    };
+  }, [emojiOpen]);
+
   const send = async () => {
     const content = text.trim();
-    if (!content) return;
-    const result = await workspace.dispatch({ type: "message.sendText", content });
-    if (result.ok) {
-      setText("");
-      if (state.capabilities.conversationState) {
-        workspace.dispatch({
-          type: "conversation.saveDraft",
-          id: conversation.id,
-          draft: "",
-        });
+    if ((!content && !attachments.length) || sending) return;
+    setSending(true);
+    try {
+      if (content) {
+        const result = await workspace.dispatch({ type: "message.sendText", content });
+        if (result.ok) {
+          setText("");
+          if (state.capabilities.conversationState) {
+            workspace.dispatch({
+              type: "conversation.saveDraft",
+              id: conversation.id,
+              draft: "",
+            });
+          }
+        }
       }
+      for (const attachment of attachments) {
+        const result = await workspace.dispatch({
+          type: "message.sendFiles",
+          files: [attachment],
+        });
+        if (result.ok) {
+          await workspace.dispatch({
+            type: "draft.sent",
+            conversationId: conversation.id,
+            id: attachment.id,
+          });
+        }
+      }
+    } finally {
+      setSending(false);
     }
   };
 
   const attach = () => {
     if (state.capabilities.nativeFilePicker) {
-      workspace.dispatch({ type: "message.sendFiles", files: [] });
+      workspace.dispatch({ type: "draft.pickFiles" });
     } else {
       input.current?.click();
     }
   };
 
+  const insertEmoji = (emoji) => {
+    const element = textarea.current;
+    const start = element?.selectionStart ?? text.length;
+    const end = element?.selectionEnd ?? start;
+    const next = `${text.slice(0, start)}${emoji}${text.slice(end)}`;
+    setText(next);
+    requestAnimationFrame(() => {
+      element?.focus();
+      element?.setSelectionRange(start + emoji.length, start + emoji.length);
+    });
+  };
+
   return (
-    <footer className="composer" data-od-id="message-composer">
+    <footer
+      className="composer"
+      data-od-id="message-composer"
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.dataTransfer.files.length) {
+          workspace.dispatch({
+            type: "draft.addFiles",
+            conversationId: conversation.id,
+            files: [...event.dataTransfer.files],
+          });
+        }
+      }}
+    >
       <div className="compose-box">
+        {attachments.length > 0 && (
+          <div className="draft-attachments">
+            {attachments.map((attachment) => (
+              <DraftAttachment
+                attachment={attachment}
+                labels={labels}
+                key={attachment.id}
+                onRemove={() =>
+                  workspace.dispatch({
+                    type: "draft.remove",
+                    conversationId: conversation.id,
+                    id: attachment.id,
+                  })
+                }
+              />
+            ))}
+          </div>
+        )}
         <textarea
           ref={textarea}
           value={text}
@@ -1110,6 +1527,16 @@ function Composer({ state, conversation, workspace, labels }) {
               send();
             }
           }}
+          onPaste={(event) => {
+            const files = [...event.clipboardData.files].filter(isImageFile);
+            if (files.length) {
+              workspace.dispatch({
+                type: "draft.addFiles",
+                conversationId: conversation.id,
+                files,
+              });
+            }
+          }}
           rows="2"
           placeholder={labels.messagePlaceholder}
           aria-label={labels.message}
@@ -1117,8 +1544,20 @@ function Composer({ state, conversation, workspace, labels }) {
         <div className="compose-toolbar">
           <div className="compose-tools">
             <button
+              className={`icon-button composer-tool ${emojiOpen ? "active" : ""}`}
+              type="button"
+              data-emoji-toggle
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => setEmojiOpen((value) => !value)}
+              aria-label={labels.emoji}
+              title={labels.emoji}
+              aria-expanded={emojiOpen}
+            >
+              <Icon name="emoji" />
+            </button>
+            <button
               className="icon-button composer-tool"
-              onClick={() => workspace.dispatch({ type: "message.sendCapture" })}
+              onClick={() => workspace.dispatch({ type: "capture.start" })}
               disabled={!state.capabilities.capture}
               aria-label={labels.capture}
               title={
@@ -1144,7 +1583,13 @@ function Composer({ state, conversation, workspace, labels }) {
               hidden
               onChange={(event) => {
                 const files = [...event.target.files];
-                if (files.length) workspace.dispatch({ type: "message.sendFiles", files });
+                if (files.length) {
+                  workspace.dispatch({
+                    type: "draft.addFiles",
+                    conversationId: conversation.id,
+                    files,
+                  });
+                }
                 event.target.value = "";
               }}
             />
@@ -1153,11 +1598,28 @@ function Composer({ state, conversation, workspace, labels }) {
             className="primary-button send-button"
             onMouseDown={(event) => event.preventDefault()}
             onClick={send}
-            disabled={!text.trim()}
+            disabled={sending || (!text.trim() && !attachments.length)}
           >
             {labels.send}
           </button>
         </div>
+        {emojiOpen && (
+          <div className="emoji-panel" ref={emojiPanel}>
+            <div className="emoji-grid" role="listbox" aria-label={labels.emoji}>
+              {EMOJI_SET.map((emoji) => (
+                <button
+                  type="button"
+                  key={emoji}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => insertEmoji(emoji)}
+                  aria-label={emoji}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </footer>
   );
@@ -1219,7 +1681,7 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
 
   if (!conversation) {
     return (
-      <main className="workspace chat-workspace">
+      <main className="workspace chat-workspace no-selection">
         <EmptyState
           title={labels.noConversation}
           detail={labels.noConversationHint}
@@ -1244,7 +1706,8 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
         event.preventDefault();
         if (event.dataTransfer.files.length) {
           workspace.dispatch({
-            type: "message.sendFiles",
+            type: "draft.addFiles",
+            conversationId: conversation.id,
             files: [...event.dataTransfer.files],
           });
         }
@@ -1288,13 +1751,18 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
           </button>
         </div>
       </header>
-      <div className="message-scroll" ref={scroll}>
-        <button
-          className="load-older"
-          onClick={() => workspace.dispatch({ type: "conversation.loadOlder" })}
-        >
-          {labels.loadOlder}
-        </button>
+      <div
+        className={`message-scroll ${!messages.length ? "has-empty-state" : ""}`}
+        ref={scroll}
+      >
+        {messages.length > 0 && (
+          <button
+            className="load-older"
+            onClick={() => workspace.dispatch({ type: "conversation.loadOlder" })}
+          >
+            {labels.loadOlder}
+          </button>
+        )}
         {!messages.length && (
           <EmptyState title={labels.noMessages} detail={labels.noMessagesHint} />
         )}
@@ -1400,7 +1868,7 @@ function HostWorkspace({
   const device = state.devices.find((item) => item.id === selectedId);
   if (!device) {
     return (
-      <main className="workspace">
+      <main className="workspace host-workspace no-selection">
         <EmptyState
           icon="hosts"
           title={labels.selectHost}
@@ -1505,89 +1973,77 @@ function HostWorkspace({
   );
 }
 
-function transferProgress(transfer) {
-  if (!transfer.bytes_total) return 0;
-  return Math.min(100, Math.round((transfer.bytes_transferred / transfer.bytes_total) * 100));
-}
-
-function FileActions({ file, state, workspace, labels, onDelete }) {
-  const status = fileStatus(file);
-  const canOpen =
-    file.direction === "incoming" || state.capabilities.openOutgoingFile;
+function FileActions({
+  file,
+  state,
+  workspace,
+  labels,
+  onDelete,
+  onPreview,
+}) {
+  const available = localFileAvailable(file);
+  const previewable = available && fileKind(file) !== "other";
+  const canDelete = available && file.direction === "incoming";
   return (
     <div className="file-actions">
-      {["offered", "awaiting_acceptance"].includes(status) && (
-        <button
-          className="text-action"
-          onClick={() => workspace.dispatch({ type: "file.accept", file })}
-        >
-          {labels.receive}
-        </button>
-      )}
-      {status === "failed" && (
-        <button
-          className="text-action"
-          onClick={() =>
-            workspace.dispatch({
-              type: file.direction === "incoming" ? "file.accept" : "file.retry",
-              file,
-            })
-          }
-        >
-          {file.direction === "incoming" ? labels.receiveAgain : labels.retry}
-        </button>
-      )}
-      {canOpen && ["completed", "accepted", "sent"].includes(status) && (
-        <button
-          className="icon-button"
-          onClick={() => workspace.dispatch({ type: "file.open", file })}
-          aria-label={labels.openFile}
-          title={labels.openFile}
-        >
-          <Icon name="file" />
-        </button>
-      )}
-      {state.capabilities.revealFile && ["completed", "accepted", "sent"].includes(status) && (
-        <button
-          className="icon-button"
-          onClick={() => workspace.dispatch({ type: "file.reveal", file })}
-          aria-label={labels.revealFile}
-          title={labels.revealFile}
-        >
-          <Icon name="folder" />
-        </button>
-      )}
-      {file.direction === "incoming" && ["completed", "accepted"].includes(status) && (
-        <button
-          className="icon-button danger-text"
-          onClick={() => onDelete(file)}
-          aria-label={labels.deleteLocalCopy}
-          title={labels.deleteLocalCopy}
-        >
-          <Icon name="trash" />
-        </button>
-      )}
+      <button
+        className="icon-button"
+        disabled={!previewable}
+        onClick={() => onPreview(file)}
+        aria-label={labels.previewFile}
+        title={previewable ? labels.previewFile : labels.localFileUnavailable}
+      >
+        <Icon name="eye" />
+      </button>
+      <button
+        className="icon-button"
+        disabled={!available || !state.capabilities.revealFile}
+        onClick={() => workspace.dispatch({ type: "file.reveal", file })}
+        aria-label={labels.revealFile}
+        title={available ? labels.revealFile : labels.localFileUnavailable}
+      >
+        <Icon name="folder" />
+      </button>
+      <button
+        className="icon-button danger-text"
+        disabled={!canDelete}
+        onClick={() => onDelete(file)}
+        aria-label={labels.deleteLocalCopy}
+        title={canDelete ? labels.deleteLocalCopy : labels.localFileUnavailable}
+      >
+        <Icon name="trash" />
+      </button>
     </div>
   );
 }
 
 function FileWorkspace({ state, workspace, labels, query, filter, onBack, onConfirm }) {
+  const [kind, setKind] = useState("all");
+  const [preview, setPreview] = useState(null);
   const text = query.trim().toLocaleLowerCase();
   const files = state.files.filter((file) => {
-    const matchesText = `${file.file_name || file.name} ${file.peer_name || file.source_name || ""}`
+    const source = sourceForFile(file, state);
+    const matchesText = `${file.file_name || file.name} ${displayName(source, labels)}`
       .toLocaleLowerCase()
       .includes(text);
-    if (!matchesText) return false;
-    if (filter === "all") return true;
-    if (filter === "incoming" || filter === "outgoing") return file.direction === filter;
-    if (filter === "failed") return fileStatus(file) === "failed";
-    return ACTIVE_TRANSFER_STATES.has(fileStatus(file));
+    return (
+      matchesText &&
+      fileMatchesSource(file, filter, state) &&
+      (kind === "all" || fileKind(file) === kind)
+    );
   });
-  const transfers = state.transfers.filter((transfer) => {
-    if (filter === "failed") return transfer.status === "failed";
-    if (filter === "active") return ACTIVE_TRANSFER_STATES.has(transfer.status);
-    return filter === "all";
-  });
+  const selectedSource =
+    filter === "all"
+      ? null
+      : fileSources(state).find((source) => source.id === filter)?.entity;
+  const title = selectedSource
+    ? displayName(selectedSource, labels)
+    : kind === "all"
+      ? labels.fileFilters.all
+      : `${labels.fileKinds[kind]}${labels.files}`;
+  const previewFile = (file) => {
+    if (localFileAvailable(file) && fileKind(file) !== "other") setPreview(file);
+  };
   return (
     <main className="workspace file-workspace" data-od-id="shared-file-center">
       <header className="workspace-head">
@@ -1599,8 +2055,17 @@ function FileWorkspace({ state, workspace, labels, query, filter, onBack, onConf
           <Icon name="back" />
         </button>
         <div className="workspace-heading">
-          <b>{labels.fileCenter}</b>
-          <span>{labels.fileSummary(files.length, transfers.length)}</span>
+          <b>{title}</b>
+          <span>
+            {files.length} {labels.locale === "en" ? "items" : "个项目"}
+            {selectedSource
+              ? ` · ${
+                  selectedSource.kind === "group"
+                    ? labels.sourceGroup
+                    : labels.sourceDevice
+                }`
+              : ""}
+          </span>
         </div>
         <button
           className="icon-button"
@@ -1611,49 +2076,19 @@ function FileWorkspace({ state, workspace, labels, query, filter, onBack, onConf
           <Icon name="refresh" />
         </button>
       </header>
-      <div className="file-content">
-        {transfers.length > 0 && (
-          <section className="transfer-section">
-            <h2>{labels.transferStatus}</h2>
-            {transfers.map((transfer) => {
-              const progress = transferProgress(transfer);
-              return (
-                <div className={`transfer-row ${transfer.status === "failed" ? "invalid" : ""}`} key={transfer.id} data-od-id={`transfer-${transfer.id}`}>
-                  <span className="file-icon"><Icon name="download" /></span>
-                  <div className="transfer-main">
-                    <b>{transfer.file_name || labels.transferName(transfer.id)}</b>
-                    <span>
-                      {statusText(transfer.status, labels)} ·{" "}
-                      {formatSize(transfer.bytes_transferred)} /{" "}
-                      {formatSize(transfer.bytes_total)}
-                      {transfer.speed_bytes_per_second ? ` · ${formatSize(transfer.speed_bytes_per_second)}/s` : ""}
-                      {transfer.error ? ` · ${transfer.error}` : ""}
-                    </span>
-                    {ACTIVE_TRANSFER_STATES.has(transfer.status) && (
-                      <div
-                        className="progress-track"
-                        aria-label={labels.progress(progress)}
-                      >
-                        <i style={{ width: `${progress}%` }} />
-                      </div>
-                    )}
-                  </div>
-                  {ACTIVE_TRANSFER_STATES.has(transfer.status) && state.capabilities.transferCancel && (
-                    <button
-                      className="secondary-button"
-                      disabled={transfer.status === "cancelling"}
-                      onClick={() => workspace.dispatch({ type: "transfer.cancel", id: transfer.id })}
-                    >
-                      {transfer.status === "cancelling"
-                        ? labels.cancelling
-                        : labels.cancel}
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </section>
-        )}
+      <div className="file-kind-bar" aria-label={labels.fileCenter}>
+        {FILE_KINDS.map((value) => (
+          <button
+            className={`kind-chip ${kind === value ? "active" : ""}`}
+            type="button"
+            key={value}
+            onClick={() => setKind(value)}
+          >
+            {labels.fileKinds[value]}
+          </button>
+        ))}
+      </div>
+      <div className={`file-content ${!files.length ? "has-empty-state" : ""}`}>
         {files.length ? (
           <section className="file-table">
             <div className="file-table-head">
@@ -1663,30 +2098,52 @@ function FileWorkspace({ state, workspace, labels, query, filter, onBack, onConf
               <span>{labels.size}</span>
               <span>{labels.actions}</span>
             </div>
-            {files.map((file) => (
-              <div className="file-row" key={file.id || file.message_id} data-od-id={`file-${file.id || file.message_id}`}>
-                <span className="file-icon"><Icon name="file" /></span>
-                <div className="file-primary">
+            {files.map((file) => {
+              const source = sourceForFile(file, state);
+              const type = fileKind(file);
+              const available = localFileAvailable(file);
+              return (
+              <div
+                className={`file-row ${!available ? "invalid" : ""}`}
+                key={file.id || file.message_id}
+                data-od-id={`file-${file.id || file.message_id}`}
+                onDoubleClick={() =>
+                  type === "other"
+                    ? available &&
+                      state.capabilities.revealFile &&
+                      workspace.dispatch({ type: "file.reveal", file })
+                    : previewFile(file)
+                }
+              >
+                <span className={`file-type ${type}`}>
+                  <Icon name={type === "document" || type === "other" ? "file" : type} />
+                </span>
+                <div className="file-primary file-cell">
                   <b>{file.file_name || file.name || labels.unnamedFile}</b>
                   <span>
-                    {statusText(fileStatus(file), labels) || labels.unknownStatus}
+                    {!available
+                      ? labels.localFileUnavailable
+                      : file.direction === "outgoing"
+                        ? labels.sentDirection
+                        : labels.receivedDirection}
                   </span>
                 </div>
-                <span className="file-source">
-                  {file.peer_name ||
-                    file.source_name ||
-                    file.peer_id ||
-                    labels.thisDevice}
+                <span className="file-source file-source-col">
+                  <Avatar entity={source} labels={labels} />
+                  <span>{displayName(source, labels)}</span>
                 </span>
-                <time>
+                <time className="file-time-col">
                   {formatTime(file.timestamp || file.updated_at, labels.locale)}
                 </time>
-                <span className="numeric">{formatSize(file.file_size || file.bytes_total)}</span>
+                <span className="numeric file-size-col">
+                  {formatSize(file.file_size || file.bytes_total)}
+                </span>
                 <FileActions
                   file={file}
                   state={state}
                   workspace={workspace}
                   labels={labels}
+                  onPreview={previewFile}
                   onDelete={(target) =>
                     onConfirm({
                       title: labels.deleteFileTitle(
@@ -1699,17 +2156,140 @@ function FileWorkspace({ state, workspace, labels, query, filter, onBack, onConf
                   }
                 />
               </div>
-            ))}
+              );
+            })}
           </section>
         ) : (
           <EmptyState
             icon="files"
-            title={labels.noMatchingFiles}
-            detail={labels.noMatchingFilesHint}
+            title={
+              state.files.length
+                ? labels.noMatchingFiles
+                : labels.noFiles
+            }
+            detail={
+              state.files.length
+                ? labels.noMatchingFilesHint
+                : labels.noFilesHint
+            }
           />
         )}
       </div>
+      {preview && (
+        <FilePreviewModal
+          file={preview}
+          state={state}
+          workspace={workspace}
+          labels={labels}
+          onClose={() => setPreview(null)}
+          onDelete={() => {
+            setPreview(null);
+            onConfirm({
+              title: labels.deleteFileTitle(
+                preview.file_name || preview.name || labels.unnamedFile,
+              ),
+              detail: labels.deleteFileDetail,
+              action: labels.deleteFileAction,
+              run: () =>
+                workspace.dispatch({
+                  type: "file.deleteLocalCopy",
+                  file: preview,
+                }),
+            });
+          }}
+        />
+      )}
     </main>
+  );
+}
+
+function FilePreviewModal({
+  file,
+  state,
+  workspace,
+  labels,
+  onClose,
+  onDelete,
+}) {
+  const kind = fileKind(file);
+  const media = useMessageMedia(file, workspace, kind === "image");
+  const source = sourceForFile(file, state);
+  return (
+    <Modal
+      title={file.file_name || file.name || labels.unnamedFile}
+      onClose={onClose}
+      closeLabel={labels.close}
+      wide
+      actions={
+        <>
+          <button
+            className="secondary-button"
+            disabled={!state.capabilities.revealFile}
+            onClick={() => workspace.dispatch({ type: "file.reveal", file })}
+          >
+            {labels.revealFile}
+          </button>
+          <button
+            className="danger-button"
+            disabled={file.direction !== "incoming"}
+            onClick={onDelete}
+          >
+            {labels.deleteFileAction}
+          </button>
+        </>
+      }
+    >
+      <div className={`preview-stage ${kind}`}>
+        {kind === "image" && media.url && (
+          <img
+            src={media.url}
+            alt={file.file_name || file.name || labels.imagePreview}
+          />
+        )}
+        {kind === "image" && !media.url && (
+          <div className="media-preview">
+            <Icon name="image" size={64} />
+            <span>
+              {media.failed
+                ? labels.localFileUnavailable
+                : labels.imagePreview}
+            </span>
+          </div>
+        )}
+        {kind === "document" && (
+          <div className="preview-document">
+            <h3>{file.file_name || file.name}</h3>
+            <div className="preview-lines">
+              {Array.from({ length: 6 }, (_, index) => <i key={index} />)}
+            </div>
+            <p className="preview-note">{labels.documentPreview}</p>
+          </div>
+        )}
+        {(kind === "audio" || kind === "video" || kind === "other") && (
+          <div className="media-preview">
+            <span className="media-cover">
+              <Icon
+                name={kind === "other" ? "file" : kind}
+                size={64}
+              />
+            </span>
+            <b>{file.file_name || file.name}</b>
+            <span className="preview-note">
+              {kind === "audio"
+                ? labels.audioPreview
+                : kind === "video"
+                  ? labels.videoPreview
+                  : labels.previewUnavailable}
+            </span>
+          </div>
+        )}
+      </div>
+      <p className="preview-meta">
+        {formatSize(file.file_size)} ·{" "}
+        {formatTime(file.timestamp || file.updated_at, labels.locale)} ·{" "}
+        {displayName(source, labels)}
+      </p>
+    </Modal>
   );
 }
 
@@ -1728,9 +2308,11 @@ function SettingsWorkspace({
   labels,
   onBack,
   onLanguagePreview,
+  onActiveSection,
 }) {
   const [form, setForm] = useState(state.settings);
   const [dirty, setDirty] = useState(false);
+  const scroll = useRef(null);
   useEffect(() => {
     if (!dirty) setForm(state.settings);
   }, [dirty, state.settings]);
@@ -1738,6 +2320,19 @@ function SettingsWorkspace({
     () => () => onLanguagePreview(null),
     [onLanguagePreview],
   );
+  const syncSection = () => {
+    const root = scroll.current;
+    if (!root) return;
+    const rootTop = root.getBoundingClientRect().top;
+    let active = Object.keys(labels.settingsSections)[0];
+    for (const id of Object.keys(labels.settingsSections)) {
+      const element = document.getElementById(`settings-${id}`);
+      if (element && element.getBoundingClientRect().top - rootTop <= 72) {
+        active = id;
+      }
+    }
+    onActiveSection(active);
+  };
   const change = (key, value) => {
     setDirty(true);
     setForm((current) => ({ ...current, [key]: value }));
@@ -1784,7 +2379,7 @@ function SettingsWorkspace({
           {labels.saveSettings}
         </button>
       </header>
-      <div className="settings-scroll">
+      <div className="settings-scroll" ref={scroll} onScroll={syncSection}>
         <section className="settings-section" id="settings-identity">
           <h2>{labels.identity}</h2>
           <SettingRow
@@ -2227,6 +2822,10 @@ function ConfirmModal({ confirm, labels, onClose }) {
 }
 
 export default function App({ workspace }) {
+  const requestedView = new URLSearchParams(globalThis.location?.search || "").get("view");
+  if (requestedView === "capture-editor" || requestedView === "capture-pin") {
+    return <CaptureEditor workspace={workspace} mode={requestedView === "capture-pin" ? "pin" : "editor"} />;
+  }
   const state = useSyncExternalStore(workspace.subscribe, workspace.getSnapshot);
   const savedLanguage = state.settings.language === "en" ? "en" : "zh-CN";
   const [languagePreview, setLanguagePreview] = useState(null);
@@ -2235,7 +2834,8 @@ export default function App({ workspace }) {
   const [query, setQuery] = useState("");
   const [selectedDeviceId, setSelectedDeviceId] = useState("");
   const [fileFilter, setFileFilter] = useState("all");
-  const [infoOpen, setInfoOpen] = useState(true);
+  const [settingsSection, setSettingsSection] = useState("identity");
+  const [infoOpen, setInfoOpen] = useState(false);
   const [mobileList, setMobileList] = useState(false);
   const [modal, setModal] = useState(null);
   const [confirm, setConfirm] = useState(null);
@@ -2262,12 +2862,27 @@ export default function App({ workspace }) {
       }
       if (matchesShortcut(event, state.settings.capture_shortcut)) {
         event.preventDefault();
-        workspace.dispatch({ type: "message.sendCapture" });
+        workspace.dispatch({ type: "capture.start" });
       }
     };
     addEventListener("keydown", onKeyDown);
     return () => removeEventListener("keydown", onKeyDown);
   }, [state.capabilities.captureShortcut, state.settings.capture_shortcut, workspace]);
+
+  useEffect(() => {
+    if (!globalThis.BroadcastChannel) return;
+    const channel = new BroadcastChannel("xchat-capture");
+    channel.onmessage = ({ data }) => {
+      if (data?.type === "capture-ready" && data.attachment) {
+        workspace.dispatch({
+          type: "draft.addManaged",
+          conversationId: data.attachment.conversation_id,
+          attachment: data.attachment,
+        });
+      }
+    };
+    return () => channel.close();
+  }, [workspace]);
 
   useEffect(() => {
     workspace.dispatch({ type: "bootstrap" });
@@ -2276,6 +2891,19 @@ export default function App({ workspace }) {
   useEffect(() => {
     if (!selectedDeviceId && state.devices[0]) setSelectedDeviceId(state.devices[0].id);
   }, [selectedDeviceId, state.devices]);
+
+  useEffect(() => {
+    if (
+      fileFilter !== "all" &&
+      !fileSources(state).some((source) => source.id === fileFilter)
+    ) {
+      setFileFilter("all");
+    }
+  }, [fileFilter, state.files, state.conversations, state.devices]);
+
+  useEffect(() => {
+    setInfoOpen(false);
+  }, [state.activeConversationId]);
 
   useEffect(() => {
     if (state.activeSection !== "chat" || !state.capabilities.messageSearch) return;
@@ -2320,14 +2948,25 @@ export default function App({ workspace }) {
 
   const openSection = (section) => {
     setQuery("");
-    setMobileList(section !== "settings");
+    setMobileList(true);
     workspace.dispatch({ type: "navigation.open", section });
   };
 
   const openConversation = (id, target = {}) => {
     if (!id) return;
     setMobileList(false);
+    setInfoOpen(false);
     workspace.dispatch({ type: "conversation.open", id, ...target });
+  };
+
+  const openSettingsSection = (id) => {
+    setSettingsSection(id);
+    setMobileList(false);
+    requestAnimationFrame(() =>
+      document
+        .getElementById(`settings-${id}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
   };
 
   const chatWithDevice = (deviceId) => {
@@ -2352,6 +2991,8 @@ export default function App({ workspace }) {
         onAdd={() => setModal(state.activeSection === "chat" ? "group" : "endpoint")}
         onFileFilter={(value) => { setFileFilter(value); setMobileList(false); }}
         onCloseMobile={() => setMobileList(false)}
+        settingsSection={settingsSection}
+        onSettingsSection={openSettingsSection}
       />
       {state.activeSection === "chat" && (
         <ChatWorkspace
@@ -2394,6 +3035,7 @@ export default function App({ workspace }) {
           labels={labels}
           onBack={() => setMobileList(true)}
           onLanguagePreview={setLanguagePreview}
+          onActiveSection={setSettingsSection}
         />
       )}
       {state.activeSection === "chat" && infoOpen && (

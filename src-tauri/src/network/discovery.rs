@@ -1,6 +1,6 @@
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{Ipv4Addr, UdpSocket};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 #[cfg(feature = "desktop")]
@@ -11,6 +11,7 @@ use crate::peers::PeerManager;
 const MULTICAST_IP: &str = "224.0.0.167";
 pub const DISCOVERY_PROTOCOL_VERSION: u16 = 2;
 pub const DISCOVERY_CAPABILITIES: &[&str] = &["group_chat", "receipts", "transfer_cancel"];
+static LOCAL_DEVICE_METADATA: OnceLock<(Option<String>, Option<String>)> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveryAnnouncement {
@@ -94,13 +95,17 @@ fn optional_part(value: Option<&&str>) -> Option<String> {
 }
 
 pub(crate) fn local_device_metadata() -> (Option<String>, Option<String>) {
-    let hostname = sysinfo::System::host_name();
-    let networks = sysinfo::Networks::new_with_refreshed_list();
-    let mac_address = networks.iter().find_map(|(_, network)| {
-        let address = network.mac_address();
-        (!address.is_unspecified()).then(|| address.to_string())
-    });
-    (hostname, mac_address)
+    LOCAL_DEVICE_METADATA
+        .get_or_init(|| {
+            let hostname = sysinfo::System::host_name();
+            let networks = sysinfo::Networks::new_with_refreshed_list();
+            let mac_address = networks.iter().find_map(|(_, network)| {
+                let address = network.mac_address();
+                (!address.is_unspecified()).then(|| address.to_string())
+            });
+            (hostname, mac_address)
+        })
+        .clone()
 }
 
 fn local_announcement(

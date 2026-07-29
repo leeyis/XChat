@@ -76,6 +76,7 @@ type ApiResponse = axum::response::Response;
 const MAX_BROWSER_UPLOAD_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_PEER_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const MAX_UPLOAD_REQUEST_BYTES: usize = 5 * 1024 * 1024;
+const WEB_OUTBOX_DIRECTORY: &str = ".xchat-outbox";
 
 fn api_error(status: StatusCode, error: impl Into<String>) -> ApiResponse {
     (
@@ -99,6 +100,27 @@ fn backend_error(error: String) -> ApiResponse {
             StatusCode::BAD_REQUEST
         };
     api_error(status, error)
+}
+
+async fn managed_web_outbox_root(pool: &Pool<Sqlite>) -> Result<std::path::PathBuf, String> {
+    let configured_root = std::path::PathBuf::from(crate::db::get_download_path(pool).await?);
+    tokio::fs::create_dir_all(&configured_root)
+        .await
+        .map_err(|error| format!("创建下载目录失败: {error}"))?;
+    let download_root = tokio::fs::canonicalize(&configured_root)
+        .await
+        .map_err(|error| format!("解析下载目录失败: {error}"))?;
+    let configured_outbox = configured_root.join(WEB_OUTBOX_DIRECTORY);
+    tokio::fs::create_dir_all(&configured_outbox)
+        .await
+        .map_err(|error| format!("创建 Web 发件箱失败: {error}"))?;
+    let outbox = tokio::fs::canonicalize(configured_outbox)
+        .await
+        .map_err(|error| format!("解析 Web 发件箱失败: {error}"))?;
+    if !outbox.starts_with(download_root) {
+        return Err("Web 发件箱必须位于下载目录内".to_string());
+    }
+    Ok(outbox)
 }
 
 fn safe_file_name(value: &str) -> Option<String> {
@@ -416,9 +438,13 @@ async fn send_conversation_file_http(
         let Some(file_name) = field.file_name().and_then(safe_file_name) else {
             return api_error(StatusCode::BAD_REQUEST, "文件名无效");
         };
-        let directory = std::env::temp_dir()
-            .join("xchat-web-staging")
-            .join(uuid::Uuid::new_v4().to_string());
+        let outbox = match managed_web_outbox_root(&state.pool).await {
+            Ok(outbox) => outbox,
+            Err(error) => {
+                return api_error(StatusCode::INTERNAL_SERVER_ERROR, error);
+            }
+        };
+        let directory = outbox.join(uuid::Uuid::new_v4().to_string());
         if let Err(error) = tokio::fs::create_dir_all(&directory).await {
             return api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -494,7 +520,8 @@ async fn send_conversation_file_http(
     .await
     {
         Ok(result) => {
-            // ponytail: waiting_peer 依赖这个受控副本；有持久存储配额后再回收终态副本。
+            // ponytail: waiting_peer 和发送方媒体预览依赖这个受控副本；
+            // 有持久存储配额后再回收终态副本。
             let waiting = result
                 .transfers
                 .iter()
@@ -854,7 +881,7 @@ async fn get_settings_http(State(state): State<Arc<AppState>>) -> impl IntoRespo
         .await
         .unwrap_or_else(|_| {
             std::env::temp_dir()
-                .join("lanchat_downloads")
+                .join("xchat-downloads")
                 .to_str()
                 .unwrap()
                 .to_string()
@@ -4099,12 +4126,7 @@ async fn open_received_file(
         .map_err(backend_error)?
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "文件消息不存在"))?;
     let self_id = crate::db::get_user_id(pool).await.map_err(backend_error)?;
-    if message.sender_id == self_id || message.sender_id == "me" {
-        return Err(api_error(
-            StatusCode::FORBIDDEN,
-            "发送方源文件不能通过 Web 接口读取",
-        ));
-    }
+    let outgoing = message.sender_id == self_id || message.sender_id == "me";
     let path = message
         .file_path
         .as_deref()
@@ -4120,10 +4142,25 @@ async fn open_received_file(
     let canonical = tokio::fs::canonicalize(path)
         .await
         .map_err(|_| api_error(StatusCode::NOT_FOUND, "本地文件不存在"))?;
-    if !canonical.starts_with(&root) {
+    let allowed = if outgoing {
+        let outbox = managed_web_outbox_root(pool).await.map_err(|_| {
+            api_error(
+                StatusCode::FORBIDDEN,
+                "发送方源文件不能通过 Web 接口读取",
+            )
+        })?;
+        canonical.starts_with(outbox)
+    } else {
+        canonical.starts_with(&root)
+    };
+    if !allowed {
         return Err(api_error(
             StatusCode::FORBIDDEN,
-            "拒绝读取下载目录之外的文件",
+            if outgoing {
+                "发送方源文件不能通过 Web 接口读取"
+            } else {
+                "拒绝读取下载目录之外的文件"
+            },
         ));
     }
     let metadata = tokio::fs::metadata(&canonical)
@@ -4187,7 +4224,7 @@ async fn get_download_dir(pool: &Pool<Sqlite>) -> std::path::PathBuf {
         Ok(path) => std::path::PathBuf::from(path),
         Err(_) => {
             // 默认路径
-            std::env::temp_dir().join("lanchat_downloads")
+            std::env::temp_dir().join("xchat-downloads")
         }
     }
 }
@@ -4379,7 +4416,7 @@ async fn get_theme_list_http() -> impl IntoResponse {
 
     // 检查自定义主题目录
     if let Some(home_dir) = dirs::home_dir() {
-        let theme_dir = home_dir.join(".config").join("lanchat");
+    let theme_dir = home_dir.join(".config").join("xchat");
 
         if theme_dir.exists() {
             if let Ok(entries) = std::fs::read_dir(&theme_dir) {
@@ -4443,7 +4480,7 @@ async fn get_theme_css_http(Path(theme_name): Path<String>) -> impl IntoResponse
     if let Some(home_dir) = dirs::home_dir() {
         let theme_path = home_dir
             .join(".config")
-            .join("lanchat")
+        .join("xchat")
             .join(format!("{}.css", theme_name));
 
         if theme_path.exists() {
@@ -4627,6 +4664,7 @@ pub fn get_media_token() -> String {
 #[cfg(test)]
 mod websocket_protocol_tests {
     use super::*;
+    use axum::extract::FromRequest;
     use crate::network::protocol::{GroupMember, ProtocolMessage};
 
     #[tokio::test]
@@ -4731,13 +4769,30 @@ mod websocket_protocol_tests {
             Ok(_) => panic!("outside file must not be exposed"),
         }
 
+        let self_id = crate::db::get_user_id(&pool).await.unwrap();
+        let result = sqlx::query(
+            "INSERT INTO messages
+                (sender_id, receiver_id, content, msg_type, timestamp, file_path,
+                 file_status, file_size, status)
+             VALUES (?, 'peer-a', 'outside.txt', 'file', 2, ?, 'sent', 7, 'sent')",
+        )
+        .bind(self_id)
+        .bind(outside.to_string_lossy().as_ref())
+        .execute(&pool)
+        .await
+        .unwrap();
+        match open_received_file(&pool, result.last_insert_rowid()).await {
+            Err(response) => assert_eq!(response.status(), StatusCode::FORBIDDEN),
+            Ok(_) => panic!("outgoing source files must not be exposed"),
+        }
+
         let inside = download_dir.join("inside.txt");
         tokio::fs::write(&inside, b"public").await.unwrap();
         let result = sqlx::query(
             "INSERT INTO messages
                 (sender_id, receiver_id, content, msg_type, timestamp, file_path,
                  file_status, file_size, status)
-             VALUES ('peer-a', 'me', 'inside.txt', 'file', 2, ?, 'accepted', 6, 'received')",
+             VALUES ('peer-a', 'me', 'inside.txt', 'file', 3, ?, 'accepted', 6, 'received')",
         )
         .bind(inside.to_string_lossy().as_ref())
         .execute(&pool)
@@ -4748,6 +4803,91 @@ mod websocket_protocol_tests {
             .unwrap();
         assert_eq!(name, "inside.txt");
         assert_eq!(size, 6);
+
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn web_uploaded_outgoing_image_remains_readable_after_send() {
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-web-outbox-test-{}", uuid::Uuid::new_v4()));
+        let pool = crate::db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        let download_dir = app_dir.join("downloads");
+        tokio::fs::create_dir_all(&download_dir).await.unwrap();
+        crate::db::update_download_path(
+            &pool,
+            download_dir.to_string_lossy().into_owned(),
+        )
+        .await
+        .unwrap();
+        crate::db::save_or_update_user(
+            &pool,
+            "peer-a".into(),
+            "Alice".into(),
+            "127.0.0.1:9".into(),
+            true,
+            0,
+        )
+        .await
+        .unwrap();
+        let conversation = crate::db::ensure_direct_conversation(&pool, "peer-a")
+            .await
+            .unwrap();
+        let (ws_broadcast, _) = broadcast::channel(8);
+        let state = Arc::new(AppState {
+            pool: pool.clone(),
+            peer_manager: Arc::new(PeerManager::new()),
+            media_token: String::new(),
+            ws_broadcast,
+            #[cfg(feature = "desktop")]
+            app_handle: None,
+        });
+
+        let boundary = "xchat-boundary";
+        let png = b"\x89PNG\r\n\x1a\nmanaged-web-image";
+        let mut body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"capture.png\"\r\nContent-Type: image/png\r\n\r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(png);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let request = axum::http::Request::builder()
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+        let multipart = Multipart::from_request(request, &()).await.unwrap();
+
+        let response = send_conversation_file_http(
+            State(state.clone()),
+            Path(conversation.id.clone()),
+            multipart,
+        )
+        .await;
+        assert!(
+            response.status() == StatusCode::CREATED
+                || response.status() == StatusCode::ACCEPTED
+        );
+
+        let messages = crate::db::get_conversation_messages(&pool, &conversation.id, 20, 0)
+            .await
+            .unwrap();
+        let message = messages
+            .iter()
+            .find(|message| message.msg_type == "file")
+            .unwrap();
+        let response =
+            download_file_http(State(state), Path(message.id.to_string())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(bytes.as_ref(), png);
 
         pool.close().await;
         std::fs::remove_dir_all(app_dir).unwrap();

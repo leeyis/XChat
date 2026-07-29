@@ -1,0 +1,119 @@
+# 任务计划：XChat React 全量重构
+
+## 目标
+以 `ui-ref/xchat-desktop-prototype.html` 和 `ui-ref/DESIGN.md` 为唯一视觉基准，彻底替换旧前端，并让聊天、主机、文件、设置以及群聊、已读回执、传输取消、截图快捷键通过真实 React + Rust 能力运行。
+
+## 当前阶段
+阶段 11：集成验证与交付（完成）
+
+## 各阶段
+
+### 阶段 1：需求与发现
+- [x] 阅读最新设计、原型、素材与现有工程说明
+- [x] 审计现有前端运行方式和 Tauri/Web 两条后端路径
+- [x] 识别可复用能力与必须补充的数据库、协议和平台能力
+- **状态：** complete
+
+### 阶段 2：设计固化与实施规划
+- [x] 比较三种 React—Rust interface 方案
+- [x] 用户批准深 `XChatModule` 方案
+- [x] 写入、提交并自审设计文档
+- [x] 用户复核已提交的设计文档
+- [x] 形成可执行的分阶段实现计划
+- **状态：** complete
+
+### 阶段 3：React 前端与运行链路
+- [x] 建立最小 React/Vite 工程并替换旧界面
+- [x] 实现 `XChatModule`、Tauri adapter 和 HTTP/WebSocket adapter
+- [x] 实现聊天、主机、文件、设置四个设计模块
+- [x] 构建产物保持 Tauri 与 RustEmbed 可用
+- **状态：** complete
+
+### 阶段 4：共享 Rust 能力
+- [x] 增加兼容迁移和共享数据模型
+- [x] 实现群聊、已读、文件中心、传输取消和设备元数据
+- [x] 同时接入 Tauri commands 与 Axum HTTP/WebSocket
+- [x] 实现 macOS/Web 截图路径及能力声明
+- **状态：** complete
+
+### 阶段 5：测试与视觉验证
+- [x] 运行前端构建和最小逻辑检查
+- [x] 运行 Rust 测试及 desktop/web 双 feature 编译
+- [x] 使用隔离端口和数据库冒烟测试
+- [x] 对照最新原型检查主要布局、状态与交互
+- **状态：** complete
+
+### 阶段 6：交付
+- [x] 检查 diff，不覆盖用户既有改动
+- [x] 记录运行、预览和验证命令
+- [x] 汇报实现结果与平台限制
+- **状态：** complete
+
+### 阶段 7：0.1.0 稳定性与品牌修复
+- [x] 品牌、版本、bundle identifier 和应用数据目录统一为 Xchat 0.1.0
+- [x] 重新生成透明无白边的全平台图标
+- [x] 修复设备 MAC/内存周期交替
+- [x] 修复 macOS 隐藏窗口后 Dock 重开
+- **状态：** complete
+
+### 阶段 8：React 基础交互与文件中心
+- [x] 恢复表情面板和光标插入
+- [x] 全部空状态在可用区域垂直居中
+- [x] 设置导航增加选中态、滚动同步和移动端行为
+- [x] 会话信息默认收起
+- [x] 文件中心严格对齐最新原型并处理本地文件不可用
+- **状态：** complete
+
+### 阶段 9：截图编辑与附件草稿
+- [x] 实现单例置顶截图编辑窗口
+- [x] 实现矩形、椭圆、箭头、画笔、马赛克、文本和回退
+- [x] 实现完成、取消和单例钉图
+- [x] 截图、粘贴图片和选择文件先进入会话附件草稿
+- [x] 一次发送文字和多个独立附件，失败项保留
+- **状态：** complete
+
+### 阶段 10：安全媒体读取与图片内联
+- [x] 将编辑截图保存到受管持久 outbox
+- [x] 新增按 message_id 校验的桌面媒体读取
+- [x] 收发双方完成后直接渲染图片
+- [x] 缺失文件回退文件卡片且不再弹路径错误
+- **状态：** complete
+
+### 阶段 11：集成验证与交付
+- [x] React build 与最小逻辑检查
+- [x] Rust tests 与 desktop/web 双 feature 编译
+- [x] 隔离数据库运行 Tauri 桌面烟测
+- [x] 对照书面规格和原型完成视觉/交互验收
+- [x] 检查 diff、提交实现并给出运行/构建命令
+- **状态：** complete
+
+## 已做决策
+| 决策 | 理由 |
+|------|------|
+| 采用深 `XChatModule`：`getSnapshot/dispatch/subscribe` | React 只学习一个 interface，Tauri/Web 差异和跨模块状态机保持 locality |
+| React 源码放入 `frontend/`，构建到现有 `src/` | 彻底替换旧 UI，同时避免破坏 Tauri `frontendDist` 与 RustEmbed 的静态目录约定 |
+| UUID 保持设备主身份，MAC/hostname 为可选元数据 | 兼容历史消息、SQLite 数据和现有局域网协议 |
+| 群聊由 Rust 扇出，送达/已读按稳定消息 ID 记录每成员 ack | 避免前端伪群聊、设备时钟偏差和跨设备本地行 ID 不一致 |
+| 不提供生产 mock adapter | 用户要求缺失能力真实实现；不可用平台通过 capability 明示 |
+| 不引入 Redux、Router、UI 框架或事件存储 | 两个真实 transport adapter 已足够，额外基础设施没有本轮收益 |
+| 截图编辑使用原生 Canvas 操作序列 | 七种首版工具无需新增图形依赖，回退可通过移除最后一次操作后重绘实现 |
+| 一次发送仍落为相邻独立消息 | 满足一次编辑/一次发送，同时避免数据库和 wire protocol 迁移 |
+| 编辑截图持久化到受管 outbox | 发送完成后仍可在发送方历史内联显示，避免临时截图路径失效 |
+| Web 上传持久化到下载目录内的受管 `.xchat-outbox` | 刷新后发送方仍可按消息 ID 预览，同时不开放任意发送源文件 |
+| 本机设备元数据用 OnceLock 固定 | 同一进程广播与 reply 必须使用同一 MAC，标准库即可完成 |
+
+## 遇到的错误
+| 错误 | 尝试次数 | 解决方案 |
+|------|---------|---------|
+| `cargo tauri dev -- --port ...` 把应用参数误传给 `cargo run` | 1 | 当前 Tauri CLI 使用 `cargo tauri dev -- -- --port ...` |
+| `rtk rg` 使用不存在的 shell glob 导致 zsh `no matches found` | 1 | 对已知配置文件使用显式路径，不再传未解析 glob |
+| `imagegen` 去背版本轻微重绘了大部分蓝色像素 | 1 | 丢弃生成结果，改用原图边缘连通近白背景去除并验证 alpha |
+| 删除旧截图兼容入口时补丁中的 mobile capability 上下文不匹配 | 1 | 读取实际尾部结构后用精确上下文重新应用 |
+| Chrome 扩展不允许浏览器 QA 直接选择本地图片 | 1 | 不改用户扩展权限，改用浏览器会话剪贴板粘贴同一 PNG，成功验证图文草稿 |
+| Computer Use 无法定位未打包的 Tauri debug binary | 2 | 保留 Tauri 启动/服务日志烟测，以浏览器真实双实例完成交互验证 |
+
+## 备注
+- `src-tauri/src/commands.rs` 已有用户修改，实施时只做局部补丁并保留其变更。
+- `ui-ref/`、`AGENTS.md`、`plan/UI-DESIGN-PC.md` 等未跟踪内容属于用户，不纳入清理。
+- 实施顺序：① React 壳和现有能力回接；② SQLite 兼容迁移；③ 群聊与回执；④ 文件中心与取消；⑤ 设备/截图；⑥ 双运行时与视觉验收。
+- 并行文件所有权：前端 agent 只改 `frontend/` 和根 npm/Vite 文件；数据库 agent 只改 `db.rs`；网络 agent 只改 `network/`；主 agent 负责 commands、Web、注册、权限和最终集成。

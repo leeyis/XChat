@@ -71,7 +71,10 @@
     "allow-delete-local-file",
     "allow-open-workspace-file",
     "allow-reveal-workspace-file",
-    "allow-capture-screenshot",
+    "allow-start-capture-editor",
+    "allow-stage-image-attachment",
+    "allow-discard-staged-attachment",
+    "allow-read-workspace-media",
     {
       "identifier": "fs:scope",
       "allow": [

@@ -1,4 +1,4 @@
-package com.lanchat.app
+package com.xchat.app
 
 import android.app.Activity
 import android.app.ActivityManager
@@ -52,7 +52,7 @@ class ShareActivity : Activity() {
         
         for (task in runningTasks) {
             val taskInfo = task.taskInfo
-            if (taskInfo.baseActivity?.className == "com.lanchat.app.MainActivity") {
+            if (taskInfo.baseActivity?.className == "com.xchat.app.MainActivity") {
                 println("[ShareActivity] 检测到 MainActivity 正在运行")
                 return true
             }
@@ -64,12 +64,12 @@ class ShareActivity : Activity() {
     
     private fun notifyMainActivity() {
         // 发送广播通知 MainActivity
-        val intent = Intent("com.lanchat.app.SHARE_RECEIVED")
+        val intent = Intent("com.xchat.app.SHARE_RECEIVED")
         sendBroadcast(intent)
         
         // 【修复】Android 14 跨任务栈拉起 Activity 需要正确的 Flags
         val mainIntent = Intent(this, MainActivity::class.java).apply {
-            // NEW_TASK: 找到 LANChat 原本的任务栈并拉到前台
+            // NEW_TASK: 找到 Xchat 原本的任务栈并拉到前台
             // CLEAR_TOP + SINGLE_TOP: 确保不会重复创建 MainActivity 实例
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or 
                     Intent.FLAG_ACTIVITY_CLEAR_TOP or 

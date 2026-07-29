@@ -1,4 +1,4 @@
-package com.lanchat.app
+package com.xchat.app
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -116,7 +116,7 @@ class MainActivity : TauriActivity() {
                 checkAndPushSharedFiles()
             }
         }
-        val filter = IntentFilter("com.lanchat.app.SHARE_RECEIVED")
+        val filter = IntentFilter("com.xchat.app.SHARE_RECEIVED")
         registerReceiver(shareReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
     }
 

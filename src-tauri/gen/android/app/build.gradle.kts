@@ -15,14 +15,14 @@ val tauriProperties = Properties().apply {
 
 android {
     compileSdk = 36
-    namespace = "com.lanchat.app"
+    namespace = "com.xchat.app"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "true"
-        applicationId = "com.lanchat.app"
+        applicationId = "com.xchat.app"
         minSdk = 24
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
-        versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+        versionName = tauriProperties.getProperty("tauri.android.versionName", "0.1.0")
     }
     buildTypes {
         getByName("debug") {

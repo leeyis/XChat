@@ -205,10 +205,10 @@ pub async fn get_download_path(pool: &sqlx::Pool<sqlx::Sqlite>) -> Result<String
         Err(_) => {
             // 如果没有设置，返回默认路径
             if cfg!(target_os = "android") {
-                Ok("/storage/emulated/0/Download/LANChat".to_string())
+                Ok("/storage/emulated/0/Download/Xchat".to_string())
             } else {
                 let home_dir = dirs::home_dir().ok_or("cannot get home directory")?;
-                let default_path = home_dir.join("Downloads").join("LANChat");
+                let default_path = home_dir.join("Downloads").join("Xchat");
                 Ok(default_path.to_string_lossy().to_string())
             }
         }
@@ -254,11 +254,11 @@ pub async fn init_db_standalone(custom_path: Option<PathBuf>) -> Result<Pool<Sql
     let app_dir = if let Some(path) = custom_path {
         path
     } else {
-        // Windows: C:\Users\用户名\AppData\Roaming\com.lanchat.app
-        // Linux: /home/用户名/.local/share/com.lanchat.app
-        // macOS: /Users/用户名/Library/Application Support/com.lanchat.app
+        // Windows: C:\Users\用户名\AppData\Roaming\com.xchat.app
+        // Linux: /home/用户名/.local/share/com.xchat.app
+        // macOS: /Users/用户名/Library/Application Support/com.xchat.app
         dirs::data_dir()
-            .map(|p| p.join("com.lanchat.app"))
+            .map(|p| p.join("com.xchat.app"))
             .unwrap_or_else(|| {
                 // 如果实在拿不到系统路径（极罕见），回退到当前目录下的 data 文件夹
                 eprintln!("[DB] 无法获取系统数据目录，回退到本地路径");
@@ -278,7 +278,7 @@ async fn init_db_with_path(app_dir: PathBuf) -> Result<Pool<Sqlite>, sqlx::Error
         std::fs::create_dir_all(&app_dir).unwrap();
     }
 
-    let db_path = app_dir.join("lanchat.db");
+    let db_path = app_dir.join("xchat.db");
     let db_url = format!("sqlite:{}", db_path.to_str().unwrap());
 
     // 检查文件是否存在，如果不存在，手动创建空文件
@@ -508,14 +508,14 @@ async fn init_db_with_path(app_dir: PathBuf) -> Result<Pool<Sqlite>, sqlx::Error
             .execute(&pool)
             .await?;
 
-        // 初始保存路径 - 统一使用 ~/Downloads/LANChat
+        // 初始保存路径 - 统一使用 ~/Downloads/Xchat
         let download_dir = if cfg!(target_os = "android") {
-            "/storage/emulated/0/Download/LANChat".to_string()
+            "/storage/emulated/0/Download/Xchat".to_string()
         } else {
             let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
             home_dir
                 .join("Downloads")
-                .join("LANChat")
+                .join("Xchat")
                 .to_string_lossy()
                 .to_string()
         };
@@ -1022,7 +1022,10 @@ pub async fn save_or_update_user(
             addr = excluded.addr,
             last_seen = excluded.last_seen,
             is_offline = excluded.is_offline,
-            available_memory_mb = excluded.available_memory_mb",
+            available_memory_mb = CASE
+                WHEN excluded.available_memory_mb > 0 THEN excluded.available_memory_mb
+                ELSE users.available_memory_mb
+            END",
     )
     .bind(&id)
     .bind(&name)
@@ -3143,7 +3146,7 @@ mod tests {
     async fn migrates_old_database_and_persists_new_state_idempotently() {
         let app_dir = std::env::temp_dir().join(format!("xchat-db-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&app_dir).unwrap();
-        let db_path = app_dir.join("lanchat.db");
+        let db_path = app_dir.join("xchat.db");
         std::fs::File::create(&db_path).unwrap();
         let db_url = format!("sqlite:{}", db_path.to_string_lossy());
         let old_pool = SqlitePool::connect(&db_url).await.unwrap();
@@ -3484,7 +3487,18 @@ mod tests {
         )
         .await
         .unwrap();
+        save_or_update_user(
+            &pool,
+            "peer-a".into(),
+            "Renamed".into(),
+            "127.0.0.1:9999".into(),
+            false,
+            0,
+        )
+        .await
+        .unwrap();
         let peer = get_user_metadata(&pool, "peer-a").await.unwrap().unwrap();
+        assert_eq!(peer.available_memory_mb, 42);
         assert_eq!(peer.hostname.as_deref(), Some("peer-host"));
 
         pool.close().await;

@@ -276,6 +276,41 @@ description = "Allows revealing a file resolved from a stored message ID"
 commands.allow = ["reveal_workspace_file"]
 
 [[permission]]
-identifier = "allow-capture-screenshot"
-description = "Allows invoking the native screenshot flow"
-commands.allow = ["capture_screenshot"]
+identifier = "allow-start-capture-editor"
+description = "Allows starting the native screenshot editor flow"
+commands.allow = ["start_capture_editor"]
+
+[[permission]]
+identifier = "allow-get-pending-capture"
+description = "Allows a capture window to read its pending image"
+commands.allow = ["get_pending_capture"]
+
+[[permission]]
+identifier = "allow-finish-capture-editor"
+description = "Allows exporting the edited screenshot to managed storage"
+commands.allow = ["finish_capture_editor"]
+
+[[permission]]
+identifier = "allow-cancel-capture-editor"
+description = "Allows cancelling and cleaning up the pending screenshot"
+commands.allow = ["cancel_capture_editor"]
+
+[[permission]]
+identifier = "allow-pin-capture"
+description = "Allows replacing the singleton pinned screenshot window"
+commands.allow = ["pin_capture"]
+
+[[permission]]
+identifier = "allow-stage-image-attachment"
+description = "Allows staging a PNG draft in managed application storage"
+commands.allow = ["stage_image_attachment"]
+
+[[permission]]
+identifier = "allow-discard-staged-attachment"
+description = "Allows deleting a staged image only from managed storage"
+commands.allow = ["discard_staged_attachment"]
+
+[[permission]]
+identifier = "allow-read-workspace-media"
+description = "Allows reading image bytes resolved from a stored message ID"
+commands.allow = ["read_workspace_media"]

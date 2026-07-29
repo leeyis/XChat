@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   directConversationId,
+  fileKind,
   fileStatus,
+  localFileAvailable,
   matchesShortcut,
   mergeMessages,
   normalizeMessage,
@@ -117,4 +119,12 @@ test("web-only APIs are decided by the browser, not server platform flags", () =
 test("file status prefers transfer state and keeps completed outgoing files usable", () => {
   assert.equal(fileStatus({ status: "received", file_status: "accepted" }), "accepted");
   assert.equal(fileStatus({ status: "completed", file_status: "" }), "completed");
+});
+
+test("file classification and availability use backend metadata when present", () => {
+  assert.equal(fileKind({ file_name: "capture.PNG" }), "image");
+  assert.equal(fileKind({ file_name: "notes.md" }), "document");
+  assert.equal(fileKind({ mime_type: "video/mp4" }), "video");
+  assert.equal(localFileAvailable({ file_status: "completed", local_available: false }), false);
+  assert.equal(localFileAvailable({ file_status: "removed" }), false);
 });

@@ -128,6 +128,7 @@ pub struct WorkspaceMessage {
     pub file_path: Option<String>,
     pub file_size: i64,
     pub file_status: Option<String>,
+    pub local_available: bool,
     pub sender_msg_id: Option<String>,
     pub sender_addr: Option<String>,
     pub direction: String,
@@ -307,6 +308,7 @@ async fn message_view(
         }
     }
     let is_file = message.msg_type == "file";
+    let local_available = is_file && trusted_file_path(pool, message.id).await.is_ok();
     Ok(WorkspaceMessage {
         id: message.id,
         message_id: message.id,
@@ -330,6 +332,7 @@ async fn message_view(
         file_path: message.file_path,
         file_size: message.file_size.unwrap_or(0),
         file_status: message.file_status,
+        local_available,
         sender_msg_id: message.sender_msg_id,
         sender_id: message.sender_id,
         delivered_count,

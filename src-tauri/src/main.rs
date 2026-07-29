@@ -19,6 +19,14 @@ struct Args {
     db_path: Option<String>,
 }
 
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 fn main() {
     // Workaround: WebKitGTK DMABUF renderer + NVIDIA + Wayland 导致
     // Gdk-Message: Error 71 (protocol error) dispatching to Wayland display.
@@ -34,11 +42,7 @@ fn main() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 当尝试启动第二个实例时，显示已存在的窗口
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-                let _ = window.unminimize();
-            }
+            show_main_window(app);
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
@@ -49,7 +53,7 @@ fn main() {
     #[cfg(any(target_os = "macos", target_os = "android"))]
     let builder = builder.plugin(tauri_plugin_notification::init());
 
-    builder
+    let app = builder
         .invoke_handler(tauri::generate_handler![
             lanchat::commands::close_android_fd,
             lanchat::commands::get_my_name,
@@ -113,7 +117,14 @@ fn main() {
             lanchat::commands::delete_local_file,
             lanchat::commands::open_workspace_file,
             lanchat::commands::reveal_workspace_file,
-            lanchat::commands::capture_screenshot,
+            lanchat::commands::start_capture_editor,
+            lanchat::commands::get_pending_capture,
+            lanchat::commands::finish_capture_editor,
+            lanchat::commands::cancel_capture_editor,
+            lanchat::commands::pin_capture,
+            lanchat::commands::stage_image_attachment,
+            lanchat::commands::discard_staged_attachment,
+            lanchat::commands::read_workspace_media,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -199,13 +210,10 @@ fn main() {
             let _tray = TrayIconBuilder::with_id("main")
                 .menu(&menu)
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("LANChat")
+                .tooltip("Xchat")
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
+                        show_main_window(app);
                         let _ = app.emit("open-latest-unread", ());
                     }
                     "toggle_notif" => {
@@ -242,10 +250,7 @@ fn main() {
                             && button_state == tauri::tray::MouseButtonState::Up
                         {
                             let app = tray.app_handle();
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
+                            show_main_window(app);
                             let _ = app.emit("open-latest-unread", ());
                         }
                     }
@@ -301,6 +306,15 @@ fn main() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("error while running tauri application");
+
+    app.run(|app, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = event {
+            show_main_window(app);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (app, event);
+    });
 }

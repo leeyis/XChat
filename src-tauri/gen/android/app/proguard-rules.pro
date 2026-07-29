@@ -5,10 +5,10 @@
 # For more details, see
 #   http://developer.android.com/guide/developing/tools/proguard.html
 
-# ── LANChat JNI & SAF Custom Picker ProGuard Rules ──
+# ── Xchat JNI & SAF Custom Picker ProGuard Rules ──
 
 # 保留 MainActivity 完整类结构（含 external fun 和 JNI 反射调用的方法）
--keep class com.lanchat.app.MainActivity { *; }
+-keep class com.xchat.app.MainActivity { *; }
 
 # 保留所有 native 方法声明（防止 JNI 外部函数被 R8 裁剪）
 -keepclasseswithmembernames class * { native <methods>; }
@@ -28,7 +28,7 @@
 -keep class app.tauri.plugin.notification.** { *; }
 
 # ── FdContentProvider 保护（零拷贝跨进程分享 JNI）──
--keep class com.lanchat.app.FdContentProvider { *; }
--keepclassmembers class com.lanchat.app.FdContentProvider {
+-keep class com.xchat.app.FdContentProvider { *; }
+-keepclassmembers class com.xchat.app.FdContentProvider {
     native <methods>;
 }

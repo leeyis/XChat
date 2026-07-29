@@ -1,4 +1,4 @@
-package com.lanchat.app
+package com.xchat.app
 
 import android.content.ContentProvider
 import android.content.ContentValues
@@ -24,7 +24,7 @@ class FdContentProvider : ContentProvider() {
 
     /**
      * 第三方 App 读取文件时触发。
-     * URI 格式: content://com.lanchat.app.fdprovider/{msg_id}/{file_name}
+     * URI 格式: content://com.xchat.app.fdprovider/{msg_id}/{file_name}
      */
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? {
         val msgIdStr = uri.pathSegments.firstOrNull()
@@ -45,7 +45,7 @@ class FdContentProvider : ContentProvider() {
     }
 
     /**
-     * 其他 App（包括 LANChat 自己）查询文件元数据时触发。
+     * 其他 App（包括 Xchat 自己）查询文件元数据时触发。
      * 从 Rust FD 缓存获取真实文件名和大小。
      */
     override fun query(

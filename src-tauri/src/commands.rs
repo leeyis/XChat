@@ -867,7 +867,7 @@ pub async fn get_theme_list() -> Result<Vec<serde_json::Value>, String> {
 
     // 检查自定义主题目录
     let home_dir = dirs::home_dir().ok_or("无法获取用户主目录")?;
-    let theme_dir = home_dir.join(".config").join("lanchat");
+    let theme_dir = home_dir.join(".config").join("xchat");
 
     if theme_dir.exists() {
         if let Ok(entries) = std::fs::read_dir(&theme_dir) {
@@ -915,7 +915,7 @@ pub async fn get_theme_css(theme_name: String) -> Result<String, String> {
     let home_dir = dirs::home_dir().ok_or("无法获取用户主目录")?;
     let theme_path = home_dir
         .join(".config")
-        .join("lanchat")
+        .join("xchat")
         .join(format!("{}.css", theme_name));
 
     if !theme_path.exists() {
@@ -958,13 +958,13 @@ pub async fn get_current_theme(state: State<'_, DbState>) -> Result<String, Stri
 pub async fn get_default_download_path() -> Result<String, String> {
     if cfg!(target_os = "android") {
         // Android 的公共下载目录
-        let download_path = "/storage/emulated/0/Download/LANChat";
+        let download_path = "/storage/emulated/0/Download/Xchat";
         println!("[Command] Android 默认下载路径: {}", download_path);
         Ok(download_path.to_string())
     } else {
         // 桌面端和 Web 端返回用户下载目录
         let home_dir = dirs::home_dir().ok_or("无法获取用户主目录")?;
-        let download_path = home_dir.join("Downloads").join("LANChat");
+        let download_path = home_dir.join("Downloads").join("Xchat");
         println!("[Command] 默认下载路径: {}", download_path.display());
         Ok(download_path.to_string_lossy().to_string())
     }
@@ -1420,7 +1420,7 @@ pub async fn share_file_to_other_app(
         // 从 FD 缓存中获取文件名，让第三方 App 能识别文件类型
         let file_name = crate::android_fd::get_cached_file_name(msg_id_i64)
             .unwrap_or_else(|| "file".to_string());
-        format!("content://com.lanchat.app.fdprovider/{msg_id}/{file_name}")
+        format!("content://com.xchat.app.fdprovider/{msg_id}/{file_name}")
     } else {
         filePath.clone()
     };
@@ -1827,14 +1827,14 @@ pub fn show_notification(_app: tauri::AppHandle, title: String, body: String, #[
 /// 清除某个用户的所有通知（按 from_id）
 #[tauri::command]
 pub fn clear_notification(_app: tauri::AppHandle, #[allow(unused_variables)] from_id: String) {
-    #[cfg(any(target_os = "macos", target_os = "android"))]
+    #[cfg(target_os = "android")]
     {
         if from_id.is_empty() { return; }
         use tauri_plugin_notification::NotificationExt;
         let notif_id = get_notification_id(&from_id);
         let _ = _app.notification().cancel(vec![notif_id]);
     }
-    // Windows/Linux 没有统一的系统通知栏管理，不做处理
+    // 桌面端通知插件不支持按 ID 清除，不做处理
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1918,42 +1918,65 @@ pub fn stop_tray_flash(#[allow(unused_variables)] state: State<'_, TrayFlashStat
 }
 
 #[tauri::command]
-pub async fn capture_screenshot() -> Result<serde_json::Value, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let capture_dir = std::env::temp_dir().join("xchat-captures");
-        std::fs::create_dir_all(&capture_dir)
-            .map_err(|error| format!("创建截图缓存目录失败: {error}"))?;
-        let path = capture_dir.join(format!("{}.png", uuid::Uuid::new_v4()));
-        let command_path = path.clone();
-        let status = tokio::task::spawn_blocking(move || {
-            std::process::Command::new("/usr/sbin/screencapture")
-                .args(["-i", "-s", "-x"])
-                .arg(&command_path)
-                .status()
-        })
-        .await
-        .map_err(|error| format!("启动系统截图失败: {error}"))?
-        .map_err(|error| format!("启动系统截图失败: {error}"))?;
+pub async fn start_capture_editor(
+    app: AppHandle,
+    conversation_id: String,
+) -> Result<crate::capture_editor::CaptureSessionSummary, String> {
+    crate::capture_editor::start(&app, conversation_id).await
+}
 
-        let size = std::fs::metadata(&path)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
-        if !status.success() || size == 0 {
-            let _ = std::fs::remove_file(&path);
-            return Err("capture_cancelled".to_string());
-        }
+#[tauri::command]
+pub async fn get_pending_capture(
+    window: tauri::WebviewWindow,
+) -> Result<crate::capture_editor::PendingCapture, String> {
+    crate::capture_editor::pending_for_window(window.label()).await
+}
 
-        return Ok(serde_json::json!({
-            "path": path.to_string_lossy(),
-            "name": path.file_name().and_then(|name| name.to_str()).unwrap_or("capture.png"),
-            "size": size,
-            "mime_type": "image/png",
-        }));
-    }
+#[tauri::command]
+pub async fn finish_capture_editor(
+    app: AppHandle,
+    data_url: String,
+) -> Result<crate::capture_editor::ManagedAttachment, String> {
+    crate::capture_editor::finish(&app, data_url).await
+}
 
-    #[cfg(not(target_os = "macos"))]
-    Err("capture_unsupported".to_string())
+#[tauri::command]
+pub fn cancel_capture_editor(app: AppHandle) -> Result<(), String> {
+    crate::capture_editor::cancel(&app)
+}
+
+#[tauri::command]
+pub async fn pin_capture(
+    app: AppHandle,
+    data_url: String,
+) -> Result<crate::capture_editor::CaptureSessionSummary, String> {
+    crate::capture_editor::pin(&app, data_url).await
+}
+
+#[tauri::command]
+pub async fn stage_image_attachment(
+    app: AppHandle,
+    data_url: String,
+    file_name: Option<String>,
+) -> Result<crate::capture_editor::ManagedAttachment, String> {
+    crate::capture_editor::stage_image(&app, data_url, file_name).await
+}
+
+#[tauri::command]
+pub async fn discard_staged_attachment(
+    app: AppHandle,
+    file_path: String,
+) -> Result<(), String> {
+    crate::capture_editor::discard_staged(&app, file_path).await
+}
+
+#[tauri::command]
+pub async fn read_workspace_media(
+    state: State<'_, DbState>,
+    message_id: i64,
+) -> Result<crate::capture_editor::WorkspaceMedia, String> {
+    let path = crate::workspace::trusted_file_path(&state.pool, message_id).await?;
+    crate::capture_editor::read_workspace_image(&path).await
 }
 
 #[tauri::command]

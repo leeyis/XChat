@@ -20,7 +20,36 @@ const EVENT_NAMES = [
   "receipt.changed",
   "transfer.changed",
   "settings.changed",
+  "capture-finished",
+  "capture.finished",
+  "capture-ready",
 ];
+
+const IMAGE_EXTENSIONS = new Set([
+  "avif",
+  "bmp",
+  "gif",
+  "jpeg",
+  "jpg",
+  "png",
+  "webp",
+]);
+const DOCUMENT_EXTENSIONS = new Set([
+  "csv",
+  "doc",
+  "docx",
+  "json",
+  "md",
+  "pdf",
+  "ppt",
+  "pptx",
+  "rtf",
+  "txt",
+  "xls",
+  "xlsx",
+]);
+const AUDIO_EXTENSIONS = new Set(["aac", "flac", "m4a", "mp3", "ogg", "wav"]);
+const VIDEO_EXTENSIONS = new Set(["avi", "mkv", "mov", "mp4", "webm"]);
 
 class TransportError extends Error {
   constructor(message, code = "transport_error", status = 0, retryable = true) {
@@ -197,6 +226,9 @@ export function normalizeMessage(raw = {}, selfId = "", conversationId = "") {
     file_path: raw.file_path ?? "",
     file_size: Number(raw.file_size ?? raw.bytes_total ?? 0),
     file_status: raw.file_status ?? "",
+    mime_type: raw.mime_type ?? raw.content_type ?? "",
+    local_available:
+      raw.local_available ?? raw.local_exists ?? raw.file_available ?? undefined,
     delivered_count: Number(raw.delivered_count ?? 0),
     read_count: Number(raw.read_count ?? 0),
     recipient_count: Number(raw.recipient_count ?? 0),
@@ -205,6 +237,97 @@ export function normalizeMessage(raw = {}, selfId = "", conversationId = "") {
 
 export function fileStatus(file = {}) {
   return file.file_status || file.status || "";
+}
+
+function fileExtension(file = {}) {
+  const name = file.file_name ?? file.name ?? file.content ?? "";
+  return String(name).split(".").pop()?.toLocaleLowerCase() || "";
+}
+
+export function fileKind(file = {}) {
+  const mime = String(file.mime_type ?? file.type ?? "").toLocaleLowerCase();
+  if (mime.startsWith("image/") || IMAGE_EXTENSIONS.has(fileExtension(file))) return "image";
+  if (mime.startsWith("audio/") || AUDIO_EXTENSIONS.has(fileExtension(file))) return "audio";
+  if (mime.startsWith("video/") || VIDEO_EXTENSIONS.has(fileExtension(file))) return "video";
+  if (DOCUMENT_EXTENSIONS.has(fileExtension(file))) return "document";
+  return "other";
+}
+
+export function isImageFile(file = {}) {
+  return fileKind(file) === "image";
+}
+
+export function localFileAvailable(file = {}) {
+  const explicit =
+    file.local_available ?? file.local_exists ?? file.file_available;
+  if (explicit !== undefined && explicit !== null) return Boolean(explicit);
+  return !["invalid", "removed"].includes(fileStatus(file));
+}
+
+function draftId() {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}:${Math.random()}`;
+}
+
+function draftName(source, fallback = "attachment") {
+  if (typeof source === "string") return source.split(/[\\/]/).pop() || fallback;
+  return source?.file_name ?? source?.name ?? fallback;
+}
+
+function normalizeDraftAttachment(source = {}, extra = {}) {
+  const path = typeof source === "string" ? source : source.path ?? source.file_path ?? "";
+  const file = typeof File !== "undefined" && source instanceof File ? source : source.file;
+  const name = extra.file_name ?? extra.name ?? draftName(source);
+  return {
+    ...source,
+    ...extra,
+    id: extra.id ?? source.id ?? draftId(),
+    file_name: name,
+    name,
+    file_size: Number(extra.file_size ?? source.file_size ?? source.size ?? file?.size ?? 0),
+    mime_type: extra.mime_type ?? source.mime_type ?? source.type ?? file?.type ?? "",
+    path: extra.path ?? extra.file_path ?? path,
+    file_path: extra.file_path ?? extra.path ?? path,
+    file: file ?? (typeof source === "object" && source?.arrayBuffer ? source : undefined),
+  };
+}
+
+function dataUrlFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error("Unable to read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function pngDataUrlFromFile(file) {
+  if (file.type === "image/png") return dataUrlFromFile(file);
+  const bitmap = await createImageBitmap(file);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext("2d").drawImage(bitmap, 0, 0);
+  bitmap.close();
+  return canvas.toDataURL("image/png");
+}
+
+function bytesDataUrl(bytes, mimeType) {
+  let binary = "";
+  const value = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  for (let index = 0; index < value.length; index += 0x8000) {
+    binary += String.fromCharCode(...value.subarray(index, index + 0x8000));
+  }
+  return `data:${mimeType};base64,${btoa(binary)}`;
+}
+
+function imageMime(file) {
+  const extension = fileExtension(file);
+  if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
+  if (extension === "gif") return "image/gif";
+  if (extension === "webp") return "image/webp";
+  if (extension === "bmp") return "image/bmp";
+  if (extension === "avif") return "image/avif";
+  return "image/png";
 }
 
 function messageKey(message) {
@@ -463,7 +586,11 @@ class TauriAdapter {
   }
 
   async sendFiles(conversation, files = []) {
-    let paths = files.filter((file) => typeof file === "string");
+    let paths = files
+      .map((file) =>
+        typeof file === "string" ? file : file.path ?? file.file_path ?? "",
+      )
+      .filter(Boolean);
     if (!paths.length) {
       if (!this.tauri.dialog?.open) {
         throw new TransportError(
@@ -490,6 +617,83 @@ class TauriAdapter {
       );
     }
     return results;
+  }
+
+  async pickFiles() {
+    if (!this.tauri.dialog?.open) {
+      throw new TransportError(
+        uiCopy("系统文件选择器不可用", "The system file picker is unavailable"),
+        "file_picker_unavailable",
+        0,
+        false,
+      );
+    }
+    const selected = await this.tauri.dialog.open({
+      multiple: true,
+      title: uiCopy("选择要发送的文件", "Choose files to send"),
+    });
+    if (!selected) return [];
+    const attachments = [];
+    for (const path of Array.isArray(selected) ? selected : [selected]) {
+      const attachment = normalizeDraftAttachment(path);
+      if (isImageFile(attachment) && this.tauri.fs?.readFile) {
+        try {
+          attachment.preview_url = bytesDataUrl(
+            await this.tauri.fs.readFile(path),
+            imageMime(attachment),
+          );
+        } catch {
+          // Preview is optional; sending still uses the user-selected path.
+        }
+      }
+      attachments.push(attachment);
+    }
+    return attachments;
+  }
+
+  async stageImage(file) {
+    const dataUrl = await pngDataUrlFromFile(file);
+    const result = await this.invoke("stage_image_attachment", {
+      dataUrl,
+      fileName: `${(file.name || `Xchat-${Date.now()}`).replace(/\.[^.]+$/, "")}.png`,
+    });
+    return normalizeDraftAttachment(result, {
+      file_name: result?.file_name ?? file.name,
+      file_size: result?.file_size ?? file.size,
+      mime_type: result?.mime_type ?? file.type,
+      preview_url:
+        result?.data_url ||
+        result?.preview_url ||
+        dataUrl,
+    });
+  }
+
+  startCapture(conversationId) {
+    return this.invoke("start_capture_editor", { conversationId });
+  }
+
+  pendingCapture() {
+    return this.invoke("get_pending_capture");
+  }
+
+  finishCapture(dataUrl) {
+    return this.invoke("finish_capture_editor", { dataUrl });
+  }
+
+  cancelCapture() {
+    return this.invoke("cancel_capture_editor");
+  }
+
+  pinCapture(dataUrl) {
+    return this.invoke("pin_capture", { dataUrl });
+  }
+
+  readMessageMedia(messageId) {
+    return this.invoke("read_workspace_media", { messageId });
+  }
+
+  discardStagedAttachment(filePath) {
+    return this.invoke("discard_staged_attachment", { filePath });
   }
 
   markRead(conversationId, messageIds) {
@@ -564,23 +768,6 @@ class TauriAdapter {
     return this.invoke("reveal_workspace_file", {
       messageId: file.message_id ?? file.id,
     });
-  }
-
-  async capture() {
-    let result;
-    try {
-      result = await this.invoke("capture_screenshot");
-    } catch (error) {
-      if (/capture_cancelled/i.test(errorText(error))) {
-        throw new TransportError(uiCopy("已取消截屏", "Capture cancelled"), "cancelled", 0, false);
-      }
-      throw error;
-    }
-    const path = result?.file_path ?? result?.path ?? (typeof result === "string" ? result : "");
-    if (!path || result?.cancelled) {
-      throw new TransportError(uiCopy("已取消截屏", "Capture cancelled"), "cancelled", 0, false);
-    }
-    return path;
   }
 
   async patchSettings(patch, current) {
@@ -757,9 +944,18 @@ class HttpWsAdapter {
 
   async sendFiles(conversation, files = []) {
     const results = [];
-    for (const file of files) {
+    for (const attachment of files) {
+      const file = attachment?.file ?? attachment;
+      if (!(file instanceof Blob)) {
+        throw new TransportError(
+          uiCopy("浏览器无法读取这个本地文件", "The browser cannot read this local file"),
+          "file_unavailable",
+          0,
+          false,
+        );
+      }
       const form = new FormData();
-      form.append("file", file, file.name);
+      form.append("file", file, attachment?.file_name ?? file.name);
       results.push(
         await this.request(
           `/api/conversations/${encodeURIComponent(conversation.id)}/files`,
@@ -768,6 +964,16 @@ class HttpWsAdapter {
       );
     }
     return results;
+  }
+
+  pickFiles() {
+    return [];
+  }
+
+  async stageImage(file) {
+    return normalizeDraftAttachment(file, {
+      preview_url: URL.createObjectURL(file),
+    });
   }
 
   markRead(conversationId, messageIds) {
@@ -885,7 +1091,7 @@ class HttpWsAdapter {
           "image/png",
         ),
       );
-      return new File([blob], `XChat-${Date.now()}.png`, { type: "image/png" });
+      return new File([blob], `Xchat-${Date.now()}.png`, { type: "image/png" });
     } catch (error) {
       if (error?.name === "NotAllowedError") {
         throw new TransportError(uiCopy("已取消截屏", "Capture cancelled"), "cancelled", 0, false);
@@ -895,6 +1101,68 @@ class HttpWsAdapter {
       stream?.getTracks().forEach((track) => track.stop());
     }
   }
+
+  async startCapture(conversationId) {
+    const file = await this.capture();
+    const dataUrl = await dataUrlFromFile(file);
+    storage.set(
+      "xchat.capture.pending",
+      JSON.stringify({
+        conversation_id: conversationId,
+        data_url: dataUrl,
+        file_name: file.name,
+        mime_type: file.type,
+      }),
+    );
+    globalThis.open(
+      `${location.pathname}?view=capture-editor`,
+      "xchat-capture-editor",
+      "popup,width=1100,height=760",
+    );
+    return { pending: true };
+  }
+
+  pendingCapture() {
+    try {
+      return JSON.parse(storage.get("xchat.capture.pending") || "null");
+    } catch {
+      return null;
+    }
+  }
+
+  async finishCapture(dataUrl) {
+    const pending = await this.pendingCapture();
+    const blob = await fetch(dataUrl).then((response) => response.blob());
+    const file = new File(
+      [blob],
+      pending?.file_name || `Xchat-${Date.now()}.png`,
+      { type: "image/png" },
+    );
+    storage.set("xchat.capture.pending", "");
+    return normalizeDraftAttachment(file, {
+      conversation_id: pending?.conversation_id,
+      preview_url: dataUrl,
+    });
+  }
+
+  cancelCapture() {
+    storage.set("xchat.capture.pending", "");
+  }
+
+  pinCapture(dataUrl) {
+    globalThis.open(dataUrl, "_blank", "popup");
+  }
+
+  async readMessageMedia(messageId) {
+    const response = await fetch(`/api/download/${encodeURIComponent(messageId)}`);
+    if (!response.ok) throw new TransportError(uiCopy("图片不可用", "Image unavailable"));
+    return {
+      blob: await response.blob(),
+      mime_type: response.headers.get("content-type") || "",
+    };
+  }
+
+  discardStagedAttachment() {}
 
   async patchSettings(patch, current) {
     if (patch.name !== undefined) {
@@ -1013,6 +1281,7 @@ function makeInitialSnapshot(runtime) {
     devices: [],
     files: [],
     transfers: [],
+    draftAttachments: {},
     searchResults: [],
     settings: normalizeSettings(),
     capabilities: runtimeCapabilities(runtime, {}, true),
@@ -1055,6 +1324,34 @@ export function createXChatModule() {
     patch({ notices: [...snapshot.notices.slice(-3), notice] });
     return notice.id;
   };
+
+  const updateDraft = (conversationId, change) => {
+    if (!conversationId) return [];
+    const current = snapshot.draftAttachments[conversationId] ?? [];
+    const next = typeof change === "function" ? change(current) : change;
+    patch({
+      draftAttachments: {
+        ...snapshot.draftAttachments,
+        [conversationId]: next,
+      },
+    });
+    return next;
+  };
+
+  const addDraftAttachments = (conversationId, attachments) =>
+    updateDraft(conversationId, (current) => {
+      const next = [...current];
+      for (const item of attachments.map((value) => normalizeDraftAttachment(value))) {
+        const duplicate = next.findIndex(
+          (existing) =>
+            (item.file_path && existing.file_path === item.file_path) ||
+            (item.id && existing.id === item.id),
+        );
+        if (duplicate >= 0) next[duplicate] = { ...next[duplicate], ...item };
+        else next.push(item);
+      }
+      return next;
+    });
 
   const attachPeers = (conversations, devices) =>
     conversations.map((conversation) => ({
@@ -1107,6 +1404,17 @@ export function createXChatModule() {
     }
     const payload = event.payload?.payload ?? event.payload;
     const eventType = String(event.type || "").replaceAll("_", ".");
+    if (
+      eventType.includes("capture.finished") ||
+      eventType.includes("capture.ready") ||
+      eventType.includes("capture-ready")
+    ) {
+      const conversationId = payload?.conversation_id ?? snapshot.activeConversationId;
+      if (payload?.file_path || payload?.path || payload?.file) {
+        addDraftAttachments(conversationId, [payload]);
+      }
+      return;
+    }
     if (
       (eventType.includes("message") || payload?.from_id || payload?.conversation_id) &&
       payload?.content !== undefined
@@ -1338,7 +1646,76 @@ export function createXChatModule() {
         scheduleRefresh();
         return result;
       }
-      case "message.sendCapture": {
+      case "draft.pickFiles": {
+        const conversation = activeConversation();
+        if (!conversation) return [];
+        const files = await adapter.pickFiles();
+        addDraftAttachments(conversation.id, files);
+        return files;
+      }
+      case "draft.addFiles": {
+        const conversationId = action.conversationId ?? snapshot.activeConversationId;
+        if (!conversationId) return [];
+        const attachments = [];
+        for (const file of action.files ?? []) {
+          if (typeof file === "string" || file?.path || file?.file_path) {
+            attachments.push(normalizeDraftAttachment(file));
+          } else if (file instanceof Blob) {
+            if (adapter.runtime === "tauri" && !isImageFile(file)) {
+              throw new TransportError(
+                uiCopy(
+                  "拖入的普通文件无法读取路径，请使用附件按钮选择",
+                  "Use the attachment button to choose this file",
+                ),
+                "file_path_unavailable",
+                0,
+                false,
+              );
+            }
+            const staged = await adapter.stageImage(file);
+            attachments.push({
+              ...staged,
+              file: staged.file ?? file,
+              managed: adapter.runtime === "tauri",
+            });
+          }
+        }
+        addDraftAttachments(conversationId, attachments);
+        return attachments;
+      }
+      case "draft.addManaged": {
+        const conversationId =
+          action.attachment?.conversation_id ??
+          action.conversationId ??
+          snapshot.activeConversationId;
+        const attachment = {
+          ...action.attachment,
+          managed: Boolean(action.attachment?.file_path || action.attachment?.path),
+        };
+        addDraftAttachments(conversationId, [attachment]);
+        return attachment;
+      }
+      case "draft.remove": {
+        const conversationId = action.conversationId ?? snapshot.activeConversationId;
+        const current = snapshot.draftAttachments[conversationId] ?? [];
+        const attachment = current.find((item) => item.id === action.id);
+        if (attachment?.managed && (attachment.file_path || attachment.path)) {
+          await adapter
+            .discardStagedAttachment?.(attachment.file_path || attachment.path)
+            .catch(() => {});
+        }
+        updateDraft(
+          conversationId,
+          current.filter((item) => item.id !== action.id),
+        );
+        return;
+      }
+      case "draft.sent":
+        updateDraft(action.conversationId ?? snapshot.activeConversationId, (current) =>
+          current.filter((item) => item.id !== action.id),
+        );
+        return;
+      case "capture.start": {
         const conversation = activeConversation();
         if (!conversation || !snapshot.capabilities.capture) {
           throw new TransportError(
@@ -1348,11 +1725,18 @@ export function createXChatModule() {
             false,
           );
         }
-        const capture = await adapter.capture();
-        const result = await adapter.sendFiles(conversation, [capture]);
-        scheduleRefresh();
-        return result;
+        return adapter.startCapture(conversation.id);
       }
+      case "capture.pending":
+        return adapter.pendingCapture();
+      case "capture.finish":
+        return adapter.finishCapture(action.dataUrl);
+      case "capture.cancel":
+        return adapter.cancelCapture();
+      case "capture.pin":
+        return adapter.pinCapture(action.dataUrl);
+      case "media.readMessage":
+        return adapter.readMessageMedia(action.messageId);
       case "message.markRead":
         return markVisibleRead(action.conversationId);
       case "message.search": {
@@ -1439,7 +1823,7 @@ export function createXChatModule() {
         clearTimeout(refreshTimer);
         return;
       default:
-        throw new Error(`Unknown XChat action: ${action.type}`);
+        throw new Error(`Unknown Xchat action: ${action.type}`);
     }
   };
 

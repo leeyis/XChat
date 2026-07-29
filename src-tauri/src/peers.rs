@@ -123,7 +123,9 @@ impl PeerManager {
             peer.addr = addr;
             peer.last_seen = now;
             peer.is_offline = false;
-            peer.available_memory_mb = available_memory_mb;
+            if available_memory_mb > 0 {
+                peer.available_memory_mb = available_memory_mb;
+            }
             if hostname.is_some() {
                 peer.hostname = hostname;
             }
@@ -141,7 +143,7 @@ impl PeerManager {
             if was_offline {
                 println!(
                     "[PeerManager] 用户重新上线: {} ({}) - 可用内存: {} MB",
-                    peer.name, peer.id, available_memory_mb
+                    peer.name, peer.id, peer.available_memory_mb
                 );
                 return true; // 重新上线，返回 true
             }
@@ -248,10 +250,11 @@ mod tests {
             "peer-1".into(),
             "Alice".into(),
             "127.0.0.1:8888".into(),
-            512,
+            0,
         );
 
         let peer = manager.get_all_peers().pop().unwrap();
+        assert_eq!(peer.available_memory_mb, 512);
         assert_eq!(peer.hostname.as_deref(), Some("alice-mac"));
         assert_eq!(peer.mac_address.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
         assert_eq!(peer.capabilities, vec!["groups_v1"]);

@@ -18,14 +18,14 @@ impl Default for Config {
 }
 
 /// 配置文件路径（平台标准配置目录下）
-/// Linux:   ~/.config/lanchat/config.json
-/// macOS:   ~/Library/Application Support/lanchat/config.json
-/// Windows: %APPDATA%\lanchat\config.json
-/// Android: /data/data/com.lanchat.app/.config/lanchat/config.json
+/// Linux:   ~/.config/xchat/config.json
+/// macOS:   ~/Library/Application Support/xchat/config.json
+/// Windows: %APPDATA%\xchat\config.json
+/// Android: /data/data/com.xchat.app/.config/xchat/config.json
 fn config_path() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".config"))
-        .join("lanchat")
+        .join("xchat")
         .join("config.json")
 }
 
@@ -82,7 +82,7 @@ pub fn resolve_db_dir(stored: &str) -> PathBuf {
 /// 获取平台默认的数据库目录（Web 端）
 pub fn get_default_db_dir() -> PathBuf {
     dirs::data_dir()
-        .map(|p| p.join("com.lanchat.app"))
+        .map(|p| p.join("com.xchat.app"))
         .unwrap_or_else(|| PathBuf::from(".").join("data"))
 }
 
@@ -90,7 +90,7 @@ pub fn get_default_db_dir() -> PathBuf {
 /// 仅在桌面端调用，Web 端用 get_default_db_dir()
 pub fn get_default_db_path() -> String {
     get_default_db_dir()
-        .join("lanchat.db")
+        .join("xchat.db")
         .to_string_lossy()
         .to_string()
 }

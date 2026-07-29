@@ -149,7 +149,7 @@ pub fn get_cached_file_name(msg_id: i64) -> Option<String> {
 /// JNI 导出：供 FdContentProvider 调用，获取克隆的 FD
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "system" fn Java_com_lanchat_app_FdContentProvider_nativeGetClonedFd(
+pub extern "system" fn Java_com_xchat_app_FdContentProvider_nativeGetClonedFd(
     _env: jni::JNIEnv,
     _class: jni::objects::JClass,
     msg_id: jni::sys::jlong,
@@ -163,7 +163,7 @@ pub extern "system" fn Java_com_lanchat_app_FdContentProvider_nativeGetClonedFd(
 /// 供 Kotlin 端 ContentProvider 查询文件大小
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "system" fn Java_com_lanchat_app_FdContentProvider_nativeGetFileSize(
+pub extern "system" fn Java_com_xchat_app_FdContentProvider_nativeGetFileSize(
     mut _env: jni::JNIEnv,
     _class: jni::objects::JClass,
     msg_id: jni::sys::jlong,
@@ -622,10 +622,10 @@ impl AndroidFile {
 }
 
 /// JNI 导出：供 Kotlin 在选完文件并提取持久化权限后回调
-/// 函数名必须严格匹配 Kotlin 的包名: com_lanchat_app_MainActivity_nativeOnSafFileSelected
+/// 函数名必须严格匹配 Kotlin 的包名: com_xchat_app_MainActivity_nativeOnSafFileSelected
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "system" fn Java_com_lanchat_app_MainActivity_nativeOnSafFileSelected(
+pub extern "system" fn Java_com_xchat_app_MainActivity_nativeOnSafFileSelected(
     mut env: jni::JNIEnv,
     _activity: jni::objects::JObject,
     uri: jni::objects::JString,

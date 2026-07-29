@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "LANChat",
-  "version": "0.1.5",
-  "identifier": "com.lanchat.app", 
+  "productName": "Xchat",
+  "version": "0.1.0",
+  "identifier": "com.xchat.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
@@ -14,7 +14,7 @@
     "windows": [
       {
 				"label": "main",
-        "title": "XChat",
+        "title": "Xchat",
         "width": 1280,
         "height": 800,
         "minWidth": 860,

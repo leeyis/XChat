@@ -1,6 +1,8 @@
 // lib.rs
 #[cfg(feature = "desktop")]
 pub mod commands;
+#[cfg(feature = "desktop")]
+pub mod capture_editor;
 
 #[cfg(feature = "desktop")]
 use std::sync::OnceLock;
@@ -100,7 +102,14 @@ pub fn run() {
             commands::delete_local_file,
             commands::open_workspace_file,
             commands::reveal_workspace_file,
-            commands::capture_screenshot,
+            commands::start_capture_editor,
+            commands::get_pending_capture,
+            commands::finish_capture_editor,
+            commands::cancel_capture_editor,
+            commands::pin_capture,
+            commands::stage_image_attachment,
+            commands::discard_staged_attachment,
+            commands::read_workspace_media,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
