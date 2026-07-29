@@ -184,3 +184,98 @@ commands.allow = ["set_language"]
 identifier = "allow-request-permission-on-android"
 description = "Allows requesting Android notification permission"
 commands.allow = ["request_permission_on_android"]
+
+[[permission]]
+identifier = "allow-get-workspace-snapshot"
+description = "Allows reading the React workspace snapshot"
+commands.allow = ["get_workspace_snapshot"]
+
+[[permission]]
+identifier = "allow-update-workspace-preference"
+description = "Allows updating whitelisted React workspace preferences"
+commands.allow = ["update_workspace_preference"]
+
+[[permission]]
+identifier = "allow-create-group"
+description = "Allows creating a group conversation"
+commands.allow = ["create_group"]
+
+[[permission]]
+identifier = "allow-send-conversation-message"
+description = "Allows sending a message to a conversation"
+commands.allow = ["send_conversation_message"]
+
+[[permission]]
+identifier = "allow-send-conversation-file"
+description = "Allows sending a file to a conversation"
+commands.allow = ["send_conversation_file"]
+
+[[permission]]
+identifier = "allow-retry-conversation-file"
+description = "Allows retrying a failed conversation file without creating a duplicate message"
+commands.allow = ["retry_conversation_file"]
+
+[[permission]]
+identifier = "allow-get-conversation-messages"
+description = "Allows reading conversation messages"
+commands.allow = ["get_conversation_messages"]
+
+[[permission]]
+identifier = "allow-mark-messages-read"
+description = "Allows marking conversation messages as read"
+commands.allow = ["mark_messages_read"]
+
+[[permission]]
+identifier = "allow-search-workspace-messages"
+description = "Allows searching workspace messages"
+commands.allow = ["search_workspace_messages"]
+
+[[permission]]
+identifier = "allow-update-conversation-state"
+description = "Allows updating pinned, unread, and draft conversation state"
+commands.allow = ["update_conversation_state"]
+
+[[permission]]
+identifier = "allow-clear-conversation-history"
+description = "Allows clearing local history for a direct or group conversation"
+commands.allow = ["clear_conversation_history"]
+
+[[permission]]
+identifier = "allow-get-file-center"
+description = "Allows reading the file center"
+commands.allow = ["get_file_center"]
+
+[[permission]]
+identifier = "allow-get-transfers"
+description = "Allows reading file transfer state"
+commands.allow = ["get_transfers"]
+
+[[permission]]
+identifier = "allow-cancel-transfer"
+description = "Allows cancelling a file transfer"
+commands.allow = ["cancel_transfer"]
+
+[[permission]]
+identifier = "allow-update-device-metadata"
+description = "Allows updating local metadata for a discovered device"
+commands.allow = ["update_device_metadata"]
+
+[[permission]]
+identifier = "allow-delete-local-file"
+description = "Allows deleting a received local file"
+commands.allow = ["delete_local_file"]
+
+[[permission]]
+identifier = "allow-open-workspace-file"
+description = "Allows opening a file resolved from a stored message ID"
+commands.allow = ["open_workspace_file"]
+
+[[permission]]
+identifier = "allow-reveal-workspace-file"
+description = "Allows revealing a file resolved from a stored message ID"
+commands.allow = ["reveal_workspace_file"]
+
+[[permission]]
+identifier = "allow-capture-screenshot"
+description = "Allows invoking the native screenshot flow"
+commands.allow = ["capture_screenshot"]

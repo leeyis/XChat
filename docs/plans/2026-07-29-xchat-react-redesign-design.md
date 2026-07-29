@@ -1,7 +1,7 @@
 # XChat React 全量重构设计
 
 - 日期：2026-07-29
-- 状态：设计已批准，等待书面规格复核
+- 状态：规格已确认，按方案 A 实施中
 - 视觉来源：`ui-ref/DESIGN.md`、`ui-ref/SKILL.md`、`ui-ref/xchat-desktop-prototype.html`
 - 目标运行时：Tauri 2 桌面应用与 `lanchat-web` Web 应用
 
@@ -480,7 +480,7 @@ rtk npm test
 rtk cargo test --manifest-path src-tauri/Cargo.toml --lib
 rtk cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features desktop --lib
 rtk cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features web --bin lanchat-web
-rtk cargo tauri dev -- --port 18888 --db-path /tmp/lanchat-agent
+rtk cargo tauri dev -- -- --port 18888 --db-path /tmp/lanchat-agent
 ```
 
 冒烟使用非默认端口和临时数据库目录，不污染真实应用数据。

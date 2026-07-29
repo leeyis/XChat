@@ -180,7 +180,8 @@ async fn upload_file_internal<R: tokio::io::AsyncRead + Unpin>(
         50 * 1024 * 1024,
         receiver_memory_mb as usize * 1024 * 1024 / 4,
     );
-    let adjusted_chunk_size = std::cmp::min(chunk_size, max_chunk_for_receiver);
+    let adjusted_chunk_size =
+        std::cmp::min(std::cmp::min(chunk_size, max_chunk_for_receiver), 4 * 1024 * 1024);
 
     println!(
         "[Command] 原始分块大小: {} MB, 调整后: {} MB",
@@ -1730,17 +1731,11 @@ pub async fn remove_custom_peer(state: tauri::State<'_, crate::db::DbState>, pee
 #[tauri::command]
 pub async fn request_file(
     state: tauri::State<'_, crate::db::DbState>,
-    sender_addr: String,
     sender_msg_id: i64,
+    message_id: Option<i64>,
 ) -> Result<(), String> {
-    println!("[手动下载] 桌面端接收端请求文件: msg_id={}, 发送端地址={}", sender_msg_id, sender_addr);
-    let my_id = crate::db::get_user_id(&state.pool).await?;
-    let req_msg = serde_json::json!({
-        "msg_type": "file_request",
-        "sender_msg_id": sender_msg_id,
-        "from_id": my_id,
-    });
-    crate::network::messaging::send_json_via_ws(&sender_addr, &req_msg.to_string()).await
+    println!("[手动下载] 桌面端接收端请求文件: msg_id={}", sender_msg_id);
+    crate::workspace::request_incoming_file(&state.pool, message_id, sender_msg_id).await
 }
 
 #[tauri::command]
@@ -1920,4 +1915,316 @@ pub fn stop_tray_flash(#[allow(unused_variables)] state: State<'_, TrayFlashStat
     }
     #[cfg(target_os = "android")]
     println!("[TrayFlash] Android 无系统托盘，忽略 stop_tray_flash");
+}
+
+#[tauri::command]
+pub async fn capture_screenshot() -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let capture_dir = std::env::temp_dir().join("xchat-captures");
+        std::fs::create_dir_all(&capture_dir)
+            .map_err(|error| format!("创建截图缓存目录失败: {error}"))?;
+        let path = capture_dir.join(format!("{}.png", uuid::Uuid::new_v4()));
+        let command_path = path.clone();
+        let status = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("/usr/sbin/screencapture")
+                .args(["-i", "-s", "-x"])
+                .arg(&command_path)
+                .status()
+        })
+        .await
+        .map_err(|error| format!("启动系统截图失败: {error}"))?
+        .map_err(|error| format!("启动系统截图失败: {error}"))?;
+
+        let size = std::fs::metadata(&path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        if !status.success() || size == 0 {
+            let _ = std::fs::remove_file(&path);
+            return Err("capture_cancelled".to_string());
+        }
+
+        return Ok(serde_json::json!({
+            "path": path.to_string_lossy(),
+            "name": path.file_name().and_then(|name| name.to_str()).unwrap_or("capture.png"),
+            "size": size,
+            "mime_type": "image/png",
+        }));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    Err("capture_unsupported".to_string())
+}
+
+#[tauri::command]
+pub async fn get_workspace_snapshot(
+    state: State<'_, DbState>,
+    peer_state: State<'_, PeerState>,
+) -> Result<crate::workspace::WorkspaceSnapshot, String> {
+    crate::workspace::get_snapshot(&state.pool, &peer_state.manager).await
+}
+
+#[tauri::command]
+pub async fn update_workspace_preference(
+    state: State<'_, DbState>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    crate::workspace::update_preference(&state.pool, &key, &value).await
+}
+
+#[tauri::command]
+pub async fn create_group(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    peer_state: State<'_, PeerState>,
+    title: String,
+    member_ids: Vec<String>,
+) -> Result<crate::db::ConversationRecord, String> {
+    let conversation =
+        crate::workspace::create_group(&state.pool, &peer_state.manager, &title, member_ids).await?;
+    let _ = app.emit("workspace-changed", &conversation);
+    Ok(conversation)
+}
+
+#[tauri::command]
+pub async fn send_conversation_message(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    peer_state: State<'_, PeerState>,
+    conversation_id: String,
+    client_message_id: String,
+    content: String,
+    msg_type: String,
+) -> Result<crate::workspace::WorkspaceMessage, String> {
+    let message = crate::workspace::send_message(
+        &state.pool,
+        &peer_state.manager,
+        &conversation_id,
+        &client_message_id,
+        &content,
+        &msg_type,
+    )
+    .await?;
+    let _ = app.emit("message-changed", &message);
+    Ok(message)
+}
+
+#[tauri::command]
+pub async fn send_conversation_file(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    peer_state: State<'_, PeerState>,
+    conversation_id: String,
+    file_path: String,
+) -> Result<crate::network::conversation_file::ConversationFileSendResult, String> {
+    let result = crate::network::conversation_file::send_path(
+        &state.pool,
+        &peer_state.manager,
+        &conversation_id,
+        &file_path,
+    )
+    .await?;
+    let _ = app.emit("message-changed", &result.message);
+    let _ = app.emit("transfer-changed", &result.transfers);
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn retry_conversation_file(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    peer_state: State<'_, PeerState>,
+    message_id: i64,
+) -> Result<crate::network::conversation_file::ConversationFileSendResult, String> {
+    let result = crate::network::conversation_file::retry_message(
+        &state.pool,
+        &peer_state.manager,
+        message_id,
+    )
+    .await?;
+    let _ = app.emit("message-changed", &result.message);
+    let _ = app.emit("transfer-changed", &result.transfers);
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn get_conversation_messages(
+    state: State<'_, DbState>,
+    peer_state: State<'_, PeerState>,
+    conversation_id: String,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<crate::workspace::WorkspaceMessage>, String> {
+    crate::workspace::get_messages(
+        &state.pool,
+        &peer_state.manager,
+        &conversation_id,
+        limit,
+        offset,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn mark_messages_read(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    peer_state: State<'_, PeerState>,
+    conversation_id: String,
+    message_ids: Vec<String>,
+) -> Result<usize, String> {
+    let marked = crate::workspace::mark_messages_read(
+        &state.pool,
+        &peer_state.manager,
+        &conversation_id,
+        message_ids.clone(),
+    )
+    .await?;
+    let _ = app.emit(
+        "receipt-changed",
+        serde_json::json!({
+            "conversation_id": conversation_id,
+            "message_ids": message_ids,
+            "marked": marked,
+        }),
+    );
+    Ok(marked)
+}
+
+#[tauri::command]
+pub async fn search_workspace_messages(
+    state: State<'_, DbState>,
+    peer_state: State<'_, PeerState>,
+    query: String,
+    limit: i64,
+) -> Result<Vec<crate::workspace::WorkspaceMessage>, String> {
+    crate::workspace::search_messages(&state.pool, &peer_state.manager, &query, limit).await
+}
+
+#[tauri::command]
+pub async fn update_conversation_state(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    conversation_id: String,
+    pinned: Option<bool>,
+    forced_unread: Option<bool>,
+    draft: Option<String>,
+) -> Result<crate::db::ConversationRecord, String> {
+    let conversation = crate::db::update_conversation_state(
+        &state.pool,
+        &conversation_id,
+        pinned,
+        forced_unread,
+        draft.as_deref(),
+    )
+    .await?;
+    let _ = app.emit("workspace-changed", &conversation);
+    Ok(conversation)
+}
+
+#[tauri::command]
+pub async fn clear_conversation_history(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    conversation_id: String,
+) -> Result<(), String> {
+    crate::workspace::clear_conversation_history(&state.pool, &conversation_id).await?;
+    let _ = app.emit(
+        "workspace-changed",
+        serde_json::json!({ "conversation_id": conversation_id }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_file_center(
+    state: State<'_, DbState>,
+    peer_state: State<'_, PeerState>,
+) -> Result<Vec<crate::workspace::WorkspaceMessage>, String> {
+    crate::workspace::file_center(&state.pool, &peer_state.manager).await
+}
+
+#[tauri::command]
+pub async fn get_transfers(
+    state: State<'_, DbState>,
+) -> Result<Vec<crate::workspace::WorkspaceTransfer>, String> {
+    crate::workspace::transfers(&state.pool).await
+}
+
+#[tauri::command]
+pub async fn cancel_transfer(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    transfer_id: String,
+) -> Result<crate::db::TransferRecord, String> {
+    let transfer = crate::workspace::cancel_transfer(&state.pool, &transfer_id).await?;
+    let _ = app.emit("transfer-changed", &transfer);
+    Ok(transfer)
+}
+
+#[tauri::command]
+pub async fn update_device_metadata(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    device_id: String,
+    remark: Option<String>,
+) -> Result<crate::db::UserRecord, String> {
+    let device = crate::workspace::update_device(&state.pool, &device_id, remark.as_deref()).await?;
+    let _ = app.emit("device-changed", &device);
+    Ok(device)
+}
+
+#[tauri::command]
+pub async fn delete_local_file(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    message_id: i64,
+) -> Result<crate::db::FileMessageRecord, String> {
+    let message = crate::workspace::delete_local_file(&state.pool, message_id).await?;
+    let _ = app.emit("message-changed", &message);
+    Ok(message)
+}
+
+#[tauri::command]
+pub async fn open_workspace_file(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    message_id: i64,
+) -> Result<(), String> {
+    let path = crate::workspace::trusted_file_path(&state.pool, message_id).await?;
+    let path = path.to_string_lossy().into_owned();
+    #[cfg(target_os = "android")]
+    {
+        return open_file_in_android(path).await;
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .open_path(path, None::<&str>)
+            .map_err(|error| format!("打开文件失败: {error}"))
+    }
+}
+
+#[tauri::command]
+pub async fn reveal_workspace_file(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    message_id: i64,
+) -> Result<(), String> {
+    let path = crate::workspace::trusted_file_path(&state.pool, message_id).await?;
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = app;
+        let _ = path;
+        Err("当前平台不支持打开文件所在目录".to_string())
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .reveal_item_in_dir(path)
+            .map_err(|error| format!("打开文件位置失败: {error}"))
+    }
 }

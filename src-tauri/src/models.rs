@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 // 消息结构体 - 对应 messages 表
-#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Message {
     pub id: i64,
     pub sender_id: String,
@@ -15,6 +15,10 @@ pub struct Message {
     pub sender_msg_id: Option<String>,
     #[sqlx(default)]
     pub status: Option<String>,
+    #[sqlx(default)]
+    pub conversation_id: Option<String>,
+    #[sqlx(default)]
+    pub client_message_id: Option<String>,
 }
 
 // API 响应用的消息结构体（字段名适配前端）
@@ -39,6 +43,10 @@ pub struct MessageResponse {
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sender_msg_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_message_id: Option<String>,
 }
 
 impl From<Message> for MessageResponse {
@@ -56,6 +64,8 @@ impl From<Message> for MessageResponse {
             file_size: None,
             sender_msg_id: None,
             status: msg.status.clone(),
+            conversation_id: msg.conversation_id.clone(),
+            client_message_id: msg.client_message_id.clone(),
         };
 
         // 如果是文件消息，添加文件信息

@@ -6,7 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tauri::{AppHandle, Emitter};
 
 #[cfg(not(feature = "desktop"))]
-type AppHandle = (); 
+type AppHandle = ();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextMessage {
@@ -15,6 +15,10 @@ pub struct TextMessage {
     pub from_name: String, // 发送者名字
     pub content: String,   // 消息内容
     pub timestamp: u64,    // Unix 时间戳
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_message_id: Option<String>,
 }
 
 // 握手协议消息
@@ -23,6 +27,25 @@ pub struct HandshakeMessage {
     pub protocol: String, // "handshake"
     pub action: String,   // "ready_to_receive" 或 "ack"
     pub from_id: String,  // 发送者 UUID
+}
+
+#[cfg(test)]
+mod message_tests {
+    use super::TextMessage;
+
+    #[test]
+    fn text_message_optional_ids_keep_legacy_wire_compatible() {
+        let legacy: TextMessage = serde_json::from_str(
+            r#"{"msg_type":"text","from_id":"a","from_name":"Alice","content":"hi","timestamp":1}"#,
+        )
+        .unwrap();
+        assert!(legacy.conversation_id.is_none());
+        assert!(legacy.client_message_id.is_none());
+
+        let encoded = serde_json::to_value(legacy).unwrap();
+        assert!(encoded.get("conversation_id").is_none());
+        assert!(encoded.get("client_message_id").is_none());
+    }
 }
 
 // 发送握手消息（询问对方是否准备好接收）
@@ -104,6 +127,8 @@ pub async fn send_text_message(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs(),
+        conversation_id: None,
+        client_message_id: None,
     };
 
     // 序列化为 JSON
@@ -136,6 +161,38 @@ pub async fn send_text_message(
             send_via_tcp(peer_addr, message).await
         }
     }
+}
+
+pub async fn send_direct_message(
+    peer_addr: &str,
+    from_id: String,
+    from_name: String,
+    conversation_id: String,
+    client_message_id: String,
+    content: String,
+) -> Result<(), String> {
+    if conversation_id.trim().is_empty() {
+        return Err("conversation_id must not be empty".to_string());
+    }
+    if client_message_id.trim().is_empty() {
+        return Err("client_message_id must not be empty".to_string());
+    }
+
+    let message = TextMessage {
+        msg_type: "text".to_string(),
+        from_id,
+        from_name,
+        content,
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| format!("system clock error: {error}"))?
+            .as_secs(),
+        conversation_id: Some(conversation_id),
+        client_message_id: Some(client_message_id),
+    };
+    let json =
+        serde_json::to_string(&message).map_err(|error| format!("serialize message: {error}"))?;
+    send_json_via_ws(peer_addr, &json).await
 }
 
 // 通过 TCP 发送(回退方案)
@@ -172,7 +229,8 @@ pub async fn send_json_via_ws(peer_addr: &str, json: &str) -> Result<(), String>
         Ok((mut ws_stream, _)) => {
             use futures_util::SinkExt;
             use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
-            ws_stream.send(WsMessage::Text(json.to_string().into()))
+            ws_stream
+                .send(WsMessage::Text(json.to_string().into()))
                 .await
                 .map_err(|e| format!("发送 WS 消息失败: {}", e))?;
             let _ = ws_stream.close(None).await;
@@ -444,7 +502,9 @@ async fn resend_file_background(
     } else if file_path.starts_with("fd:") {
         // 解析 msg_id 并从 FD 缓存克隆
         let msg_id_str = &file_path["fd:".len()..];
-        let msg_id: i64 = msg_id_str.parse().map_err(|_| format!("无效的 fd: 路径: {}", file_path))?;
+        let msg_id: i64 = msg_id_str
+            .parse()
+            .map_err(|_| format!("无效的 fd: 路径: {}", file_path))?;
         match crate::android_fd::duplicate_cached_file(msg_id) {
             Some((file, _, _)) => file,
             None => return Err(format!("FD 缓存未命中: msg_id={}", msg_id)),
@@ -466,7 +526,7 @@ async fn resend_file_background(
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
     let upload_url = format!("http://{}/api/upload", peer_addr);
-    let chunk_size = 50 * 1024 * 1024;
+    let chunk_size = 4 * 1024 * 1024;
     let total_chunks = (file_size + chunk_size - 1) / chunk_size;
     let mut offset = 0;
     let mut chunk_index = 0;
@@ -576,22 +636,19 @@ pub async fn resend_pending_messages(
                         (Some(path), Some(size)) if !path.trim().is_empty() => {
                             // 检查接收端 auto_download 设置
                             let auto_dl_url = format!("http://{}/api/auto_download", peer_addr);
-                            let auto_enabled = match reqwest::Client::new()
-                                .get(&auto_dl_url)
-                                .send()
-                                .await
-                            {
-                                Ok(resp) => {
-                                    if let Ok(data) = resp.json::<serde_json::Value>().await {
-                                        data.get("enabled")
-                                            .and_then(|v| v.as_bool())
-                                            .unwrap_or(true)
-                                    } else {
-                                        true
+                            let auto_enabled =
+                                match reqwest::Client::new().get(&auto_dl_url).send().await {
+                                    Ok(resp) => {
+                                        if let Ok(data) = resp.json::<serde_json::Value>().await {
+                                            data.get("enabled")
+                                                .and_then(|v| v.as_bool())
+                                                .unwrap_or(true)
+                                        } else {
+                                            true
+                                        }
                                     }
-                                }
-                                Err(_) => true,
-                            };
+                                    Err(_) => true,
+                                };
 
                             if auto_enabled {
                                 // 自动下载开启 → 直接上传（原行为）
@@ -601,24 +658,17 @@ pub async fn resend_pending_messages(
                                 .await
                                 {
                                     Ok(_) => {
-                                        println!(
-                                            "[UDP] ✓ 文件消息 {} 补发成功",
-                                            msg_id
-                                        );
+                                        println!("[UDP] ✓ 文件消息 {} 补发成功", msg_id);
                                         msg_ids_to_mark.push(msg_id);
                                     }
                                     Err(e) => {
-                                        eprintln!(
-                                            "[UDP] ✗ 文件消息 {} 补发失败: {}",
-                                            msg_id, e
-                                        );
+                                        eprintln!("[UDP] ✗ 文件消息 {} 补发失败: {}", msg_id, e);
                                     }
                                 }
                             } else {
                                 // 自动下载关闭 → 发 file_offer，不直接上传
-                                let my_name = crate::db::get_username(pool)
-                                    .await
-                                    .unwrap_or_default();
+                                let my_name =
+                                    crate::db::get_username(pool).await.unwrap_or_default();
                                 let offer = serde_json::json!({
                                     "msg_type": "file_offer",
                                     "from_id": my_id,
@@ -633,14 +683,14 @@ pub async fn resend_pending_messages(
                                 {
                                     use futures_util::SinkExt;
                                     use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
-                                    let _ = ws_stream
-                                        .send(WsMessage::Text(offer.to_string()))
-                                        .await;
+                                    let _ =
+                                        ws_stream.send(WsMessage::Text(offer.to_string())).await;
                                     let _ = ws_stream.close(None).await;
                                     // 更新发送端 status 为 offering，前端显示「等待对方接收」
                                     let _ = crate::db::update_file_status_by_id(
                                         pool, msg_id, "offering",
-                                    ).await;
+                                    )
+                                    .await;
                                     #[cfg(feature = "desktop")]
                                     if let Some(ref app_handle) = app {
                                         let update = serde_json::json!({
@@ -667,9 +717,8 @@ pub async fn resend_pending_messages(
                             if let Some(size) = file_size {
                                 // 有文件大小但无路径 → Web端发送的离线文件，浏览器持有 File 引用
                                 // 尝试发送 file_offer 给接收端，后续 file_request → start_upload 由 WS handler 处理
-                                let my_name = crate::db::get_username(pool)
-                                    .await
-                                    .unwrap_or_default();
+                                let my_name =
+                                    crate::db::get_username(pool).await.unwrap_or_default();
                                 let offer = serde_json::json!({
                                     "msg_type": "file_offer",
                                     "from_id": my_id,
@@ -684,14 +733,14 @@ pub async fn resend_pending_messages(
                                 {
                                     use futures_util::SinkExt;
                                     use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
-                                    let _ = ws_stream
-                                        .send(WsMessage::Text(offer.to_string()))
-                                        .await;
+                                    let _ =
+                                        ws_stream.send(WsMessage::Text(offer.to_string())).await;
                                     let _ = ws_stream.close(None).await;
                                     // 更新发送端 status 为 offering，前端显示「等待对方接收」
                                     let _ = crate::db::update_file_status_by_id(
                                         pool, msg_id, "offering",
-                                    ).await;
+                                    )
+                                    .await;
                                     #[cfg(feature = "desktop")]
                                     if let Some(ref app_handle) = app {
                                         let update = serde_json::json!({

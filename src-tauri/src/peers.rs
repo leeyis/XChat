@@ -12,6 +12,16 @@ pub struct Peer {
     pub last_seen: u64,           // Unix 时间戳
     pub is_offline: bool,         // 是否离线
     pub available_memory_mb: u64, // 可用内存（MB）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remark: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_source: Option<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 // 全局在线用户列表
@@ -37,19 +47,24 @@ impl PeerManager {
     pub async fn load_from_db(&self, pool: &sqlx::Pool<sqlx::Sqlite>) -> Result<(), String> {
         println!("[PeerManager] 从数据库加载历史用户...");
 
-        let users = crate::db::get_all_users(pool).await?;
+        let users = crate::db::list_users_with_metadata(pool).await?;
 
         let mut peers = self.peers.write().unwrap();
-        for (id, name, addr, _last_seen, is_offline, available_memory_mb) in users {
+        for user in users {
             let peer = Peer {
-                id: id.clone(),
-                name,
-                addr,
-                last_seen: _last_seen as u64,
-                is_offline,
-                available_memory_mb,
+                id: user.id.clone(),
+                name: user.name,
+                addr: user.addr,
+                last_seen: user.last_seen as u64,
+                is_offline: user.is_offline,
+                available_memory_mb: user.available_memory_mb as u64,
+                hostname: user.hostname,
+                mac_address: user.mac_address,
+                remark: user.remark,
+                discovery_source: user.discovery_source,
+                capabilities: Vec::new(),
             };
-            peers.insert(id, peer);
+            peers.insert(user.id, peer);
         }
 
         println!("[PeerManager] 已加载 {} 个历史用户", peers.len());
@@ -70,6 +85,30 @@ impl PeerManager {
         addr: String,
         available_memory_mb: u64,
     ) -> bool {
+        self.add_or_update_with_details(
+            id,
+            name,
+            addr,
+            available_memory_mb,
+            None,
+            None,
+            Some("lan".to_string()),
+            Vec::new(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_or_update_with_details(
+        &self,
+        id: String,
+        name: String,
+        addr: String,
+        available_memory_mb: u64,
+        hostname: Option<String>,
+        mac_address: Option<String>,
+        discovery_source: Option<String>,
+        capabilities: Vec<String>,
+    ) -> bool {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -85,6 +124,18 @@ impl PeerManager {
             peer.last_seen = now;
             peer.is_offline = false;
             peer.available_memory_mb = available_memory_mb;
+            if hostname.is_some() {
+                peer.hostname = hostname;
+            }
+            if mac_address.is_some() {
+                peer.mac_address = mac_address;
+            }
+            if discovery_source.is_some() {
+                peer.discovery_source = discovery_source;
+            }
+            if !capabilities.is_empty() {
+                peer.capabilities = capabilities;
+            }
 
             // 只在用户重新上线时打印日志
             if was_offline {
@@ -104,6 +155,11 @@ impl PeerManager {
                 last_seen: now,
                 is_offline: false,
                 available_memory_mb,
+                hostname,
+                mac_address,
+                remark: None,
+                discovery_source,
+                capabilities,
             };
             println!(
                 "[PeerManager] 添加新用户: {} ({}) - 可用内存: {} MB",
@@ -168,5 +224,36 @@ impl PeerManager {
 impl Default for PeerManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_heartbeats_do_not_erase_discovered_metadata() {
+        let manager = PeerManager::new();
+        manager.add_or_update_with_details(
+            "peer-1".into(),
+            "Alice".into(),
+            "127.0.0.1:8888".into(),
+            512,
+            Some("alice-mac".into()),
+            Some("aa:bb:cc:dd:ee:ff".into()),
+            Some("lan".into()),
+            vec!["groups_v1".into()],
+        );
+        manager.add_or_update_with_memory(
+            "peer-1".into(),
+            "Alice".into(),
+            "127.0.0.1:8888".into(),
+            512,
+        );
+
+        let peer = manager.get_all_peers().pop().unwrap();
+        assert_eq!(peer.hostname.as_deref(), Some("alice-mac"));
+        assert_eq!(peer.mac_address.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+        assert_eq!(peer.capabilities, vec!["groups_v1"]);
     }
 }

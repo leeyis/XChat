@@ -80,6 +80,31 @@ make web-windows  # Web 端 Windows
 make help         # 查看帮助
 ```
 
+## 开发与预览
+
+```bash
+# 安装前端依赖
+npm install
+
+# 桌面端开发（Tauri CLI 需要双层 -- 才会把参数传给应用）
+cargo tauri dev -- -- --port 18888 --db-path /tmp/xchat-dev
+
+# Web 端开发：终端 1 启动后端，终端 2 启动 Vite
+cargo run --manifest-path src-tauri/Cargo.toml \
+  --no-default-features --features web --bin lanchat-web \
+  -- --port 8888 --db-path /tmp/xchat-web-dev
+npm run dev
+
+# Web 端生产构建预览：保持后端在 8888，终端 2 执行
+npm run build
+npm run preview
+
+# 构建 React 前端后，由 Web 二进制提供静态页面和 API
+npm run build
+cargo run --manifest-path src-tauri/Cargo.toml \
+  --no-default-features --features web --bin lanchat-web
+```
+
 ## 运行
 
 1. 启动服务（默认 `8888` 端口，可在设置中修改）：
@@ -222,15 +247,13 @@ sudo ufw allow 8888/udp
 
 ```
 LANChat/
-├── src/                      # 前端代码
-│   ├── css/
-│   │   ├── style.css        # 样式文件
-│   │   └── vscode.css       # VSCode 主题
-│   ├── js/
-│   │   ├── api.js           # API 封装（Tauri + HTTP 双端）
-│   │   ├── app.js           # 应用逻辑
-│   │   └── ui.js            # UI 交互
-│   └── index.html           # 主页面
+├── frontend/                 # React + Vite 源码
+│   ├── src/
+│   │   ├── App.jsx          # 聊天、主机、文件和设置界面
+│   │   ├── xchat.js         # Tauri / HTTP + WebSocket 双端适配
+│   │   └── styles.css       # 界面样式
+│   └── public/              # 静态素材
+├── src/                      # Vite 构建产物，供 Tauri / Web 服务加载
 ├── src-tauri/               # 后端代码（桌面端 + Web 端）
 │   ├── src/
 │   │   ├── main.rs          # 桌面端 Tauri 入口
@@ -291,7 +314,7 @@ desktop文件加上`Exec=env __NV_DISABLE_EXPLICIT_SYNC=1 lanchat`环境变量
 ## 技术栈
 
 - **后端**: Rust + Tauri 2.0
-- **前端**: 原生 HTML + CSS + JavaScript
+- **前端**: React 19 + Vite 8
 - **数据库**: SQLite (sqlx)
 - **网络**: UDP 广播/组播 + TCP/WebSocket 传输 + HTTP 分块上传
 - **Web 服务器**: Axum

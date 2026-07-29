@@ -1,0 +1,103 @@
+:root {
+  color-scheme: light;
+
+  --bg: #f8f6f4;
+  --bg: oklch(0.975 0.004 75);
+  --surface: #ffffff;
+  --surface: oklch(1 0 0);
+  --fg: #221c15;
+  --fg: oklch(0.23 0.015 70);
+  --muted: #76706a;
+  --muted: oklch(0.55 0.012 70);
+  --border: #dedad5;
+  --border: oklch(0.89 0.008 70);
+  --accent: #18ac71;
+  --accent: oklch(0.659 0.145 159.36);
+
+  --accent-hover: #14955f;
+  --accent-hover: oklch(0.596 0.132 158.7);
+  --on-accent: #fcfcfc;
+  --on-accent: oklch(0.99 0 0);
+  --danger: #d73431;
+  --danger: oklch(0.58 0.2 27);
+  --success: #2a904b;
+  --success: oklch(0.58 0.14 150);
+  --warning: #d29000;
+  --warning: oklch(0.7 0.16 80);
+  --rail: #e6e8ea;
+  --rail: oklch(0.93 0.004 250);
+  --rail-fg: #5a5e62;
+  --rail-fg: oklch(0.48 0.008 250);
+
+  --avatar-1: oklch(0.69 0.13 32);
+  --avatar-2: oklch(0.67 0.11 205);
+  --avatar-3: oklch(0.66 0.12 150);
+  --avatar-4: oklch(0.67 0.11 280);
+  --avatar-5: oklch(0.7 0.13 75);
+  --avatar-6: oklch(0.64 0.12 340);
+  --avatar-7: oklch(0.68 0.1 235);
+  --avatar-8: oklch(0.65 0.11 115);
+
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", system-ui, sans-serif;
+  --font-display: "Songti SC", STSong, SimSun, serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
+
+  --text-display: 2rem;
+  --text-page: 1.125rem;
+  --text-panel: 1rem;
+  --text-body: 0.875rem;
+  --text-compact: 0.8125rem;
+  --text-meta: 0.6875rem;
+  --text-micro: 0.625rem;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+
+  --radius-xs: 0.3125rem;
+  --radius-sm: 0.4375rem;
+  --radius-md: 0.5625rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.75rem;
+  --radius-pill: 999px;
+  --shadow-1:
+    0 1px 2px color-mix(in oklch, var(--fg) 8%, transparent),
+    0 8px 24px color-mix(in oklch, var(--fg) 8%, transparent);
+  --shadow-2: 0 24px 70px
+    color-mix(in oklch, var(--fg) 24%, transparent);
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --duration-enter: 200ms;
+  --duration-exit: 140ms;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #120f0b;
+  --bg: oklch(0.17 0.01 70);
+  --surface: #1e1a15;
+  --surface: oklch(0.22 0.012 70);
+  --fg: #eae7e4;
+  --fg: oklch(0.93 0.005 75);
+  --muted: #9f9b95;
+  --muted: oklch(0.69 0.01 75);
+  --border: #37322c;
+  --border: oklch(0.32 0.012 70);
+  --rail: #080503;
+  --rail: oklch(0.12 0.009 70);
+  --rail-fg: #928f8a;
+  --rail-fg: oklch(0.65 0.008 75);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-enter: 0ms;
+    --duration-exit: 0ms;
+  }
+}

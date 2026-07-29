@@ -4,6 +4,9 @@
   "version": "0.1.5",
   "identifier": "com.lanchat.app", 
   "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
     "frontendDist": "../src"
   },
   "app": {
@@ -11,18 +14,16 @@
     "windows": [
       {
 				"label": "main",
-        "title": "LANChat",
-        "width": 900,
-        "height": 700,
+        "title": "XChat",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 860,
+        "minHeight": 640,
         "resizable": true
       }
     ],
     "security": {
-      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data: http://127.0.0.1:*; style-src 'self' 'unsafe-inline'",
-      "assetProtocol": {
-        "enable": true,
-        "scope": ["**"]
-      }
+      "csp": "default-src 'self' ipc: http://ipc.localhost; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* ws://127.0.0.1:*; img-src 'self' data: blob: http://127.0.0.1:*; media-src 'self' blob: http://127.0.0.1:*; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {

@@ -19,6 +19,7 @@ pub mod network;
 pub mod peers;
 pub mod utils;
 pub mod web_server;
+pub mod workspace;
 
 // 仅在桌面端编译时包含 Tauri 运行函数
 #[cfg(feature = "desktop")]
@@ -81,6 +82,25 @@ pub fn run() {
             commands::start_tray_flash,
             commands::stop_tray_flash,
             commands::open_saf_picker,
+            commands::get_workspace_snapshot,
+            commands::update_workspace_preference,
+            commands::create_group,
+            commands::send_conversation_message,
+            commands::send_conversation_file,
+            commands::retry_conversation_file,
+            commands::get_conversation_messages,
+            commands::mark_messages_read,
+            commands::search_workspace_messages,
+            commands::update_conversation_state,
+            commands::clear_conversation_history,
+            commands::get_file_center,
+            commands::get_transfers,
+            commands::cancel_transfer,
+            commands::update_device_metadata,
+            commands::delete_local_file,
+            commands::open_workspace_file,
+            commands::reveal_workspace_file,
+            commands::capture_screenshot,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

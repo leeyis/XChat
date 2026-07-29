@@ -80,6 +80,31 @@ make web-windows  # Web (Windows)
 make help         # Show help
 ```
 
+## Development and Preview
+
+```bash
+# Install frontend dependencies
+npm install
+
+# Desktop development (the extra -- forwards arguments through the Tauri CLI)
+cargo tauri dev -- -- --port 18888 --db-path /tmp/xchat-dev
+
+# Web development: run the backend and Vite in separate terminals
+cargo run --manifest-path src-tauri/Cargo.toml \
+  --no-default-features --features web --bin lanchat-web \
+  -- --port 8888 --db-path /tmp/xchat-web-dev
+npm run dev
+
+# Preview the production Web build while the backend stays on port 8888
+npm run build
+npm run preview
+
+# Build React, then serve the static app and API from the Web binary
+npm run build
+cargo run --manifest-path src-tauri/Cargo.toml \
+  --no-default-features --features web --bin lanchat-web
+```
+
 ## Running
 
 1. Start the service (default port `8888`, configurable in settings):
@@ -222,15 +247,13 @@ The database path can be changed in settings (requires restart). The path is sto
 
 ```
 LANChat/
-├── src/                      # Frontend
-│   ├── css/
-│   │   ├── style.css        # Main stylesheet
-│   │   └── vscode.css       # VSCode theme
-│   ├── js/
-│   │   ├── api.js           # API wrapper (Tauri + HTTP dual backend)
-│   │   ├── app.js           # App logic
-│   │   └── ui.js            # UI interactions
-│   └── index.html           # Main page
+├── frontend/                 # React + Vite source
+│   ├── src/
+│   │   ├── App.jsx          # Chat, hosts, files, and settings UI
+│   │   ├── xchat.js         # Tauri / HTTP + WebSocket adapters
+│   │   └── styles.css       # Application styles
+│   └── public/              # Static assets
+├── src/                      # Vite output served by Tauri and the Web binary
 ├── src-tauri/               # Backend (desktop + Web)
 │   ├── src/
 │   │   ├── main.rs          # Desktop Tauri entry
@@ -292,7 +315,7 @@ When devices are on different VLANs or connected via WireGuard, UDP broadcast wo
 ## Tech Stack
 
 - **Backend**: Rust + Tauri 2.0
-- **Frontend**: Vanilla HTML + CSS + JavaScript
+- **Frontend**: React 19 + Vite 8
 - **Database**: SQLite (sqlx)
 - **Network**: UDP broadcast/multicast + TCP/WebSocket + HTTP chunked upload
 - **Web Server**: Axum

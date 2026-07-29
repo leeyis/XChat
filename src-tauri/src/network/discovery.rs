@@ -9,6 +9,124 @@ use tauri::{AppHandle, Emitter};
 use crate::peers::PeerManager;
 
 const MULTICAST_IP: &str = "224.0.0.167";
+pub const DISCOVERY_PROTOCOL_VERSION: u16 = 2;
+pub const DISCOVERY_CAPABILITIES: &[&str] = &["group_chat", "receipts", "transfer_cancel"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveryAnnouncement {
+    pub peer_id: String,
+    pub name: String,
+    pub port: u16,
+    pub available_memory_mb: u64,
+    pub is_reply: bool,
+    pub protocol_version: u16,
+    pub hostname: Option<String>,
+    pub mac_address: Option<String>,
+    pub capabilities: Vec<String>,
+}
+
+impl DiscoveryAnnouncement {
+    pub fn parse(message: &str) -> Result<Option<Self>, String> {
+        let parts: Vec<&str> = message.split('|').collect();
+        if parts.len() < 6 || parts[0] != "LANChat" || parts[1] != "ONLINE" {
+            return Ok(None);
+        }
+
+        let port = parts[4]
+            .parse()
+            .map_err(|_| "invalid discovery port".to_string())?;
+        let available_memory_mb = parts[5]
+            .parse()
+            .map_err(|_| "invalid discovery memory".to_string())?;
+        let protocol_version = parts
+            .get(7)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                value
+                    .parse()
+                    .map_err(|_| "invalid discovery protocol version".to_string())
+            })
+            .transpose()?
+            .unwrap_or(1);
+
+        Ok(Some(Self {
+            peer_id: parts[2].to_string(),
+            name: parts[3].to_string(),
+            port,
+            available_memory_mb,
+            is_reply: parts.get(6).is_some_and(|value| *value == "1"),
+            protocol_version,
+            hostname: optional_part(parts.get(8)),
+            mac_address: optional_part(parts.get(9)),
+            capabilities: parts
+                .get(10)
+                .map(|value| {
+                    value
+                        .split(',')
+                        .filter(|item| !item.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }))
+    }
+
+    pub fn encode(&self) -> String {
+        format!(
+            "LANChat|ONLINE|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            self.peer_id,
+            self.name,
+            self.port,
+            self.available_memory_mb,
+            u8::from(self.is_reply),
+            self.protocol_version,
+            self.hostname.as_deref().unwrap_or_default(),
+            self.mac_address.as_deref().unwrap_or_default(),
+            self.capabilities.join(",")
+        )
+    }
+}
+
+fn optional_part(value: Option<&&str>) -> Option<String> {
+    value
+        .filter(|value| !value.is_empty())
+        .map(|value| (*value).to_string())
+}
+
+pub(crate) fn local_device_metadata() -> (Option<String>, Option<String>) {
+    let hostname = sysinfo::System::host_name();
+    let networks = sysinfo::Networks::new_with_refreshed_list();
+    let mac_address = networks.iter().find_map(|(_, network)| {
+        let address = network.mac_address();
+        (!address.is_unspecified()).then(|| address.to_string())
+    });
+    (hostname, mac_address)
+}
+
+fn local_announcement(
+    peer_id: String,
+    name: String,
+    port: u16,
+    available_memory_mb: u64,
+    is_reply: bool,
+    hostname: Option<String>,
+    mac_address: Option<String>,
+) -> DiscoveryAnnouncement {
+    DiscoveryAnnouncement {
+        peer_id,
+        name,
+        port,
+        available_memory_mb,
+        is_reply,
+        protocol_version: DISCOVERY_PROTOCOL_VERSION,
+        hostname,
+        mac_address,
+        capabilities: DISCOVERY_CAPABILITIES
+            .iter()
+            .map(|capability| (*capability).to_string())
+            .collect(),
+    }
+}
 
 // 创建支持广播和组播的 UDP socket
 fn create_discovery_socket(
@@ -78,11 +196,12 @@ pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx:
 
     println!("[UDP] 开始通过智能路由遍历发送心跳...");
 
-    use sysinfo::System;
     use std::collections::HashMap;
     use std::time::Instant;
+    use sysinfo::System;
     let mut sys = System::new();
     let target_addrs = get_smart_broadcast_addresses(port);
+    let (hostname, mac_address) = local_device_metadata();
 
     // DNS 缓存：hostname → (解析结果, 过期时间)，TTL 60 秒
     let mut dns_cache: HashMap<String, (Vec<std::net::SocketAddr>, Instant)> = HashMap::new();
@@ -97,10 +216,16 @@ pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx:
         sys.refresh_memory();
         let available_memory_mb = sys.available_memory() / (1024 * 1024);
 
-        let msg = format!(
-            "LANChat|ONLINE|{}|{}|{}|{}",
-            user_id, username, port, available_memory_mb
-        );
+        let msg = local_announcement(
+            user_id.clone(),
+            username,
+            port,
+            available_memory_mb,
+            false,
+            hostname.clone(),
+            mac_address.clone(),
+        )
+        .encode();
 
         // 核心：遍历所有可能地址，仅路由存在的网卡能发送成功
         for addr in &target_addrs {
@@ -141,7 +266,8 @@ pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx:
                             Ok(resolved) => {
                                 let list: Vec<_> = resolved.collect();
                                 if !list.is_empty() {
-                                    dns_cache.insert(with_port.clone(), (list.clone(), now + DNS_TTL));
+                                    dns_cache
+                                        .insert(with_port.clone(), (list.clone(), now + DNS_TTL));
                                 }
                                 list
                             }
@@ -183,6 +309,7 @@ pub async fn start_listening(
     };
 
     let mut buf = [0u8; 1024];
+    let (hostname, mac_address) = local_device_metadata();
     println!("[UDP] 正在端口 {} 监听邻居...", port);
 
     loop {
@@ -191,6 +318,10 @@ pub async fn start_listening(
             let parts: Vec<&str> = msg.split('|').collect();
 
             if parts.len() >= 6 && parts[0] == "LANChat" {
+                let announcement = match DiscoveryAnnouncement::parse(&msg) {
+                    Ok(Some(announcement)) => announcement,
+                    _ => continue,
+                };
                 let peer_id = parts[2].to_string();
                 let name = parts[3].to_string();
                 let peer_port = parts[4];
@@ -201,11 +332,15 @@ pub async fn start_listening(
 
                 let peer_addr = format!("{}:{}", addr.ip(), peer_port);
 
-                let is_new_or_reconnected = peer_manager.add_or_update_with_memory(
+                let is_new_or_reconnected = peer_manager.add_or_update_with_details(
                     peer_id.clone(),
                     name.clone(),
                     peer_addr.clone(),
                     available_memory_mb,
+                    announcement.hostname.clone(),
+                    announcement.mac_address.clone(),
+                    Some("lan".to_string()),
+                    announcement.capabilities.clone(),
                 );
 
                 // 保存或更新用户到数据库
@@ -216,6 +351,14 @@ pub async fn start_listening(
                     peer_addr.clone(),
                     false,
                     available_memory_mb,
+                )
+                .await;
+                let _ = crate::db::update_user_metadata(
+                    &pool,
+                    &peer_id,
+                    announcement.hostname.as_deref(),
+                    announcement.mac_address.as_deref(),
+                    Some("lan"),
                 )
                 .await;
 
@@ -230,6 +373,7 @@ pub async fn start_listening(
                     let peer_id_clone = peer_id.clone();
                     let peer_addr_clone = peer_addr.clone();
                     let app_clone = app.clone();
+                    let peer_manager_clone = peer_manager.clone();
 
                     // 扔进后台线程执行，不要阻挡 UDP 监听其他用户的广播！
                     tokio::spawn(async move {
@@ -243,26 +387,50 @@ pub async fn start_listening(
                         {
                             eprintln!("[UDP] 补发消息严重失败: {}", e);
                         }
+                        if let Err(e) = crate::workspace::resend_for_peer(
+                            &pool_clone,
+                            &peer_manager_clone,
+                            &peer_id_clone,
+                            &peer_addr_clone,
+                        )
+                        .await
+                        {
+                            eprintln!("[UDP] 新协议补发失败: {}", e);
+                        }
                     });
                 }
 
                 if let Some(app_handle) = &app {
-                    let _ = app_handle.emit("new-peer", serde_json::json!({
-                        "id": peer_id, "name": name, "addr": peer_addr, "available_memory_mb": available_memory_mb
-                    }));
+                    let _ = app_handle.emit(
+                        "new-peer",
+                        serde_json::json!({
+                            "id": peer_id, "name": name, "addr": peer_addr,
+                            "available_memory_mb": available_memory_mb,
+                            "hostname": announcement.hostname,
+                            "mac_address": announcement.mac_address,
+                            "discovery_source": "lan",
+                            "capabilities": announcement.capabilities,
+                            "protocol_version": announcement.protocol_version
+                        }),
+                    );
                 }
 
-                // 回复心跳给对方（无 |1 标记则为原始心跳，需回复）
-                if parts.len() <= 6 {
+                if !announcement.is_reply {
                     // 从数据库读取最新用户名（用户改名后动态生效）
                     let reply_name = match crate::db::get_username(&pool).await {
                         Ok(name) => name,
                         Err(_) => my_name.clone(),
                     };
-                    let reply = format!(
-                        "LANChat|ONLINE|{}|{}|{}|0|1",
-                        my_id, reply_name, port
-                    );
+                    let reply = local_announcement(
+                        my_id.clone(),
+                        reply_name,
+                        port,
+                        0,
+                        true,
+                        hostname.clone(),
+                        mac_address.clone(),
+                    )
+                    .encode();
                     let target = format!("{}:{}", addr.ip(), peer_port);
                     let _ = socket.send_to(reply.as_bytes(), &target);
                 }
@@ -290,12 +458,17 @@ pub async fn start_listening(
     };
 
     let mut buf = [0u8; 1024];
+    let (hostname, mac_address) = local_device_metadata();
     loop {
         if let Ok((size, addr)) = socket.recv_from(&mut buf) {
             let msg = String::from_utf8_lossy(&buf[..size]);
             let parts: Vec<&str> = msg.split('|').collect();
 
             if parts.len() >= 6 && parts[0] == "LANChat" {
+                let announcement = match DiscoveryAnnouncement::parse(&msg) {
+                    Ok(Some(announcement)) => announcement,
+                    _ => continue,
+                };
                 let peer_id = parts[2].to_string();
                 let name = parts[3].to_string();
                 let peer_port = parts[4];
@@ -305,11 +478,15 @@ pub async fn start_listening(
                 }
                 let peer_addr = format!("{}:{}", addr.ip(), peer_port);
 
-                let is_new_or_reconnected = peer_manager.add_or_update_with_memory(
+                let is_new_or_reconnected = peer_manager.add_or_update_with_details(
                     peer_id.clone(),
                     name.clone(),
                     peer_addr.clone(),
                     available_memory_mb,
+                    announcement.hostname.clone(),
+                    announcement.mac_address.clone(),
+                    Some("lan".to_string()),
+                    announcement.capabilities.clone(),
                 );
 
                 // 保存或更新用户到数据库
@@ -322,6 +499,14 @@ pub async fn start_listening(
                     available_memory_mb,
                 )
                 .await;
+                let _ = crate::db::update_user_metadata(
+                    &pool,
+                    &peer_id,
+                    announcement.hostname.as_deref(),
+                    announcement.mac_address.as_deref(),
+                    Some("lan"),
+                )
+                .await;
 
                 // 用户重新上线，补发挂起的消息
                 if is_new_or_reconnected {
@@ -329,6 +514,7 @@ pub async fn start_listening(
                     let pool_clone = pool.clone();
                     let peer_id_clone = peer_id.clone();
                     let peer_addr_clone = peer_addr.clone();
+                    let peer_manager_clone = peer_manager.clone();
 
                     // 扔进后台线程执行，不要阻挡 UDP 监听其他用户的广播！
                     tokio::spawn(async move {
@@ -342,20 +528,35 @@ pub async fn start_listening(
                         {
                             eprintln!("[UDP] 补发消息严重失败: {}", e);
                         }
+                        if let Err(e) = crate::workspace::resend_for_peer(
+                            &pool_clone,
+                            &peer_manager_clone,
+                            &peer_id_clone,
+                            &peer_addr_clone,
+                        )
+                        .await
+                        {
+                            eprintln!("[UDP] 新协议补发失败: {}", e);
+                        }
                     });
                 }
 
-                // 回复心跳给对方（无 |1 标记则为原始心跳，需回复）
-                if parts.len() <= 6 {
+                if !announcement.is_reply {
                     // 从数据库读取最新用户名（用户改名后动态生效）
                     let reply_name = match crate::db::get_username(&pool).await {
                         Ok(name) => name,
                         Err(_) => my_name.clone(),
                     };
-                    let reply = format!(
-                        "LANChat|ONLINE|{}|{}|{}|0|1",
-                        my_id, reply_name, port
-                    );
+                    let reply = local_announcement(
+                        my_id.clone(),
+                        reply_name,
+                        port,
+                        0,
+                        true,
+                        hostname.clone(),
+                        mac_address.clone(),
+                    )
+                    .encode();
                     let target = format!("{}:{}", addr.ip(), peer_port);
                     let _ = socket.send_to(reply.as_bytes(), &target);
                 }
@@ -373,7 +574,8 @@ pub async fn send_single_broadcast(
     let socket = create_discovery_socket("0.0.0.0:0", false)
         .map_err(|e| format!("创建发送socket失败: {}", e))?;
 
-    let msg = format!("LANChat|ONLINE|{}|{}|{}|0", user_id, username, port);
+    let (hostname, mac_address) = local_device_metadata();
+    let msg = local_announcement(user_id, username, port, 0, false, hostname, mac_address).encode();
     let target_addrs = get_smart_broadcast_addresses(port);
 
     for addr in target_addrs {
@@ -383,3 +585,44 @@ pub async fn send_single_broadcast(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovery_parser_accepts_legacy_frames() {
+        let announce = DiscoveryAnnouncement::parse("LANChat|ONLINE|peer-1|Alice|8888|512")
+            .unwrap()
+            .unwrap();
+        assert!(!announce.is_reply);
+        assert_eq!(announce.protocol_version, 1);
+        assert!(announce.capabilities.is_empty());
+
+        let reply = DiscoveryAnnouncement::parse("LANChat|ONLINE|peer-1|Alice|8888|0|1")
+            .unwrap()
+            .unwrap();
+        assert!(reply.is_reply);
+    }
+
+    #[test]
+    fn discovery_extension_round_trips_after_legacy_prefix() {
+        let announcement = DiscoveryAnnouncement {
+            peer_id: "peer-1".into(),
+            name: "Alice".into(),
+            port: 8888,
+            available_memory_mb: 512,
+            is_reply: false,
+            protocol_version: DISCOVERY_PROTOCOL_VERSION,
+            hostname: Some("alice-mac".into()),
+            mac_address: Some("01:02:03:04:05:06".into()),
+            capabilities: vec!["group_chat".into(), "receipts".into()],
+        };
+
+        let encoded = announcement.encode();
+        assert!(encoded.starts_with("LANChat|ONLINE|peer-1|Alice|8888|512|0|2|"));
+        assert_eq!(
+            DiscoveryAnnouncement::parse(&encoded).unwrap(),
+            Some(announcement)
+        );
+    }
+}
