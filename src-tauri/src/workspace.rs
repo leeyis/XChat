@@ -478,7 +478,7 @@ pub async fn get_snapshot(
             name: self_name,
             hostname,
             mac_address,
-            addr: String::new(),
+            addr: crate::network::discovery::local_ip_address().unwrap_or_default(),
             avatar,
         },
         conversations,

@@ -4,6 +4,7 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_dialog::DialogExt;
 
 const PNG_MIME: &str = "image/png";
 const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
@@ -23,6 +24,26 @@ struct CaptureFile {
 struct CaptureState {
     editor: Option<CaptureFile>,
     pin: Option<CaptureFile>,
+}
+
+struct TempCapturePath(Option<PathBuf>);
+
+impl TempCapturePath {
+    fn new(path: PathBuf) -> Self {
+        Self(Some(path))
+    }
+
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for TempCapturePath {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            remove_file(&path);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -50,6 +71,11 @@ pub struct ManagedAttachment {
     pub file_size: u64,
     pub mime_type: String,
     pub conversation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SavedCapture {
+    pub file_path: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -191,6 +217,26 @@ fn window_size(width: u32, height: u32, max_width: f64, max_height: f64) -> (f64
     (width as f64 * scale, height as f64 * scale)
 }
 
+#[cfg(target_os = "macos")]
+fn display_number_for_geometry(
+    current: (i32, i32, u32, u32),
+    monitors: &[(i32, i32, u32, u32)],
+) -> usize {
+    monitors
+        .iter()
+        .position(|monitor| *monitor == current)
+        .map(|index| index + 1)
+        .unwrap_or(1)
+}
+
+fn restore_main_window(app: &tauri::AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.show();
+        let _ = main.unminimize();
+        let _ = main.set_focus();
+    }
+}
+
 fn remove_file(path: &Path) {
     if let Err(error) = std::fs::remove_file(path) {
         if error.kind() != std::io::ErrorKind::NotFound {
@@ -243,76 +289,150 @@ pub async fn start(
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
-        let capture = lock_state()?
-            .editor
-            .as_ref()
-            .map(capture_summary)
-            .ok_or_else(|| "截图编辑器状态不可用".to_string())?;
-        return Ok(capture);
+        let capture = lock_state().and_then(|state| {
+            state
+                .editor
+                .as_ref()
+                .map(capture_summary)
+                .ok_or_else(|| "截图编辑器状态不可用".to_string())
+        });
+        if capture.is_err() {
+            let _ = window.close();
+            restore_main_window(app);
+        }
+        return capture;
     }
 
     #[cfg(target_os = "macos")]
     {
-        let capture_dir = std::env::temp_dir().join("xchat-captures");
-        tokio::fs::create_dir_all(&capture_dir)
+        let main = app
+            .get_webview_window("main")
+            .ok_or_else(|| "主窗口不可用".to_string())?;
+        let monitor = main
+            .current_monitor()
+            .map_err(|error| format!("无法读取当前显示器: {error}"))?
+            .ok_or_else(|| "当前显示器不可用".to_string())?;
+        let monitors = main
+            .available_monitors()
+            .map_err(|error| format!("无法读取显示器列表: {error}"))?;
+        let current_geometry = (
+            monitor.position().x,
+            monitor.position().y,
+            monitor.size().width,
+            monitor.size().height,
+        );
+        let monitor_geometries = monitors
+            .iter()
+            .map(|item| {
+                (
+                    item.position().x,
+                    item.position().y,
+                    item.size().width,
+                    item.size().height,
+                )
+            })
+            .collect::<Vec<_>>();
+        let display_number =
+            display_number_for_geometry(current_geometry, &monitor_geometries).to_string();
+        main.hide()
+            .map_err(|error| format!("隐藏主窗口失败: {error}"))?;
+        tokio::time::sleep(std::time::Duration::from_millis(180)).await;
+
+        let result = async {
+            let capture_dir = std::env::temp_dir().join("xchat-captures");
+            tokio::fs::create_dir_all(&capture_dir)
+                .await
+                .map_err(|error| format!("创建截图缓存目录失败: {error}"))?;
+            let session_id = uuid::Uuid::new_v4().to_string();
+            let path = capture_dir.join(format!("{session_id}.png"));
+            let mut temp_path = TempCapturePath::new(path.clone());
+            let command_path = path.clone();
+            let status = tokio::task::spawn_blocking(move || {
+                std::process::Command::new("/usr/sbin/screencapture")
+                    .args(["-x", "-D"])
+                    .arg(display_number)
+                    .arg(&command_path)
+                    .status()
+            })
             .await
-            .map_err(|error| format!("创建截图缓存目录失败: {error}"))?;
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let path = capture_dir.join(format!("{session_id}.png"));
-        let command_path = path.clone();
-        let status = tokio::task::spawn_blocking(move || {
-            std::process::Command::new("/usr/sbin/screencapture")
-                .args(["-i", "-s", "-x"])
-                .arg(&command_path)
-                .status()
-        })
-        .await
-        .map_err(|error| format!("启动系统截图失败: {error}"))?
-        .map_err(|error| format!("启动系统截图失败: {error}"))?;
-        let bytes = tokio::fs::read(&path).await.unwrap_or_default();
-        if !status.success() || bytes.is_empty() {
-            remove_file(&path);
-            return Err("capture_cancelled".to_string());
+            .map_err(|error| format!("启动系统截图失败: {error}"))?
+            .map_err(|error| format!("启动系统截图失败: {error}"))?;
+            let bytes = tokio::fs::read(&path).await.unwrap_or_default();
+            if !status.success() || bytes.is_empty() {
+                remove_file(&path);
+                return Err(
+                    "无法读取屏幕，请在系统设置中允许 Xchat 使用屏幕录制权限".to_string(),
+                );
+            }
+            let (width, height) = png_dimensions(&bytes)?;
+            let capture = CaptureFile {
+                session_id,
+                conversation_id: Some(conversation_id),
+                path,
+                file_name: "capture.png".to_string(),
+                file_size: bytes.len() as u64,
+                width,
+                height,
+            };
+            clear_editor();
+            lock_state()?.editor = Some(capture.clone());
+            temp_path.disarm();
+            let scale_factor = monitor.scale_factor();
+            let window_width = monitor.size().width as f64 / scale_factor;
+            let window_height = monitor.size().height as f64 / scale_factor;
+            let position_x = monitor.position().x as f64 / scale_factor;
+            let position_y = monitor.position().y as f64 / scale_factor;
+            let window = match WebviewWindowBuilder::new(
+                app,
+                "capture-editor",
+                WebviewUrl::App("index.html?view=capture-editor".into()),
+            )
+            .title("Xchat 截图")
+            .inner_size(window_width, window_height)
+            .position(position_x, position_y)
+            .resizable(false)
+            .decorations(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .shadow(false)
+            .visible(false)
+            .build()
+            {
+                Ok(window) => window,
+                Err(error) => {
+                    clear_editor();
+                    return Err(format!("打开截图编辑器失败: {error}"));
+                }
+            };
+            let app_for_close = app.clone();
+            window.on_window_event(move |event| {
+                if matches!(event, tauri::WindowEvent::Destroyed) {
+                    clear_editor();
+                    restore_main_window(&app_for_close);
+                }
+            });
+            if let Err(error) = window.set_position(tauri::Position::Physical(*monitor.position()))
+            {
+                let _ = window.close();
+                return Err(format!("定位截图窗口失败: {error}"));
+            }
+            if let Err(error) = window.set_size(tauri::Size::Physical(*monitor.size())) {
+                let _ = window.close();
+                return Err(format!("调整截图窗口失败: {error}"));
+            }
+            if let Err(error) = window.show() {
+                let _ = window.close();
+                return Err(format!("显示截图窗口失败: {error}"));
+            }
+            let _ = window.set_focus();
+            Ok(capture_summary(&capture))
         }
-        let (width, height) = png_dimensions(&bytes)?;
-        let capture = CaptureFile {
-            session_id,
-            conversation_id: Some(conversation_id),
-            path,
-            file_name: "capture.png".to_string(),
-            file_size: bytes.len() as u64,
-            width,
-            height,
-        };
-        clear_editor();
-        lock_state()?.editor = Some(capture.clone());
-        let (window_width, window_height) = window_size(width, height, 1280.0, 820.0);
-        let window = match WebviewWindowBuilder::new(
-            app,
-            "capture-editor",
-            WebviewUrl::App("index.html?view=capture-editor".into()),
-        )
-        .title("Xchat 截图")
-        .inner_size(window_width, window_height)
-        .min_inner_size(640.0, 420.0)
-        .center()
-        .resizable(true)
-        .decorations(false)
-        .always_on_top(true)
-        .build()
-        {
-            Ok(window) => window,
-            Err(error) => {
-                clear_editor();
-                return Err(format!("打开截图编辑器失败: {error}"));
-            }
-        };
-        window.on_window_event(|event| {
-            if matches!(event, tauri::WindowEvent::Destroyed) {
-                clear_editor();
-            }
-        });
-        Ok(capture_summary(&capture))
+        .await;
+        if result.is_err() {
+            clear_editor();
+            restore_main_window(app);
+        }
+        result
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -397,17 +517,83 @@ pub async fn finish(app: &tauri::AppHandle, data_url: String) -> Result<ManagedA
     if let Some(window) = app.get_webview_window("capture-editor") {
         let _ = window.close();
     }
+    restore_main_window(app);
     Ok(attachment)
+}
+
+pub async fn save(
+    app: &tauri::AppHandle,
+    data_url: String,
+) -> Result<Option<SavedCapture>, String> {
+    let (bytes, _, _) = png_from_data_url(&data_url)?;
+    let session_id = lock_state()?
+        .editor
+        .as_ref()
+        .map(|capture| capture.session_id.clone())
+        .ok_or_else(|| "没有待处理的截图".to_string())?;
+    let mut dialog = app
+        .dialog()
+        .file()
+        .add_filter("PNG", &["png"])
+        .set_file_name(format!(
+            "Xchat-{}.png",
+            chrono::Local::now().format("%Y%m%d-%H%M%S")
+        ))
+        .set_title("保存截图");
+    if let Some(window) = app.get_webview_window("capture-editor") {
+        dialog = dialog.set_parent(&window);
+    }
+    let Some(selected) = dialog.blocking_save_file() else {
+        return Ok(None);
+    };
+    if lock_state()?
+        .editor
+        .as_ref()
+        .map(|capture| &capture.session_id)
+        != Some(&session_id)
+    {
+        return Err("截图会话已变化".to_string());
+    }
+    let mut path = selected
+        .into_path()
+        .map_err(|_| "保存路径不可用".to_string())?;
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| !extension.eq_ignore_ascii_case("png"))
+        .unwrap_or(true)
+    {
+        path.set_extension("png");
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "保存路径不可用".to_string())?;
+    let pending = path.with_file_name(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+    if let Err(error) = tokio::fs::write(&pending, &bytes).await {
+        remove_file(&pending);
+        return Err(format!("保存截图失败: {error}"));
+    }
+    if let Err(error) = tokio::fs::rename(&pending, &path).await {
+        remove_file(&pending);
+        return Err(format!("保存截图失败: {error}"));
+    }
+    Ok(Some(SavedCapture {
+        file_path: path.to_string_lossy().into_owned(),
+    }))
 }
 
 pub fn cancel(app: &tauri::AppHandle) -> Result<(), String> {
     clear_editor();
-    if let Some(window) = app.get_webview_window("capture-editor") {
+    let result = if let Some(window) = app.get_webview_window("capture-editor") {
         window
             .close()
-            .map_err(|error| format!("关闭截图编辑器失败: {error}"))?;
-    }
-    Ok(())
+            .map_err(|error| format!("关闭截图编辑器失败: {error}"))
+    } else {
+        Ok(())
+    };
+    restore_main_window(app);
+    result
 }
 
 pub async fn pin(
@@ -489,6 +675,7 @@ pub async fn pin(
     if let Some(window) = app.get_webview_window("capture-editor") {
         let _ = window.close();
     }
+    restore_main_window(app);
     Ok(capture_summary(&pin))
 }
 
@@ -581,5 +768,20 @@ mod tests {
 
         std::fs::remove_dir_all(root).unwrap();
         std::fs::remove_file(outside).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn display_numbers_follow_the_current_monitor_geometry() {
+        let monitors = [
+            (0, 0, 1728, 1117),
+            (1728, 0, 2560, 1440),
+            (-1920, 0, 1920, 1080),
+        ];
+        assert_eq!(
+            display_number_for_geometry((1728, 0, 2560, 1440), &monitors),
+            2,
+        );
+        assert_eq!(display_number_for_geometry((999, 999, 1, 1), &monitors), 1,);
     }
 }

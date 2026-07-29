@@ -1941,6 +1941,14 @@ pub async fn finish_capture_editor(
 }
 
 #[tauri::command]
+pub async fn save_capture_editor(
+    app: AppHandle,
+    data_url: String,
+) -> Result<Option<crate::capture_editor::SavedCapture>, String> {
+    crate::capture_editor::save(&app, data_url).await
+}
+
+#[tauri::command]
 pub fn cancel_capture_editor(app: AppHandle) -> Result<(), String> {
     crate::capture_editor::cancel(&app)
 }

@@ -11,7 +11,7 @@ pub struct Peer {
     pub addr: String,
     pub last_seen: u64,           // Unix 时间戳
     pub is_offline: bool,         // 是否离线
-    pub available_memory_mb: u64, // 可用内存（MB）
+    pub available_memory_mb: u64, // 首次权威发现时的可用内存快照（MB）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -94,6 +94,7 @@ impl PeerManager {
             None,
             Some("lan".to_string()),
             Vec::new(),
+            false,
         )
     }
 
@@ -108,6 +109,7 @@ impl PeerManager {
         mac_address: Option<String>,
         discovery_source: Option<String>,
         capabilities: Vec<String>,
+        authoritative: bool,
     ) -> bool {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -123,19 +125,19 @@ impl PeerManager {
             peer.addr = addr;
             peer.last_seen = now;
             peer.is_offline = false;
-            if available_memory_mb > 0 {
+            if authoritative && peer.available_memory_mb == 0 && available_memory_mb > 0 {
                 peer.available_memory_mb = available_memory_mb;
             }
-            if hostname.is_some() {
-                peer.hostname = hostname;
-            }
-            if mac_address.is_some() {
-                peer.mac_address = mac_address;
-            }
-            if discovery_source.is_some() {
-                peer.discovery_source = discovery_source;
-            }
-            if !capabilities.is_empty() {
+            if authoritative {
+                if hostname.is_some() {
+                    peer.hostname = hostname;
+                }
+                if mac_address.is_some() {
+                    peer.mac_address = mac_address;
+                }
+                if discovery_source.is_some() {
+                    peer.discovery_source = discovery_source;
+                }
                 peer.capabilities = capabilities;
             }
 
@@ -156,12 +158,24 @@ impl PeerManager {
                 addr,
                 last_seen: now,
                 is_offline: false,
-                available_memory_mb,
-                hostname,
-                mac_address,
+                available_memory_mb: if authoritative {
+                    available_memory_mb
+                } else {
+                    0
+                },
+                hostname: if authoritative { hostname } else { None },
+                mac_address: if authoritative { mac_address } else { None },
                 remark: None,
-                discovery_source,
-                capabilities,
+                discovery_source: if authoritative {
+                    discovery_source
+                } else {
+                    None
+                },
+                capabilities: if authoritative {
+                    capabilities
+                } else {
+                    Vec::new()
+                },
             };
             println!(
                 "[PeerManager] 添加新用户: {} ({}) - 可用内存: {} MB",
@@ -234,29 +248,98 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_heartbeats_do_not_erase_discovered_metadata() {
+    fn replies_do_not_replace_authoritative_discovery_metadata() {
         let manager = PeerManager::new();
         manager.add_or_update_with_details(
             "peer-1".into(),
             "Alice".into(),
             "127.0.0.1:8888".into(),
-            512,
+            0,
+            Some("reply-host".into()),
+            Some("ac:de:48:00:11:22".into()),
+            Some("lan".into()),
+            vec!["reply-capability".into()],
+            false,
+        );
+        manager.add_or_update_with_details(
+            "peer-1".into(),
+            "Alice".into(),
+            "127.0.0.1:8888".into(),
+            2356,
             Some("alice-mac".into()),
-            Some("aa:bb:cc:dd:ee:ff".into()),
+            Some("82:ae:17:28:c4:04".into()),
             Some("lan".into()),
             vec!["groups_v1".into()],
+            true,
         );
-        manager.add_or_update_with_memory(
+        manager.add_or_update_with_details(
             "peer-1".into(),
             "Alice".into(),
             "127.0.0.1:8888".into(),
             0,
+            Some("reply-host".into()),
+            Some("ac:de:48:00:11:22".into()),
+            Some("lan".into()),
+            vec!["reply-capability".into()],
+            false,
+        );
+        manager.add_or_update_with_details(
+            "peer-1".into(),
+            "Alice".into(),
+            "127.0.0.1:8888".into(),
+            2367,
+            Some("alice-mac".into()),
+            Some("82:ae:17:28:c4:04".into()),
+            Some("lan".into()),
+            vec!["groups_v1".into()],
+            true,
+        );
+        manager.add_or_update_with_details(
+            "peer-1".into(),
+            "Alice".into(),
+            "127.0.0.1:8888".into(),
+            0,
+            None,
+            None,
+            None,
+            Vec::new(),
+            false,
         );
 
         let peer = manager.get_all_peers().pop().unwrap();
-        assert_eq!(peer.available_memory_mb, 512);
+        assert_eq!(peer.available_memory_mb, 2356);
         assert_eq!(peer.hostname.as_deref(), Some("alice-mac"));
-        assert_eq!(peer.mac_address.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+        assert_eq!(peer.mac_address.as_deref(), Some("82:ae:17:28:c4:04"));
         assert_eq!(peer.capabilities, vec!["groups_v1"]);
+    }
+
+    #[test]
+    fn authoritative_empty_capabilities_clear_stale_parallel_v2() {
+        let manager = PeerManager::new();
+        manager.add_or_update_with_details(
+            "peer-1".into(),
+            "Alice".into(),
+            "127.0.0.1:8888".into(),
+            2356,
+            Some("alice-mac".into()),
+            Some("82:ae:17:28:c4:04".into()),
+            Some("lan".into()),
+            vec!["parallel_file_v2".into()],
+            true,
+        );
+        manager.add_or_update_with_details(
+            "peer-1".into(),
+            "Alice".into(),
+            "127.0.0.1:8888".into(),
+            2356,
+            Some("alice-mac".into()),
+            Some("82:ae:17:28:c4:04".into()),
+            Some("lan".into()),
+            Vec::new(),
+            true,
+        );
+
+        let peer = manager.get_all_peers().pop().unwrap();
+        assert!(peer.capabilities.is_empty());
     }
 }

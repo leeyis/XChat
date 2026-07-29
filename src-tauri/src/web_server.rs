@@ -2,7 +2,8 @@ use axum::extract::ws::{Message, WebSocket};
 use axum::{
     body::Body,
     extract::{
-        ConnectInfo, DefaultBodyLimit, Json, Multipart, Path, Query, State, WebSocketUpgrade,
+        ConnectInfo, DefaultBodyLimit, Json, Multipart, Path, Query, Request, State,
+        WebSocketUpgrade,
     },
     http::{header, Response, StatusCode},
     response::IntoResponse,
@@ -277,6 +278,15 @@ pub async fn start_server(
         .route(
             "/api/uploads/:client_message_id/cancel",
             post(cancel_received_upload_http),
+        )
+        .route(
+            "/api/uploads/v2/prepare",
+            post(prepare_parallel_upload_http)
+                .layer(DefaultBodyLimit::max(64 * 1024)),
+        )
+        .route(
+            "/api/uploads/v2/:transfer_id/:chunk_index",
+            post(receive_parallel_upload_http),
         )
         .route("/api/get_my_name", get(get_name_http))
         .route("/api/get_my_id", get(get_id_http))
@@ -761,6 +771,17 @@ async fn cancel_received_upload_http(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("清理接收临时文件失败: {error}"),
                 );
+            }
+        }
+        if status == "cancelled" {
+            if let Err(error) =
+                crate::network::conversation_file::cleanup_parallel_transfer(
+                    &download_root,
+                    &transfer.id,
+                )
+                .await
+            {
+                return backend_error(error);
             }
         }
         if !matches!(transfer.status.as_str(), "completed" | "cancelled") {
@@ -2101,6 +2122,12 @@ async fn handle_websocket(socket: WebSocket, state: Arc<AppState>) {
                                 .find(|p| p.id == from_id)
                                 .map(|p| p.addr.clone())
                                 .unwrap_or_default();
+                            let parallel_v2 = state.peer_manager.get_all_peers().iter()
+                                .find(|p| p.id == from_id)
+                                .is_some_and(|peer| peer.capabilities.iter().any(
+                                    |capability| capability
+                                        == crate::network::conversation_file::PARALLEL_FILE_CAPABILITY,
+                                ));
 
                             if receiver_addr.is_empty() {
                                 eprintln!("[WebSocket] file_request: 找不到对方地址");
@@ -2124,6 +2151,7 @@ async fn handle_websocket(socket: WebSocket, state: Arc<AppState>) {
                                     sender_msg_id,
                                     from_id,
                                     &receiver_addr,
+                                    parallel_v2,
                                 )
                                 .await
                                 {
@@ -2670,6 +2698,573 @@ async fn complete_received_conversation_file(
         }),
     );
     Ok(message)
+}
+
+async fn prepare_parallel_upload_http(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<crate::network::conversation_file::ParallelPrepareRequest>,
+) -> ApiResponse {
+    use crate::network::conversation_file::{
+        create_or_resume_parallel_manifest, load_parallel_manifest, valid_parallel_prepare,
+        ParallelTransferManifest,
+    };
+
+    if !valid_parallel_prepare(&payload) || payload.file_size > MAX_BROWSER_UPLOAD_BYTES {
+        return api_error(StatusCode::BAD_REQUEST, "并行传输参数无效");
+    }
+    let Some(requested_file_name) = safe_file_name(&payload.file_name) else {
+        return api_error(StatusCode::BAD_REQUEST, "文件名无效");
+    };
+    let conversation = match validate_incoming_file_conversation(
+        &state,
+        &payload.conversation_id,
+        &payload.sender_id,
+    )
+    .await
+    {
+        Ok(conversation) => conversation,
+        Err(error) => return backend_error(error),
+    };
+    let self_id = match crate::db::get_user_id(&state.pool).await {
+        Ok(id) => id,
+        Err(error) => return backend_error(error),
+    };
+    let expected_transfer_id = crate::network::conversation_file::recipient_transfer_id(
+        &payload.client_message_id,
+        &self_id,
+    );
+    if payload.transfer_id != expected_transfer_id
+        && !payload
+            .transfer_id
+            .starts_with(&format!("{expected_transfer_id}:retry:"))
+    {
+        return api_error(StatusCode::BAD_REQUEST, "传输 ID 与接收者不匹配");
+    }
+
+    let transfer_guard =
+        crate::network::conversation_file::lock_receive_file(&payload.client_message_id).await;
+    let configured_root = match crate::db::get_download_path(&state.pool).await {
+        Ok(path) => std::path::PathBuf::from(path),
+        Err(error) => return backend_error(error),
+    };
+    if let Err(error) = tokio::fs::create_dir_all(&configured_root).await {
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("创建下载目录失败: {error}"),
+        );
+    }
+    let download_root = match tokio::fs::canonicalize(&configured_root).await {
+        Ok(path) => path,
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("读取下载目录失败: {error}"),
+            )
+        }
+    };
+
+    let existing =
+        match crate::db::get_message_by_client_id(&state.pool, &payload.client_message_id).await {
+            Ok(message) => message,
+            Err(error) => return backend_error(error),
+        };
+    let is_new = existing.is_none();
+    let message = if let Some(message) = existing {
+        if message.conversation_id.as_deref() != Some(payload.conversation_id.as_str())
+            || message.sender_id != payload.sender_id
+            || message.msg_type != "file"
+            || message
+                .file_size
+                .is_some_and(|size| size != payload.file_size as i64)
+            || message
+                .sender_msg_id
+                .as_deref()
+                .is_some_and(|id| id != payload.sender_msg_id)
+        {
+            return api_error(StatusCode::CONFLICT, "客户端消息 ID 与已有文件冲突");
+        }
+        message
+    } else {
+        let file_name =
+            match available_received_file_name(&download_root, &requested_file_name).await {
+                Ok(name) => name,
+                Err(error) => return backend_error(error),
+            };
+        let receiver_id = (conversation.kind == "direct").then_some(self_id.as_str());
+        let message = match crate::db::save_conversation_message(
+            &state.pool,
+            &payload.conversation_id,
+            &payload.sender_id,
+            receiver_id,
+            &file_name,
+            "file",
+            now_timestamp(),
+            "received",
+            &payload.client_message_id,
+        )
+        .await
+        {
+            Ok(message) => message,
+            Err(error) => return backend_error(error),
+        };
+        let file_status = if crate::db::get_auto_download(&state.pool).await {
+            "downloading"
+        } else {
+            "offered"
+        };
+        let message = match crate::db::set_file_message_metadata(
+            &state.pool,
+            message.id,
+            download_root.join(&file_name).to_str().unwrap_or_default(),
+            payload.file_size as i64,
+            file_status,
+        )
+        .await
+        {
+            Ok(message) => message,
+            Err(error) => return backend_error(error),
+        };
+        if let Err(error) = sqlx::query("UPDATE messages SET sender_msg_id = ? WHERE id = ?")
+            .bind(&payload.sender_msg_id)
+            .bind(message.id)
+            .execute(&state.pool)
+            .await
+        {
+            return backend_error(format!("保存发送端消息 ID 失败: {error}"));
+        }
+        message
+    };
+    let Some(final_file_name) = safe_file_name(&message.content) else {
+        return api_error(StatusCode::CONFLICT, "数据库中的接收文件名无效");
+    };
+    let final_path = download_root.join(&final_file_name);
+    if message.file_status.as_deref() == Some("accepted") {
+        let final_matches = tokio::fs::metadata(&final_path)
+            .await
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() == payload.file_size);
+        let digest_matches = if final_matches {
+            crate::network::conversation_file::sha256_file(&final_path)
+                .await
+                .is_ok_and(|digest| digest == payload.file_sha256)
+        } else {
+            false
+        };
+        if !digest_matches {
+            return api_error(StatusCode::CONFLICT, "已完成文件的本地副本不一致");
+        }
+        let transfer = match crate::db::create_transfer(
+            &state.pool,
+            &payload.transfer_id,
+            Some(message.id),
+            &payload.conversation_id,
+            &payload.sender_id,
+            "receive",
+            "completed",
+            payload.file_size as i64,
+        )
+        .await
+        {
+            Ok(transfer) => transfer,
+            Err(error) => return backend_error(error),
+        };
+        if transfer.status != "completed" {
+            let _ = crate::db::update_transfer(
+                &state.pool,
+                &payload.transfer_id,
+                "completed",
+                payload.file_size as i64,
+                None,
+            )
+            .await;
+        }
+        let _ = crate::network::conversation_file::cleanup_parallel_transfer(
+            &download_root,
+            &payload.transfer_id,
+        )
+        .await;
+        return Json(serde_json::json!({
+            "status": "already_exists",
+            "message_id": message.id,
+            "transfer_id": payload.transfer_id,
+            "received": payload.file_size,
+            "missing_chunks": [],
+        }))
+        .into_response();
+    }
+
+    let manifest = ParallelTransferManifest {
+        version: 2,
+        sender_id: payload.sender_id.clone(),
+        conversation_id: payload.conversation_id.clone(),
+        client_message_id: payload.client_message_id.clone(),
+        transfer_id: payload.transfer_id.clone(),
+        sender_msg_id: payload.sender_msg_id.clone(),
+        file_name: requested_file_name,
+        final_file_name: final_file_name.clone(),
+        file_size: payload.file_size,
+        file_sha256: payload.file_sha256.clone(),
+        chunks: payload.chunks.clone(),
+        message_id: message.id,
+    };
+    match load_parallel_manifest(&download_root, &payload.transfer_id).await {
+        Ok(Some(existing)) if existing != manifest => {
+            return api_error(StatusCode::CONFLICT, "并行传输清单与已有记录冲突")
+        }
+        Ok(_) => {}
+        Err(error) => return backend_error(error),
+    }
+
+    let auto_download = crate::db::get_auto_download(&state.pool).await;
+    let manually_accepted =
+        !is_new && message.file_status.as_deref() == Some("downloading");
+    let transfer_status = if auto_download || manually_accepted {
+        "transferring"
+    } else {
+        "awaiting_acceptance"
+    };
+    let transfer = match crate::db::create_transfer(
+        &state.pool,
+        &payload.transfer_id,
+        Some(message.id),
+        &payload.conversation_id,
+        &payload.sender_id,
+        "receive",
+        transfer_status,
+        payload.file_size as i64,
+    )
+    .await
+    {
+        Ok(transfer) => transfer,
+        Err(error) => return backend_error(error),
+    };
+    if transfer.status == "cancelled" {
+        return api_error(
+            StatusCode::CONFLICT,
+            "该接收尝试已结束，请使用新的传输 ID 重试",
+        );
+    }
+    if transfer.status != transfer_status {
+        if let Err(error) = crate::db::update_transfer(
+            &state.pool,
+            &payload.transfer_id,
+            transfer_status,
+            transfer.bytes_transferred,
+            None,
+        )
+        .await {
+            return backend_error(error);
+        }
+    }
+    if let Err(error) = sqlx::query(
+        "UPDATE transfers
+         SET status = 'failed', error = 'superseded by retry', updated_at = ?
+         WHERE message_id = ? AND direction = 'receive' AND id != ?
+           AND status IN ('queued', 'awaiting_acceptance', 'transferring')",
+    )
+    .bind(now_timestamp())
+    .bind(message.id)
+    .bind(&payload.transfer_id)
+    .execute(&state.pool)
+    .await
+    {
+        return backend_error(format!("结束旧接收传输失败: {error}"));
+    }
+    let visible_file_status = if transfer_status == "awaiting_acceptance" {
+        "offered"
+    } else {
+        "downloading"
+    };
+    if message.file_status.as_deref() != Some(visible_file_status) {
+        if let Err(error) =
+            crate::db::update_file_status_by_id(&state.pool, message.id, visible_file_status).await
+        {
+            return backend_error(error);
+        }
+    }
+
+    let (manifest, missing_chunks, received) =
+        match create_or_resume_parallel_manifest(&download_root, manifest).await {
+            Ok(result) => result,
+            Err(error) if error.contains("冲突") => {
+                return api_error(StatusCode::CONFLICT, error)
+            }
+            Err(error) => return backend_error(error),
+        };
+    if let Err(error) = sqlx::query(
+        "UPDATE transfers
+         SET status = ?, bytes_transferred = ?, error = NULL, updated_at = ?
+         WHERE id = ? AND status != 'cancelled'",
+    )
+    .bind(transfer_status)
+    .bind(received as i64)
+    .bind(now_timestamp())
+    .bind(&payload.transfer_id)
+    .execute(&state.pool)
+    .await
+    {
+        return backend_error(format!("恢复并行传输进度失败: {error}"));
+    }
+    if is_new {
+        let sender_name = state
+            .peer_manager
+            .get_all_peers()
+            .into_iter()
+            .find(|peer| peer.id == payload.sender_id)
+            .map(|peer| peer.name)
+            .unwrap_or_else(|| payload.sender_id.clone());
+        broadcast_incoming_event(
+            &state,
+            serde_json::json!({
+                "id": message.id,
+                "message_id": message.id,
+                "client_message_id": payload.client_message_id,
+                "conversation_id": payload.conversation_id,
+                "sender_id": payload.sender_id,
+                "from_id": payload.sender_id,
+                "sender_name": sender_name,
+                "from_name": sender_name,
+                "content": final_file_name,
+                "msg_type": "file",
+                "timestamp": message.timestamp,
+                "status": "received",
+                "file_status": visible_file_status,
+                "file_size": payload.file_size,
+                "sender_msg_id": payload.sender_msg_id,
+                "transfer_id": payload.transfer_id,
+            }),
+        );
+    }
+    if transfer_status == "awaiting_acceptance" {
+        return (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "status": "awaiting_acceptance",
+                "message_id": message.id,
+                "transfer_id": manifest.transfer_id,
+                "received": received,
+                "missing_chunks": missing_chunks,
+            })),
+        )
+            .into_response();
+    }
+    drop(transfer_guard);
+    if missing_chunks.is_empty() {
+        return match finalize_parallel_receive(&state, &download_root, &manifest).await {
+            Ok(message) => Json(serde_json::json!({
+                "status": "completed",
+                "message_id": message.id,
+                "transfer_id": manifest.transfer_id,
+                "received": manifest.file_size,
+                "missing_chunks": [],
+            }))
+            .into_response(),
+            Err(error) => backend_error(error),
+        };
+    }
+    Json(serde_json::json!({
+        "status": "ready",
+        "message_id": message.id,
+        "transfer_id": manifest.transfer_id,
+        "received": received,
+        "missing_chunks": missing_chunks,
+    }))
+    .into_response()
+}
+
+async fn finalize_parallel_receive(
+    state: &AppState,
+    download_root: &std::path::Path,
+    manifest: &crate::network::conversation_file::ParallelTransferManifest,
+) -> Result<crate::db::MessageRecord, String> {
+    let _guard =
+        crate::network::conversation_file::lock_receive_file(&manifest.client_message_id).await;
+    let transfer = crate::db::get_transfer(&state.pool, &manifest.transfer_id)
+        .await?
+        .ok_or_else(|| "并行接收传输不存在".to_string())?;
+    if transfer.status == "completed" {
+        return crate::db::get_file_message_by_id(&state.pool, manifest.message_id)
+            .await?
+            .ok_or_else(|| "并行文件消息不存在".to_string());
+    }
+    if transfer.status != "transferring" {
+        return Err("并行接收传输已结束".to_string());
+    }
+    let partial_path =
+        match crate::network::conversation_file::merge_parallel_parts(download_root, manifest)
+            .await
+        {
+            Ok(path) => path,
+            Err(error) => {
+                let _ = crate::db::update_transfer(
+                    &state.pool,
+                    &manifest.transfer_id,
+                    "failed",
+                    transfer.bytes_transferred,
+                    Some(&error),
+                )
+                .await;
+                let _ = crate::db::update_file_status_by_id(
+                    &state.pool,
+                    manifest.message_id,
+                    "failed",
+                )
+                .await;
+                return Err(error);
+            }
+        };
+    let expected_final_path = download_root.join(&manifest.final_file_name);
+    let already_materialized = tokio::fs::metadata(&expected_final_path)
+        .await
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() == manifest.file_size)
+        && crate::network::conversation_file::sha256_file(&expected_final_path)
+            .await
+            .is_ok_and(|hash| hash == manifest.file_sha256);
+    let (final_file_name, final_path) = if already_materialized {
+        let _ = tokio::fs::remove_file(&partial_path).await;
+        (manifest.final_file_name.clone(), expected_final_path)
+    } else {
+        finalize_received_file(download_root, &manifest.final_file_name, &partial_path).await?
+    };
+    if final_file_name != manifest.final_file_name {
+        if let Err(error) = sqlx::query("UPDATE messages SET content = ? WHERE id = ?")
+            .bind(&final_file_name)
+            .bind(manifest.message_id)
+            .execute(&state.pool)
+            .await
+        {
+            let _ = tokio::fs::remove_file(&final_path).await;
+            return Err(format!("保存并行接收文件名失败: {error}"));
+        }
+    }
+    let message = match complete_received_conversation_file(
+        state,
+        manifest.message_id,
+        &manifest.conversation_id,
+        &manifest.client_message_id,
+        &manifest.sender_id,
+        &final_path,
+        manifest.file_size as i64,
+    )
+    .await
+    {
+        Ok(message) => message,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&final_path).await;
+            return Err(error);
+        }
+    };
+    crate::db::update_transfer(
+        &state.pool,
+        &manifest.transfer_id,
+        "completed",
+        manifest.file_size as i64,
+        None,
+    )
+    .await?;
+    crate::network::conversation_file::cleanup_parallel_transfer(
+        download_root,
+        &manifest.transfer_id,
+    )
+    .await?;
+    Ok(message)
+}
+
+async fn receive_parallel_upload_http(
+    State(state): State<Arc<AppState>>,
+    Path((transfer_id, chunk_index)): Path<(String, usize)>,
+    request: Request,
+) -> ApiResponse {
+    let download_root = match crate::db::get_download_path(&state.pool).await {
+        Ok(path) => std::path::PathBuf::from(path),
+        Err(error) => return backend_error(error),
+    };
+    let download_root = match tokio::fs::canonicalize(&download_root).await {
+        Ok(path) => path,
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("读取下载目录失败: {error}"),
+            )
+        }
+    };
+    let manifest =
+        match crate::network::conversation_file::load_parallel_manifest(
+            &download_root,
+            &transfer_id,
+        )
+        .await
+        {
+            Ok(Some(manifest)) => manifest,
+            Ok(None) => return api_error(StatusCode::NOT_FOUND, "并行传输尚未准备"),
+            Err(error) => return backend_error(error),
+        };
+    let Some(chunk) = manifest
+        .chunks
+        .get(chunk_index)
+        .filter(|chunk| chunk.index == chunk_index)
+    else {
+        return api_error(StatusCode::BAD_REQUEST, "并行分块序号无效");
+    };
+    let content_length = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    if content_length != Some(chunk.length) {
+        return api_error(StatusCode::BAD_REQUEST, "并行分块长度无效");
+    }
+    let result = match crate::network::conversation_file::receive_parallel_chunk(
+        &state.pool,
+        &download_root,
+        &transfer_id,
+        chunk_index,
+        request.into_body(),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) if error.contains("已结束") => {
+            return api_error(StatusCode::CONFLICT, error)
+        }
+        Err(error) if error.contains("无效") || error.contains("长度") => {
+            return api_error(StatusCode::BAD_REQUEST, error)
+        }
+        Err(error) => return backend_error(error),
+    };
+    broadcast_incoming_event(
+        &state,
+        serde_json::json!({
+            "msg_type": "file_download_progress",
+            "id": result.manifest.message_id,
+            "client_message_id": result.manifest.client_message_id,
+            "conversation_id": result.manifest.conversation_id,
+            "file_name": result.manifest.final_file_name,
+            "file_status": "downloading",
+            "received": result.received,
+            "total": result.manifest.file_size,
+            "transfer_id": result.manifest.transfer_id,
+        }),
+    );
+    if result.complete {
+        return match finalize_parallel_receive(&state, &download_root, &result.manifest).await {
+            Ok(message) => Json(serde_json::json!({
+                "status": "completed",
+                "message_id": message.id,
+                "transfer_id": result.manifest.transfer_id,
+                "received": result.manifest.file_size,
+            }))
+            .into_response(),
+            Err(error) => backend_error(error),
+        };
+    }
+    Json(serde_json::json!({
+        "status": "receiving",
+        "message_id": result.manifest.message_id,
+        "transfer_id": result.manifest.transfer_id,
+        "received": result.received,
+        "total": result.manifest.file_size,
+    }))
+    .into_response()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5061,6 +5656,196 @@ mod websocket_protocol_tests {
             &cancel_transfer_id
         )
         .exists());
+
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn conflicting_parallel_prepare_does_not_reactivate_failed_transfer() {
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-parallel-conflict-{}", uuid::Uuid::new_v4()));
+        let pool = crate::db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        let download_dir = app_dir.join("downloads");
+        crate::db::update_download_path(
+            &pool,
+            download_dir.to_string_lossy().into_owned(),
+        )
+        .await
+        .unwrap();
+        crate::db::set_auto_download(&pool, true).await.unwrap();
+        crate::db::save_or_update_user(
+            &pool,
+            "peer-a".into(),
+            "Alice".into(),
+            "127.0.0.1:9".into(),
+            true,
+            0,
+        )
+        .await
+        .unwrap();
+        let conversation = crate::db::ensure_direct_conversation(&pool, "peer-a")
+            .await
+            .unwrap();
+        let self_id = crate::db::get_user_id(&pool).await.unwrap();
+        let transfer_id =
+            crate::network::conversation_file::recipient_transfer_id("parallel-conflict", &self_id);
+        let (ws_broadcast, _) = broadcast::channel(8);
+        let state = Arc::new(AppState {
+            pool: pool.clone(),
+            peer_manager: Arc::new(PeerManager::new()),
+            media_token: String::new(),
+            ws_broadcast,
+            #[cfg(feature = "desktop")]
+            app_handle: None,
+        });
+        let payload = crate::network::conversation_file::ParallelPrepareRequest {
+            sender_id: "peer-a".into(),
+            conversation_id: conversation.id,
+            client_message_id: "parallel-conflict".into(),
+            transfer_id: transfer_id.clone(),
+            sender_msg_id: "parallel-sender-1".into(),
+            file_name: "report.bin".into(),
+            file_size: 6,
+            file_sha256: "0".repeat(64),
+            chunks: crate::network::conversation_file::parallel_chunk_ranges(6),
+        };
+
+        let response =
+            prepare_parallel_upload_http(State(state.clone()), Json(payload.clone())).await;
+        assert!(response.status().is_success());
+        crate::db::update_transfer(
+            &pool,
+            &transfer_id,
+            "failed",
+            0,
+            Some("interrupted"),
+        )
+        .await
+        .unwrap();
+        let message = crate::db::get_message_by_client_id(&pool, "parallel-conflict")
+            .await
+            .unwrap()
+            .unwrap();
+        crate::db::update_file_status_by_id(&pool, message.id, "failed")
+            .await
+            .unwrap();
+
+        let mut conflicting = payload;
+        conflicting.file_sha256 = "1".repeat(64);
+        let response = prepare_parallel_upload_http(State(state), Json(conflicting)).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let transfer = crate::db::get_transfer(&pool, &transfer_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(transfer.status, "failed");
+        let message = crate::db::get_message_by_client_id(&pool, "parallel-conflict")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(message.file_status.as_deref(), Some("failed"));
+
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn parallel_finalize_retry_reuses_materialized_file() {
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-parallel-finalize-{}", uuid::Uuid::new_v4()));
+        let pool = crate::db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        let download_dir = app_dir.join("downloads");
+        crate::db::update_download_path(
+            &pool,
+            download_dir.to_string_lossy().into_owned(),
+        )
+        .await
+        .unwrap();
+        crate::db::set_auto_download(&pool, true).await.unwrap();
+        crate::db::save_or_update_user(
+            &pool,
+            "peer-a".into(),
+            "Alice".into(),
+            "127.0.0.1:9".into(),
+            true,
+            0,
+        )
+        .await
+        .unwrap();
+        let conversation = crate::db::ensure_direct_conversation(&pool, "peer-a")
+            .await
+            .unwrap();
+        let self_id = crate::db::get_user_id(&pool).await.unwrap();
+        let transfer_id =
+            crate::network::conversation_file::recipient_transfer_id("parallel-finalize", &self_id);
+        let data = b"abcdef";
+        let source = app_dir.join("source.bin");
+        tokio::fs::write(&source, data).await.unwrap();
+        let (ws_broadcast, _) = broadcast::channel(8);
+        let state = Arc::new(AppState {
+            pool: pool.clone(),
+            peer_manager: Arc::new(PeerManager::new()),
+            media_token: String::new(),
+            ws_broadcast,
+            #[cfg(feature = "desktop")]
+            app_handle: None,
+        });
+        let payload = crate::network::conversation_file::ParallelPrepareRequest {
+            sender_id: "peer-a".into(),
+            conversation_id: conversation.id,
+            client_message_id: "parallel-finalize".into(),
+            transfer_id: transfer_id.clone(),
+            sender_msg_id: "parallel-sender-2".into(),
+            file_name: "report.bin".into(),
+            file_size: data.len() as u64,
+            file_sha256: crate::network::conversation_file::sha256_file(&source)
+                .await
+                .unwrap(),
+            chunks: crate::network::conversation_file::parallel_chunk_ranges(data.len() as u64),
+        };
+
+        let response =
+            prepare_parallel_upload_http(State(state.clone()), Json(payload.clone())).await;
+        assert!(response.status().is_success());
+        let received = crate::network::conversation_file::receive_parallel_chunk(
+            &pool,
+            &download_dir,
+            &transfer_id,
+            0,
+            Body::from(data.as_slice()),
+        )
+        .await
+        .unwrap();
+        assert!(received.complete);
+
+        // Simulate a crash after the hard link is published but before DB completion.
+        let partial = crate::network::conversation_file::merge_parallel_parts(
+            &download_dir,
+            &received.manifest,
+        )
+        .await
+        .unwrap();
+        let (_, first_path) =
+            finalize_received_file(&download_dir, &received.manifest.final_file_name, &partial)
+                .await
+                .unwrap();
+
+        let message =
+            finalize_parallel_receive(&state, &download_dir, &received.manifest)
+                .await
+                .unwrap();
+        assert_eq!(message.file_path.as_deref(), first_path.to_str());
+        let final_files = std::fs::read_dir(&download_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("bin"))
+            .count();
+        assert_eq!(final_files, 1);
 
         pool.close().await;
         std::fs::remove_dir_all(app_dir).unwrap();

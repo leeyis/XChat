@@ -7,6 +7,8 @@
 - 完成后提供运行、预览和验证命令。
 - 0.1.0 追加范围：品牌与图标、空状态、设置导航、Dock 重开、表情、截图编辑、附件草稿、图片内联和严格原型文件中心。
 - 截图首版必须支持矩形、椭圆、箭头、画笔、马赛克、文本和回退。
+- 二次测试反馈要求：表情数量增加且点击后自动收起；截图编辑工具栏参考微信并悬浮在选区下方；默认本地名称取系统机器名。
+- 文件补充要求：从系统拖文件到输入区后先进入附件草稿，点击发送才传输；发送时显示进度和速度并支持并行传输；完成文件的“打开”使用可选菜单同时提供打开文件和打开目录。
 
 ## 研究发现
 - 当前前端是 `src/` 下无依赖的 HTML/CSS/JavaScript；桌面由 Tauri 加载，Web 由 `RustEmbed` 嵌入同一目录。
@@ -44,6 +46,30 @@
 - 双实例联调确认接收端图片可通过受控 media API 内联显示；Web 发送端源文件位于 `xchat-web-staging`，传输终态清理后数据库路径失效，因此同一发送端刷新后仍会退化为文件卡片。修复必须把“用户上传到 Web 的受管副本”持久化，而不能放宽任意发送源文件的 HTTP 读取。
 - Web 上传已改为 `<download_path>/.xchat-outbox/<uuid>/<safe-name>`；只有由数据库消息 ID 定位且 canonical path 位于该受管目录内的 outgoing 文件可读，任意原始发送路径继续 403。
 - 截图文本输入必须在导出前同步提交到操作 ref；只更新 React state 会在同一事件循环内重绘时丢失最后一次文本操作。
+- 真实运行实例的同一 peer 在 12 秒内出现两个非空 MAC 和多个非零内存值；进程级 OnceLock 只能保证单个发送进程稳定，接收端仍会被相同 device ID 的多个详细来源覆盖。
+- 现有 `legacy_heartbeats_do_not_erase_discovered_metadata` 只验证 0/空字段不覆盖，不能捕获两个详细来源携带不同非空值的周期跳动。
+- 微信桌面截图的常见结构是：完成选区后把工具栏贴在选区下方；工具顺序通常为方框、椭圆、表情、箭头、画笔、马赛克、文字、撤销，绘制类工具再显示颜色和粗细。参考：https://www.shujuwa.net/weixin/wechat-screenshot-shortcut-keys
+- 用户提供的新版微信截图图进一步显示：工具条为浅色圆角悬浮条，主工具与撤销/重做、取消、钉图、保存、完成之间用分隔线分组；当前 Xchat 的整页顶部表单式工具栏与该层级明显不符。
+- Snipaste 的更新记录说明工具条需要根据截图区域和屏幕边界调整位置，并把文字/画笔作为直接快捷标注工具；本轮只复用这些已明确的交互，不引入 OCR、长截图或二次编辑等新增范围。参考：https://zh.snipaste.com/download.html
+- 当前 `EMOJI_SET` 固定为 21 个 Unicode；`insertEmoji` 已正确按 selectionStart/selectionEnd 插入并恢复光标，但点击后没有调用 `setEmojiOpen(false)`。
+- 当前截图编辑器把工具栏作为 `grid` 的第三行全宽 footer，全部使用带文字的普通按钮；与微信式选区下方圆角悬浮工具条的差异主要在布局和控件层级，Canvas 操作序列、导出、完成和钉图数据流无需重写。
+- 现有 `capture-drawing.test.js` 已覆盖六类绘制命令，悬浮工具栏改版可只增加“工具选择/撤销重做状态”的轻量测试，不需要引入新的画布库。
+- 当前新数据库在 `init_db_with_path` 中调用 `generate_random_name()` 写入 `username`，因此设置页显示 `Happy-Fox-662` 等随机名；系统 hostname 已由 `local_device_metadata()` 读取，但没有用于默认用户名。
+- “默认取机器名”需要同时覆盖新数据库和历史自动生成名：新库直接写 hostname；旧库只在名称匹配内置 `形容词-动物-三位数` 生成规则时迁移，不能覆盖用户自行修改过的名称。
+- 用户截图显示发送方文件卡只有“传输中 · 总大小”和取消按钮，底部另有全局传输条，但两处均缺少 `bytes_transferred / bytes_total`、百分比和速度；接收完成卡只有单一“打开”动作。
+- React Composer 的浏览器 `onDrop` 已能把 `dataTransfer.files` 加入草稿，但尚未证明 Tauri WebView 的系统文件拖入一定会进入 DOM drop；桌面路径需要同时核对 Tauri drag-drop 事件。
+- 当前稳定传输协议按 4 MiB 分块串行发送，接收端对同一 `client_message_id` 加全局异步锁、按当前文件长度校验预期 offset，并以 append 模式写入；直接让多个 chunk 并发会被串行锁抵消，或在去锁后造成乱序/损坏。
+- `TransferRecord` 已包含 `bytes_transferred`、`bytes_total`、`created_at`、`updated_at`，前端可以用连续快照差分计算瞬时速度并直接显示进度，无需先扩数据库 schema。
+- 真正的单文件并行分块需要把接收端改为随机 offset 写入、记录已完成 chunk 集合并在全部完成后原子 finalize；它不是只把一个 `for` 换成 `join_all` 的前端优化。
+- 截图现有 macOS 流程先用系统交互式选区生成裁剪图，再打开独立 Tauri 编辑窗；本轮可以把工具栏贴在编辑窗内图片下方，但若要求保留原屏选区控制点并让工具栏随原屏选区移动，则必须重写成透明全屏捕获层并处理多屏/Retina 坐标。
+- 精细采样和 SQLite 对照排除了 React：reply 帧携带 `memory=0` 但仍带另一网卡 MAC，权威 announcement 携带动态 available memory；两类帧交替写入 PeerManager 与 users 表。MAC 应只允许非 reply 权威帧更新，内存只接受首个正值。
+- MAC 不能简单“首值锁定”，因为首包可能是错误网卡 reply；权威 announcement 必须可以修正历史错误值。内存则可锁定首个正值，保持当前字段语义而不再闪动。
+- Tauri 2 的 Webview drag-drop 事件会提供原生文件 `paths` 和指针位置，可按坐标确认落点在 Composer 后复用现有附件草稿。官方接口：https://v2.tauri.app/reference/javascript/api/namespacewebview/#ondragdropevent
+- Tauri 官方还明确要求组件卸载时调用返回的 unlisten，并提示调试器停靠时 drop position 可能不准；实现会清理 listener，QA 时关闭/分离 DevTools 后验证输入区坐标。
+- 用户已明确要求单文件 4 分块并行，因此必须新增能力协商的协议 v2，并保留 v1 顺序 append 回退；只做多个文件并发不满足需求。
+- 协议 v2 推荐先 prepare/accept，再并发最多 4 个带 index/offset 的 chunk。接收端每块独立临时文件并幂等落盘，全部到齐后按序合并、校验总长度并原子改名；避免跨平台随机写 API和乱序 append。
+- 活动传输速度可由连续 transfer 快照的 byte delta / monotonic elapsed 计算；活动时约 1 秒刷新、空闲停止，不需要持久化瞬时速度。
+- 本机 IP 不能用公网目标推导默认路由：Clash TUN 会返回 `198.18.0.1`；连接 Xchat 已使用的局域网组播地址可稳定选中物理 LAN 接口，本机实测返回 `172.27.94.249`。
 
 ## 技术决策
 | 决策 | 理由 |
@@ -66,6 +92,14 @@
 |------|---------|
 | 设计目录未被 Git 跟踪 | 只读取并引用，不删除、不移动、不顺带提交 |
 | 旧 Rust 代码编译时内嵌 `src/css/vscode.css` | React 构建的 public 资源保留该兼容文件，避免无关后端改造 |
+| v2 prepare 冲突会先复活失败任务 | 在修改 transfer/message 状态前校验既有 manifest，并用回归测试锁定 |
+| v2 高并发失败路径存在状态与临时文件不一致 | 分别补能力降级、分块回滚、远端失败和 finalize 恢复的聚焦测试与最小状态机修复 |
+
+### v2 稳定性修复笔记
+- `receive_parallel_chunk` 只有读取流、长度越界和普通 write 失败会清临时文件并回滚；进度 SQL、flush、锁后 DB 查询、rename 和最终校正仍会直接 `?` 返回。
+- 聚焦测试使用 SQLite trigger 令第二次进度更新失败：第一次上报成功，第二次失败，验证本次已上报字节回到 0 且不遗留 `.tmp`。
+- 现有远端终态 endpoint 对 `status=failed` 本就保留 v2 part；发送端遗漏来自 `run_upload` 的 `!job.parallel_v2` 条件，移除即可复用安全边界。
+- finalize 的重复文件来自“hard link 已成功、DB 尚未完成”的崩溃窗口；重试时校验并复用 manifest 预期路径即可保持幂等，无需引入新存储层。
 
 ## 资源
 - `ui-ref/DESIGN.md`

@@ -50,6 +50,121 @@ function browserCanvas() {
   return document.createElement("canvas");
 }
 
+export function createCaptureHistory() {
+  return { operations: [], redo: [] };
+}
+
+export function addCaptureOperation(history, operation) {
+  return {
+    operations: [...history.operations, operation],
+    redo: [],
+  };
+}
+
+export function undoCaptureOperation(history) {
+  if (!history.operations.length) return history;
+  const operations = history.operations.slice(0, -1);
+  return {
+    operations,
+    redo: [...history.redo, history.operations.at(-1)],
+  };
+}
+
+export function redoCaptureOperation(history) {
+  if (!history.redo.length) return history;
+  return {
+    operations: [...history.operations, history.redo.at(-1)],
+    redo: history.redo.slice(0, -1),
+  };
+}
+
+export function placeCaptureToolbar(
+  selection,
+  toolbar,
+  viewport,
+  gap = 8,
+  padding = 8,
+) {
+  const below = selection.y + selection.height + gap;
+  const side =
+    below + toolbar.height <= viewport.height - padding ? "bottom" : "top";
+  const desiredTop =
+    side === "bottom" ? below : selection.y - gap - toolbar.height;
+  const maxLeft = Math.max(padding, viewport.width - toolbar.width - padding);
+  const maxTop = Math.max(padding, viewport.height - toolbar.height - padding);
+  return {
+    left: Math.min(
+      maxLeft,
+      Math.max(padding, selection.x + selection.width - toolbar.width),
+    ),
+    top: Math.min(maxTop, Math.max(padding, desiredTop)),
+    side,
+  };
+}
+
+function clamp(value, minimum, maximum) {
+  return Math.min(Math.max(value, minimum), maximum);
+}
+
+export function normalizeCaptureSelection(start, end, viewport) {
+  const startX = clamp(start.x, 0, viewport.width);
+  const startY = clamp(start.y, 0, viewport.height);
+  const endX = clamp(end.x, 0, viewport.width);
+  const endY = clamp(end.y, 0, viewport.height);
+  return {
+    x: Math.min(startX, endX),
+    y: Math.min(startY, endY),
+    width: Math.abs(endX - startX),
+    height: Math.abs(endY - startY),
+  };
+}
+
+export function moveCaptureSelection(selection, delta, viewport) {
+  return {
+    ...selection,
+    x: clamp(
+      selection.x + delta.x,
+      0,
+      Math.max(0, viewport.width - selection.width),
+    ),
+    y: clamp(
+      selection.y + delta.y,
+      0,
+      Math.max(0, viewport.height - selection.height),
+    ),
+  };
+}
+
+export function resizeCaptureSelection(
+  selection,
+  handle,
+  point,
+  viewport,
+  minimum = 24,
+) {
+  const right = selection.x + selection.width;
+  const bottom = selection.y + selection.height;
+  let x = selection.x;
+  let y = selection.y;
+  let nextRight = right;
+  let nextBottom = bottom;
+
+  if (handle.includes("w")) x = clamp(point.x, 0, right - minimum);
+  if (handle.includes("e")) {
+    nextRight = clamp(point.x, selection.x + minimum, viewport.width);
+  }
+  if (handle.includes("n")) y = clamp(point.y, 0, bottom - minimum);
+  if (handle.includes("s")) {
+    nextBottom = clamp(point.y, selection.y + minimum, viewport.height);
+  }
+  return {
+    x,
+    y,
+    width: nextRight - x,
+    height: nextBottom - y,
+  };
+}
+
 export function drawCaptureOperation(
   context,
   operation,

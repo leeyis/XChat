@@ -51,6 +51,33 @@ const DOCUMENT_EXTENSIONS = new Set([
 const AUDIO_EXTENSIONS = new Set(["aac", "flac", "m4a", "mp3", "ogg", "wav"]);
 const VIDEO_EXTENSIONS = new Set(["avi", "mkv", "mov", "mp4", "webm"]);
 
+export const EMOJI_SET = [
+  "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊",
+  "😇", "🙂", "🙃", "😉", "😌", "😍", "🥰", "😘", "😋",
+  "😛", "😝", "😜", "🤪", "🤨", "🧐", "🤓", "😎", "🤩",
+  "🥳", "😏", "😒", "😞", "😔", "😟", "😕", "🙁", "😣",
+  "😖", "😫", "😩", "🥺", "😢", "😭", "😤", "😠", "😡",
+  "🤬", "🤯", "😳", "🥵", "🥶", "😱", "😨", "😰", "😥",
+  "🤔", "🤭", "🤫", "🤥", "😶", "😐", "😑", "😬", "🙄",
+  "😯", "😮", "😲", "🥱", "😴", "🤤", "😵", "🤐", "🤢",
+  "👍", "👎", "👌", "🤌", "✌️", "🤞", "🤟", "🤘", "🤙",
+  "👈", "👉", "👆", "👇", "☝️", "✋", "👋", "🤝", "👏",
+  "🙏", "💪", "❤️", "🧡", "💛", "💚", "💙", "💜", "💔",
+  "✅", "❌", "🔥", "⭐", "✨", "🎉", "🎁", "📎", "🚀",
+];
+
+export const ACTIVE_TRANSFER_STATES = new Set([
+  "queued",
+  "waiting_peer",
+  "offering",
+  "awaiting_acceptance",
+  "transferring",
+  "receiving",
+  "uploading",
+  "downloading",
+  "cancelling",
+]);
+
 class TransportError extends Error {
   constructor(message, code = "transport_error", status = 0, retryable = true) {
     super(message);
@@ -200,6 +227,59 @@ export function shortcutLabelFromEvent(event) {
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+export function insertTextAtSelection(value, inserted, selectionStart, selectionEnd) {
+  const text = String(value ?? "");
+  const start = Math.max(0, Math.min(Number(selectionStart) || 0, text.length));
+  const end = Math.max(start, Math.min(Number(selectionEnd) || start, text.length));
+  const addition = String(inserted ?? "");
+  return {
+    value: `${text.slice(0, start)}${addition}${text.slice(end)}`,
+    caret: start + addition.length,
+  };
+}
+
+export function isPhysicalPointInsideRect(position, rect, scale = 1) {
+  if (!position || !rect) return false;
+  const ratio = Number(scale) > 0 ? Number(scale) : 1;
+  const x = Number(position.x) / ratio;
+  const y = Number(position.y) / ratio;
+  return (
+    Number.isFinite(x) &&
+    Number.isFinite(y) &&
+    x >= rect.left &&
+    x <= rect.right &&
+    y >= rect.top &&
+    y <= rect.bottom
+  );
+}
+
+export function measureTransfers(previous = [], current = [], elapsedMs = 0) {
+  const before = new Map(previous.map((transfer) => [transfer.id, transfer]));
+  const elapsedSeconds = Number(elapsedMs) > 0 ? Number(elapsedMs) / 1000 : 0;
+  return current.map((transfer) => {
+    const bytesTotal = Math.max(0, Number(transfer.bytes_total ?? 0));
+    const bytesTransferred = Math.max(
+      0,
+      Math.min(Number(transfer.bytes_transferred ?? 0), bytesTotal || Infinity),
+    );
+    const prior = before.get(transfer.id);
+    const speed =
+      prior && elapsedSeconds > 0 && ACTIVE_TRANSFER_STATES.has(transfer.status)
+        ? Math.max(0, bytesTransferred - Number(prior.bytes_transferred ?? 0)) /
+          elapsedSeconds
+        : 0;
+    return {
+      ...transfer,
+      bytes_total: bytesTotal,
+      bytes_transferred: bytesTransferred,
+      progress_percent: bytesTotal
+        ? Math.min(100, Math.round((bytesTransferred / bytesTotal) * 100))
+        : 0,
+      speed_bps: Math.round(speed),
+    };
+  });
 }
 
 export function normalizeMessage(raw = {}, selfId = "", conversationId = "") {
@@ -421,6 +501,7 @@ function normalizeSettings(raw = {}) {
 
 function normalizeWorkspace(raw, previous, runtime) {
   const source = raw?.snapshot ?? raw ?? {};
+  const sampledAt = globalThis.performance?.now?.() ?? Date.now();
   const self = {
     id: source.self?.id ?? source.self_id ?? "",
     name: source.self?.name ?? source.self_name ?? source.settings?.name ?? "",
@@ -441,7 +522,12 @@ function normalizeWorkspace(raw, previous, runtime) {
     conversations,
     devices,
     files: source.files ?? [],
-    transfers: source.transfers ?? [],
+    transfers: measureTransfers(
+      previous.transfers,
+      source.transfers ?? [],
+      previous.transfer_sample_at ? sampledAt - previous.transfer_sample_at : 0,
+    ),
+    transfer_sample_at: sampledAt,
     settings,
     capabilities: runtimeCapabilities(
       runtime,
@@ -633,8 +719,12 @@ class TauriAdapter {
       title: uiCopy("选择要发送的文件", "Choose files to send"),
     });
     if (!selected) return [];
+    return this.attachmentsFromPaths(Array.isArray(selected) ? selected : [selected]);
+  }
+
+  async attachmentsFromPaths(paths) {
     const attachments = [];
-    for (const path of Array.isArray(selected) ? selected : [selected]) {
+    for (const path of paths) {
       const attachment = normalizeDraftAttachment(path);
       if (isImageFile(attachment) && this.tauri.fs?.readFile) {
         try {
@@ -649,6 +739,34 @@ class TauriAdapter {
       attachments.push(attachment);
     }
     return attachments;
+  }
+
+  async validateDroppedPaths(paths = []) {
+    const files = [];
+    const errors = [];
+    for (const path of paths) {
+      try {
+        const metadata = await this.tauri.fs?.stat?.(path);
+        if (metadata?.isDirectory) {
+          errors.push(
+            uiCopy(
+              `不能拖入文件夹：${draftName(path)}`,
+              `Folders cannot be attached: ${draftName(path)}`,
+            ),
+          );
+        } else {
+          files.push(path);
+        }
+      } catch {
+        errors.push(
+          uiCopy(
+            `文件不可读或已不存在：${draftName(path)}`,
+            `The file is unreadable or no longer exists: ${draftName(path)}`,
+          ),
+        );
+      }
+    }
+    return { files: await this.attachmentsFromPaths(files), errors };
   }
 
   async stageImage(file) {
@@ -686,6 +804,10 @@ class TauriAdapter {
 
   pinCapture(dataUrl) {
     return this.invoke("pin_capture", { dataUrl });
+  }
+
+  saveCapture(dataUrl) {
+    return this.invoke("save_capture_editor", { dataUrl });
   }
 
   readMessageMedia(messageId) {
@@ -1153,6 +1275,13 @@ class HttpWsAdapter {
     globalThis.open(dataUrl, "_blank", "popup");
   }
 
+  saveCapture(dataUrl) {
+    const link = document.createElement("a");
+    link.href = dataUrl;
+    link.download = `Xchat-${Date.now()}.png`;
+    link.click();
+  }
+
   async readMessageMedia(messageId) {
     const response = await fetch(`/api/download/${encodeURIComponent(messageId)}`);
     if (!response.ok) throw new TransportError(uiCopy("图片不可用", "Image unavailable"));
@@ -1281,6 +1410,7 @@ function makeInitialSnapshot(runtime) {
     devices: [],
     files: [],
     transfers: [],
+    transfer_sample_at: 0,
     draftAttachments: {},
     searchResults: [],
     settings: normalizeSettings(),
@@ -1381,10 +1511,28 @@ export function createXChatModule() {
     }
   };
 
+  const schedulePoll = () => {
+    clearTimeout(pollTimer);
+    if (!started) return;
+    const delay = snapshot.transfers.some((transfer) =>
+      ACTIVE_TRANSFER_STATES.has(transfer.status),
+    )
+      ? 1000
+      : 5000;
+    pollTimer = setTimeout(async () => {
+      if (!started) return;
+      if (document.visibilityState === "visible") {
+        await refreshWorkspace({ quiet: true }).catch(() => {});
+      }
+      schedulePoll();
+    }, delay);
+  };
+
   const scheduleRefresh = () => {
     clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(() => {
-      refreshWorkspace({ quiet: true }).catch(() => {});
+    refreshTimer = setTimeout(async () => {
+      await refreshWorkspace({ quiet: true }).catch(() => {});
+      schedulePoll();
       const active = snapshot.conversations.find(
         (conversation) => conversation.id === snapshot.activeConversationId,
       );
@@ -1489,12 +1637,8 @@ export function createXChatModule() {
         if (started) return;
         started = true;
         stopEvents = adapter.subscribe(handleEvent);
-        pollTimer = setInterval(() => {
-          if (document.visibilityState === "visible") {
-            refreshWorkspace({ quiet: true }).catch(() => {});
-          }
-        }, 5000);
         await refreshWorkspace();
+        schedulePoll();
         if (snapshot.activeConversationId) {
           const conversation = activeConversation();
           if (conversation) await loadMessages(conversation);
@@ -1642,6 +1786,7 @@ export function createXChatModule() {
       case "message.sendFiles": {
         const conversation = activeConversation();
         if (!conversation) return;
+        scheduleRefresh();
         const result = await adapter.sendFiles(conversation, action.files ?? []);
         scheduleRefresh();
         return result;
@@ -1656,6 +1801,14 @@ export function createXChatModule() {
       case "draft.addFiles": {
         const conversationId = action.conversationId ?? snapshot.activeConversationId;
         if (!conversationId) return [];
+        if (action.rejectedNames?.length) {
+          addNotice(
+            uiCopy(
+              `不能拖入文件夹：${action.rejectedNames.join("、")}`,
+              `Folders cannot be attached: ${action.rejectedNames.join(", ")}`,
+            ),
+          );
+        }
         const attachments = [];
         for (const file of action.files ?? []) {
           if (typeof file === "string" || file?.path || file?.file_path) {
@@ -1682,6 +1835,15 @@ export function createXChatModule() {
         }
         addDraftAttachments(conversationId, attachments);
         return attachments;
+      }
+      case "draft.addPaths": {
+        const conversationId = action.conversationId ?? snapshot.activeConversationId;
+        if (!conversationId) return [];
+        const checked = adapter.validateDroppedPaths
+          ? await adapter.validateDroppedPaths(action.paths ?? [])
+          : { files: action.paths ?? [], errors: [] };
+        if (checked.errors.length) addNotice(checked.errors.join(uiCopy("；", "; ")));
+        return addDraftAttachments(conversationId, checked.files);
       }
       case "draft.addManaged": {
         const conversationId =
@@ -1735,6 +1897,8 @@ export function createXChatModule() {
         return adapter.cancelCapture();
       case "capture.pin":
         return adapter.pinCapture(action.dataUrl);
+      case "capture.save":
+        return adapter.saveCapture(action.dataUrl);
       case "media.readMessage":
         return adapter.readMessageMedia(action.messageId);
       case "message.markRead":
@@ -1815,11 +1979,15 @@ export function createXChatModule() {
       case "notice.dismiss":
         patch({ notices: snapshot.notices.filter((notice) => notice.id !== action.id) });
         return;
-      case "refresh":
-        return refreshWorkspace();
+      case "refresh": {
+        const result = await refreshWorkspace();
+        schedulePoll();
+        return result;
+      }
       case "shutdown":
         stopEvents();
-        clearInterval(pollTimer);
+        started = false;
+        clearTimeout(pollTimer);
         clearTimeout(refreshTimer);
         return;
       default:

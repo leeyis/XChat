@@ -2,17 +2,24 @@ use crate::{
     db::{self, ConversationMemberRecord, ConversationRecord, MessageRecord, TransferRecord},
     peers::PeerManager,
 };
-use serde::Serialize;
+use futures_util::{stream::FuturesUnordered, StreamExt};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::{Pool, Sqlite};
 use std::{
     collections::hash_map::DefaultHasher,
     collections::{BTreeSet, HashMap},
     hash::{Hash, Hasher},
+    io::SeekFrom,
     path::{Path, PathBuf},
-    sync::{atomic::Ordering, Arc, Mutex, OnceLock, Weak},
+    sync::{
+        atomic::{AtomicI64, Ordering},
+        Arc, Mutex, OnceLock, Weak,
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio_util::io::ReaderStream;
 
 use super::{
     protocol::{GroupMember, ProtocolMessage},
@@ -20,6 +27,8 @@ use super::{
 };
 
 const CHUNK_SIZE: usize = 4 * 1024 * 1024;
+const PARALLEL_STREAM_BUFFER: usize = 256 * 1024;
+pub const PARALLEL_FILE_CAPABILITY: &str = "parallel_file_v2";
 type ReceiveTransferLock = tokio::sync::Mutex<()>;
 static RECEIVE_TRANSFER_LOCKS: OnceLock<Mutex<HashMap<String, Weak<ReceiveTransferLock>>>> =
     OnceLock::new();
@@ -63,6 +72,8 @@ struct UploadJob {
     message_id: i64,
     source: ValidatedSource,
     group_sync: Option<ProtocolMessage>,
+    parallel_v2: bool,
+    file_sha256: Option<String>,
 }
 
 enum UploadOutcome {
@@ -70,6 +81,64 @@ enum UploadOutcome {
     AwaitingAcceptance(i64),
     Cancelled(i64),
     Failed(i64, String),
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct ParallelChunkRange {
+    pub index: usize,
+    pub offset: u64,
+    pub length: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct ParallelPrepareRequest {
+    pub sender_id: String,
+    pub conversation_id: String,
+    pub client_message_id: String,
+    pub transfer_id: String,
+    pub sender_msg_id: String,
+    pub file_name: String,
+    pub file_size: u64,
+    pub file_sha256: String,
+    pub chunks: Vec<ParallelChunkRange>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct ParallelTransferManifest {
+    pub version: u8,
+    pub sender_id: String,
+    pub conversation_id: String,
+    pub client_message_id: String,
+    pub transfer_id: String,
+    pub sender_msg_id: String,
+    pub file_name: String,
+    pub final_file_name: String,
+    pub file_size: u64,
+    pub file_sha256: String,
+    pub chunks: Vec<ParallelChunkRange>,
+    pub message_id: i64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ParallelChunkReceiveResult {
+    pub manifest: ParallelTransferManifest,
+    pub received: u64,
+    pub complete: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ParallelPrepareResponse {
+    status: String,
+    #[serde(default)]
+    missing_chunks: Vec<usize>,
+    #[serde(default)]
+    received: u64,
+}
+
+fn supports_parallel_file(capabilities: &[String]) -> bool {
+    capabilities
+        .iter()
+        .any(|capability| capability == PARALLEL_FILE_CAPABILITY)
 }
 
 pub async fn send_path(
@@ -104,6 +173,16 @@ pub async fn send_path(
             })
         })
         .collect();
+    let parallel_hash = if recipient_ids.iter().any(|peer_id| {
+        online_addresses.contains_key(peer_id)
+            && peers
+                .get(peer_id)
+                .is_some_and(|peer| supports_parallel_file(&peer.capabilities))
+    }) {
+        Some(sha256_file(Path::new(&source.path)).await?)
+    } else {
+        None
+    };
 
     let client_message_id = uuid::Uuid::new_v4().to_string();
     let receiver_id = (conversation.kind == "direct")
@@ -154,6 +233,9 @@ pub async fn send_path(
         .await?;
 
         if let Some(peer_addr) = online_addresses.get(&peer_id) {
+            let parallel_v2 = peers
+                .get(&peer_id)
+                .is_some_and(|peer| supports_parallel_file(&peer.capabilities));
             jobs.push(UploadJob {
                 transfer_id,
                 peer_addr: peer_addr.clone(),
@@ -162,6 +244,8 @@ pub async fn send_path(
                 message_id: message.id,
                 source: source.clone(),
                 group_sync: group_sync.clone(),
+                parallel_v2,
+                file_sha256: parallel_v2.then(|| parallel_hash.clone()).flatten(),
             });
         }
         transfers.push(transfer);
@@ -192,6 +276,11 @@ pub async fn resume_waiting_for_peer(
     {
         return Err("peer is not online".to_string());
     }
+    let parallel_v2 = peer_manager
+        .get_active_peers()
+        .iter()
+        .find(|peer| peer.id == peer_id)
+        .is_some_and(|peer| supports_parallel_file(&peer.capabilities));
 
     let transfers = sqlx::query_as::<_, TransferRecord>(
         "SELECT id, message_id, conversation_id, peer_id, direction, status,
@@ -206,7 +295,7 @@ pub async fn resume_waiting_for_peer(
     .map_err(|error| format!("查询待恢复文件传输失败: {error}"))?;
 
     for transfer in transfers {
-        match prepare_resume_job(pool, &transfer, peer_addr).await {
+        match prepare_resume_job(pool, &transfer, peer_addr, parallel_v2).await {
             Ok(job) => {
                 let claimed = db::update_transfer(
                     pool,
@@ -254,6 +343,7 @@ pub async fn resume_transfer(
     message_id: i64,
     peer_id: &str,
     peer_addr: &str,
+    parallel_v2: bool,
 ) -> Result<TransferRecord, String> {
     // ponytail: retries are rare; use one process lock until profiling justifies keyed locks.
     let _resume_guard = RESUME_TRANSFER_LOCK
@@ -302,7 +392,7 @@ pub async fn resume_transfer(
         .find(|transfer| transfer.status == "awaiting_acceptance")
         .or_else(|| transfers.first())
         .ok_or_else(|| "resumable file transfer not found".to_string())?;
-    let mut job = prepare_resume_job(pool, previous, peer_addr).await?;
+    let mut job = prepare_resume_job(pool, previous, peer_addr, parallel_v2).await?;
     let transfer = if previous.status == "awaiting_acceptance" {
         db::transition_transfer_status(
             pool,
@@ -314,6 +404,8 @@ pub async fn resume_transfer(
         )
         .await?
         .ok_or_else(|| "file transfer is no longer resumable".to_string())?
+    } else if previous.status == "failed" && parallel_v2 {
+        reset_send_transfer_for_retry(pool, &previous.id, "queued").await?
     } else if previous.status == "failed" {
         let transfer_id = format!(
             "{}:retry:{}",
@@ -439,6 +531,7 @@ pub async fn cancel_receive_transfer(
             return Err(format!("清理接收临时文件失败: {error}"));
         }
     }
+    cleanup_parallel_transfer(&download_root, transfer_id).await?;
     let transfer = db::update_transfer(
         pool,
         transfer_id,
@@ -528,10 +621,24 @@ pub async fn retry_message(
         .into_iter()
         .map(|peer| (peer.id.clone(), peer))
         .collect();
+    let parallel_hash = if retry_recipients.iter().any(|peer_id| {
+        peers.get(peer_id).is_some_and(|peer| {
+            !peer.is_offline
+                && !peer.addr.trim().is_empty()
+                && supports_parallel_file(&peer.capabilities)
+        })
+    }) {
+        Some(sha256_file(Path::new(&source.path)).await?)
+    } else {
+        None
+    };
     let group_sync = group_sync_message(&conversation, &members)?;
     let mut transfers = Vec::with_capacity(retry_recipients.len());
     let mut jobs = Vec::new();
     for peer_id in retry_recipients {
+        let parallel_v2 = peers
+            .get(&peer_id)
+            .is_some_and(|peer| supports_parallel_file(&peer.capabilities));
         let peer_addr = peers.get(&peer_id).and_then(|peer| {
             (!peer.is_offline && !peer.addr.trim().is_empty()).then(|| peer.addr.clone())
         });
@@ -540,22 +647,36 @@ pub async fn retry_message(
         } else {
             "waiting_peer"
         };
-        let transfer_id = format!(
-            "{}:retry:{}",
-            recipient_transfer_id(client_message_id, &peer_id),
-            uuid::Uuid::new_v4()
-        );
-        let transfer = db::create_transfer(
-            pool,
-            &transfer_id,
-            Some(message_id),
-            conversation_id,
-            &peer_id,
-            "send",
-            status,
-            source.size,
-        )
-        .await?;
+        let reusable = parallel_v2.then(|| {
+            existing
+                .iter()
+                .filter(|transfer| transfer.peer_id == peer_id && transfer.status == "failed")
+                .max_by_key(|transfer| transfer.updated_at)
+        }).flatten();
+        let (transfer_id, transfer) = if let Some(previous) = reusable {
+            (
+                previous.id.clone(),
+                reset_send_transfer_for_retry(pool, &previous.id, status).await?,
+            )
+        } else {
+            let transfer_id = format!(
+                "{}:retry:{}",
+                recipient_transfer_id(client_message_id, &peer_id),
+                uuid::Uuid::new_v4()
+            );
+            let transfer = db::create_transfer(
+                pool,
+                &transfer_id,
+                Some(message_id),
+                conversation_id,
+                &peer_id,
+                "send",
+                status,
+                source.size,
+            )
+            .await?;
+            (transfer_id, transfer)
+        };
         if let Some(peer_addr) = peer_addr {
             jobs.push(UploadJob {
                 transfer_id,
@@ -565,6 +686,8 @@ pub async fn retry_message(
                 message_id,
                 source: source.clone(),
                 group_sync: group_sync.clone(),
+                parallel_v2,
+                file_sha256: parallel_v2.then(|| parallel_hash.clone()).flatten(),
             });
         }
         transfers.push(transfer);
@@ -579,10 +702,33 @@ pub async fn retry_message(
     Ok(ConversationFileSendResult { message, transfers })
 }
 
+async fn reset_send_transfer_for_retry(
+    pool: &Pool<Sqlite>,
+    transfer_id: &str,
+    status: &str,
+) -> Result<TransferRecord, String> {
+    sqlx::query(
+        "UPDATE transfers
+         SET status = ?, bytes_transferred = 0, error = NULL, updated_at = ?
+         WHERE id = ? AND direction = 'send' AND status = 'failed'",
+    )
+    .bind(status)
+    .bind(unix_timestamp())
+    .bind(transfer_id)
+    .execute(pool)
+    .await
+    .map_err(|error| format!("重置并行重试传输失败: {error}"))?;
+    db::get_transfer(pool, transfer_id)
+        .await?
+        .filter(|transfer| transfer.status == status)
+        .ok_or_else(|| "并行传输已无法重试".to_string())
+}
+
 async fn prepare_resume_job(
     pool: &Pool<Sqlite>,
     transfer: &TransferRecord,
     peer_addr: &str,
+    parallel_v2: bool,
 ) -> Result<UploadJob, String> {
     let message_id = transfer
         .message_id
@@ -620,6 +766,11 @@ async fn prepare_resume_job(
     if source.size != transfer.bytes_total {
         return Err("source file size changed".to_string());
     }
+    let file_sha256 = if parallel_v2 {
+        Some(sha256_file(Path::new(&source.path)).await?)
+    } else {
+        None
+    };
 
     Ok(UploadJob {
         transfer_id: transfer.id.clone(),
@@ -629,6 +780,8 @@ async fn prepare_resume_job(
         message_id,
         source,
         group_sync: group_sync_message(&conversation, &members)?,
+        parallel_v2,
+        file_sha256,
     })
 }
 
@@ -847,12 +1000,6 @@ async fn upload_chunks(
         return UploadOutcome::Cancelled(0);
     }
 
-    let mut file = match tokio::fs::File::open(&job.source.path).await {
-        Ok(file) => file,
-        Err(error) => {
-            return UploadOutcome::Failed(0, format!("打开源文件失败: {error}"));
-        }
-    };
     if let Some(group_sync) = &job.group_sync {
         if let Err(error) = super::protocol::send_protocol_message(&job.peer_addr, group_sync).await
         {
@@ -862,7 +1009,16 @@ async fn upload_chunks(
     if token.load(Ordering::Acquire) {
         return UploadOutcome::Cancelled(0);
     }
+    if job.parallel_v2 {
+        return upload_parallel_chunks(pool, job, token).await;
+    }
 
+    let mut file = match tokio::fs::File::open(&job.source.path).await {
+        Ok(file) => file,
+        Err(error) => {
+            return UploadOutcome::Failed(0, format!("打开源文件失败: {error}"));
+        }
+    };
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
         .build()
@@ -1014,6 +1170,203 @@ async fn upload_chunks(
     } else {
         UploadOutcome::Completed(bytes_transferred)
     }
+}
+
+async fn upload_parallel_chunks(
+    pool: &Pool<Sqlite>,
+    job: &UploadJob,
+    token: &super::transfer::TransferCancellationToken,
+) -> UploadOutcome {
+    let Some(file_sha256) = job.file_sha256.clone() else {
+        return UploadOutcome::Failed(0, "并行传输缺少文件摘要".to_string());
+    };
+    let file_size = job.source.size.max(0) as u64;
+    let chunks = parallel_chunk_ranges(file_size);
+    let sender_id = match db::get_user_id(pool).await {
+        Ok(id) => id,
+        Err(error) => return UploadOutcome::Failed(0, error),
+    };
+    let request = ParallelPrepareRequest {
+        sender_id,
+        conversation_id: job.conversation_id.clone(),
+        client_message_id: job.client_message_id.clone(),
+        transfer_id: job.transfer_id.clone(),
+        sender_msg_id: job.message_id.to_string(),
+        file_name: job.source.file_name.clone(),
+        file_size,
+        file_sha256,
+        chunks: chunks.clone(),
+    };
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(60 * 60))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return UploadOutcome::Failed(0, format!("创建并行上传客户端失败: {error}"));
+        }
+    };
+    let base_url = format!(
+        "http://{}",
+        job.peer_addr.trim_end_matches('/')
+    );
+    let response = match client
+        .post(format!("{base_url}/api/uploads/v2/prepare"))
+        .json(&request)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            return UploadOutcome::Failed(0, format!("准备并行传输失败: {error}"));
+        }
+    };
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let detail: String = body.chars().take(512).collect();
+        return UploadOutcome::Failed(0, format!("接收端拒绝并行传输 ({status}): {detail}"));
+    }
+    let prepared: ParallelPrepareResponse = match serde_json::from_str(&body) {
+        Ok(response) => response,
+        Err(error) => {
+            return UploadOutcome::Failed(0, format!("解析并行传输响应失败: {error}"));
+        }
+    };
+    match prepared.status.as_str() {
+        "awaiting_acceptance" => return UploadOutcome::AwaitingAcceptance(prepared.received as i64),
+        "already_exists" | "completed" => return UploadOutcome::Completed(job.source.size),
+        "ready" => {}
+        status => {
+            return UploadOutcome::Failed(
+                prepared.received as i64,
+                format!("接收端返回未知并行传输状态: {status}"),
+            );
+        }
+    }
+
+    let missing: Vec<_> = chunks
+        .into_iter()
+        .filter(|chunk| prepared.missing_chunks.contains(&chunk.index))
+        .collect();
+    if missing.len() != prepared.missing_chunks.len() {
+        return UploadOutcome::Failed(
+            prepared.received as i64,
+            "接收端返回了无效的缺失分块".to_string(),
+        );
+    }
+    if missing.is_empty() {
+        return UploadOutcome::Completed(job.source.size);
+    }
+
+    let progress = Arc::new(AtomicI64::new(prepared.received as i64));
+    let mut uploads = FuturesUnordered::new();
+    for chunk in missing {
+        uploads.push(upload_parallel_range(
+            client.clone(),
+            base_url.clone(),
+            job.transfer_id.clone(),
+            job.source.path.clone(),
+            chunk,
+            progress.clone(),
+        ));
+    }
+    let mut interval = tokio::time::interval(Duration::from_millis(500));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    while !uploads.is_empty() {
+        tokio::select! {
+            _ = interval.tick() => {
+                let bytes = progress.load(Ordering::Acquire).min(job.source.size);
+                if token.load(Ordering::Acquire) {
+                    return UploadOutcome::Cancelled(bytes);
+                }
+                if let Err(error) = db::update_transfer(
+                    pool,
+                    &job.transfer_id,
+                    "transferring",
+                    bytes,
+                    None,
+                ).await {
+                    return UploadOutcome::Failed(bytes, error);
+                }
+            }
+            result = uploads.next() => {
+                let Some(result) = result else { break };
+                if let Err(error) = result {
+                    let bytes = progress.load(Ordering::Acquire).min(job.source.size);
+                    if token.load(Ordering::Acquire) {
+                        return UploadOutcome::Cancelled(bytes);
+                    }
+                    return UploadOutcome::Failed(bytes, error);
+                }
+            }
+        }
+    }
+
+    let bytes = progress.load(Ordering::Acquire).min(job.source.size);
+    if token.load(Ordering::Acquire) {
+        UploadOutcome::Cancelled(bytes)
+    } else if bytes < job.source.size {
+        UploadOutcome::Failed(bytes, "并行上传未覆盖完整文件".to_string())
+    } else {
+        UploadOutcome::Completed(job.source.size)
+    }
+}
+
+async fn upload_parallel_range(
+    client: reqwest::Client,
+    base_url: String,
+    transfer_id: String,
+    source_path: String,
+    chunk: ParallelChunkRange,
+    progress: Arc<AtomicI64>,
+) -> Result<(), String> {
+    let mut file = tokio::fs::File::open(&source_path)
+        .await
+        .map_err(|error| format!("打开并行上传源文件失败: {error}"))?;
+    file.seek(SeekFrom::Start(chunk.offset))
+        .await
+        .map_err(|error| format!("定位并行上传分块失败: {error}"))?;
+    let stream_progress = progress.clone();
+    let stream = ReaderStream::with_capacity(file.take(chunk.length), PARALLEL_STREAM_BUFFER)
+        .map(move |result| {
+            if let Ok(bytes) = &result {
+                stream_progress.fetch_add(bytes.len() as i64, Ordering::AcqRel);
+            }
+            result
+        });
+    let url = format!(
+        "{base_url}/api/uploads/v2/{}/{}",
+        urlencoding::encode(&transfer_id),
+        chunk.index
+    );
+    let response = client
+        .post(url)
+        .header(reqwest::header::CONTENT_LENGTH, chunk.length)
+        .body(reqwest::Body::wrap_stream(stream))
+        .send()
+        .await
+        .map_err(|error| format!("上传并行分块 {} 失败: {error}", chunk.index))?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let detail: String = body.chars().take(512).collect();
+        return Err(format!(
+            "接收端拒绝并行分块 {} ({status}): {detail}",
+            chunk.index
+        ));
+    }
+    let response_status = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|value| value.get("status")?.as_str().map(str::to_owned));
+    if !matches!(
+        response_status.as_deref(),
+        Some("receiving" | "completed" | "already_exists")
+    ) {
+        return Err(format!("并行分块 {} 返回未知状态", chunk.index));
+    }
+    Ok(())
 }
 
 async fn update_terminal(
@@ -1203,6 +1556,597 @@ fn chunk_total(file_size: i64) -> u64 {
     ((file_size as u64 + CHUNK_SIZE as u64 - 1) / CHUNK_SIZE as u64).max(1)
 }
 
+pub(crate) fn parallel_chunk_ranges(file_size: u64) -> Vec<ParallelChunkRange> {
+    if file_size <= CHUNK_SIZE as u64 {
+        return vec![ParallelChunkRange {
+            index: 0,
+            offset: 0,
+            length: file_size,
+        }];
+    }
+
+    let base = file_size / 4;
+    let remainder = file_size % 4;
+    let mut offset = 0;
+    (0..4)
+        .map(|index| {
+            let length = base + u64::from((index as u64) < remainder);
+            let range = ParallelChunkRange {
+                index,
+                offset,
+                length,
+            };
+            offset += length;
+            range
+        })
+        .collect()
+}
+
+pub(crate) fn valid_parallel_prepare(request: &ParallelPrepareRequest) -> bool {
+    !request.sender_id.trim().is_empty()
+        && !request.conversation_id.trim().is_empty()
+        && !request.client_message_id.trim().is_empty()
+        && request.client_message_id.len() <= 128
+        && !request.transfer_id.trim().is_empty()
+        && request.transfer_id.len() <= 256
+        && !request.sender_msg_id.trim().is_empty()
+        && request.sender_msg_id.len() <= 64
+        && request.file_sha256.len() == 64
+        && request
+            .file_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        && request.chunks == parallel_chunk_ranges(request.file_size)
+}
+
+pub(crate) async fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|error| format!("打开文件摘要源失败: {error}"))?;
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0; PARALLEL_STREAM_BUFFER];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .await
+            .map_err(|error| format!("读取文件摘要源失败: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn parallel_transfer_key(transfer_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(transfer_id.as_bytes());
+    format!("{:x}", digest.finalize())
+}
+
+pub(crate) fn parallel_transfer_dir(download_root: &Path, transfer_id: &str) -> PathBuf {
+    download_root
+        .join(".xchat-receive")
+        .join(parallel_transfer_key(transfer_id))
+}
+
+fn parallel_manifest_path(download_root: &Path, transfer_id: &str) -> PathBuf {
+    parallel_transfer_dir(download_root, transfer_id).join("manifest.json")
+}
+
+fn parallel_part_path(download_root: &Path, transfer_id: &str, index: usize) -> PathBuf {
+    parallel_transfer_dir(download_root, transfer_id).join(format!("{index:06}.part"))
+}
+
+pub(crate) async fn load_parallel_manifest(
+    download_root: &Path,
+    transfer_id: &str,
+) -> Result<Option<ParallelTransferManifest>, String> {
+    let path = parallel_manifest_path(download_root, transfer_id);
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("读取并行传输清单失败: {error}")),
+    };
+    let manifest: ParallelTransferManifest = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("解析并行传输清单失败: {error}"))?;
+    if manifest.version != 2
+        || manifest.transfer_id != transfer_id
+        || manifest.file_sha256.len() != 64
+        || manifest.chunks != parallel_chunk_ranges(manifest.file_size)
+    {
+        return Err("并行传输清单无效".to_string());
+    }
+    Ok(Some(manifest))
+}
+
+pub(crate) async fn create_or_resume_parallel_manifest(
+    download_root: &Path,
+    manifest: ParallelTransferManifest,
+) -> Result<(ParallelTransferManifest, Vec<usize>, u64), String> {
+    if let Some(existing) = load_parallel_manifest(download_root, &manifest.transfer_id).await? {
+        if existing != manifest {
+            return Err("并行传输清单与已有内容冲突".to_string());
+        }
+        let received = received_parallel_chunks(download_root, &existing).await?;
+        let bytes = received
+            .iter()
+            .map(|index| existing.chunks[*index].length)
+            .sum();
+        let missing = existing
+            .chunks
+            .iter()
+            .filter(|chunk| !received.contains(&chunk.index))
+            .map(|chunk| chunk.index)
+            .collect();
+        return Ok((existing, missing, bytes));
+    }
+
+    let directory = parallel_transfer_dir(download_root, &manifest.transfer_id);
+    tokio::fs::create_dir_all(&directory)
+        .await
+        .map_err(|error| format!("创建并行传输目录失败: {error}"))?;
+    let path = directory.join("manifest.json");
+    let temporary = directory.join(format!(".manifest-{}.tmp", uuid::Uuid::new_v4()));
+    let bytes = serde_json::to_vec(&manifest)
+        .map_err(|error| format!("序列化并行传输清单失败: {error}"))?;
+    tokio::fs::write(&temporary, bytes)
+        .await
+        .map_err(|error| format!("写入并行传输清单失败: {error}"))?;
+    tokio::fs::rename(&temporary, &path)
+        .await
+        .map_err(|error| format!("发布并行传输清单失败: {error}"))?;
+    let missing = manifest.chunks.iter().map(|chunk| chunk.index).collect();
+    Ok((manifest, missing, 0))
+}
+
+async fn received_parallel_chunks(
+    download_root: &Path,
+    manifest: &ParallelTransferManifest,
+) -> Result<BTreeSet<usize>, String> {
+    let mut received = BTreeSet::new();
+    for chunk in &manifest.chunks {
+        let path = parallel_part_path(download_root, &manifest.transfer_id, chunk.index);
+        match tokio::fs::metadata(&path).await {
+            Ok(metadata) if metadata.is_file() && metadata.len() == chunk.length => {
+                received.insert(chunk.index);
+            }
+            Ok(_) => {
+                tokio::fs::remove_file(&path)
+                    .await
+                    .map_err(|error| format!("清理无效并行分块失败: {error}"))?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("读取并行分块信息失败: {error}")),
+        }
+    }
+    Ok(received)
+}
+
+async fn adjust_transfer_progress(
+    pool: &Pool<Sqlite>,
+    transfer_id: &str,
+    delta: i64,
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE transfers
+         SET bytes_transferred = MIN(bytes_total, MAX(0, bytes_transferred + ?)),
+             updated_at = ?
+         WHERE id = ? AND status = 'transferring'",
+    )
+    .bind(delta)
+    .bind(unix_timestamp())
+    .bind(transfer_id)
+    .execute(pool)
+    .await
+    .map_err(|error| format!("更新并行传输进度失败: {error}"))?;
+    Ok(())
+}
+
+async fn rollback_parallel_chunk_attempt(
+    pool: &Pool<Sqlite>,
+    transfer_id: &str,
+    temporary: &Path,
+    published: Option<&Path>,
+    reported: i64,
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for path in published.into_iter().chain(std::iter::once(temporary)) {
+        if let Err(error) = tokio::fs::remove_file(path).await {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                errors.push(format!("清理 {} 失败: {error}", path.display()));
+            }
+        }
+    }
+    if reported > 0 {
+        if let Err(error) = adjust_transfer_progress(pool, transfer_id, -reported).await {
+            errors.push(error);
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+async fn fail_parallel_chunk_attempt(
+    pool: &Pool<Sqlite>,
+    transfer_id: &str,
+    temporary: &Path,
+    published: Option<&Path>,
+    reported: i64,
+    error: String,
+) -> String {
+    match rollback_parallel_chunk_attempt(
+        pool,
+        transfer_id,
+        temporary,
+        published,
+        reported,
+    )
+    .await
+    {
+        Ok(()) => error,
+        Err(rollback_error) => format!("{error}; 回滚并行分块失败: {rollback_error}"),
+    }
+}
+
+pub(crate) async fn receive_parallel_chunk(
+    pool: &Pool<Sqlite>,
+    download_root: &Path,
+    transfer_id: &str,
+    chunk_index: usize,
+    body: axum::body::Body,
+) -> Result<ParallelChunkReceiveResult, String> {
+    let manifest = load_parallel_manifest(download_root, transfer_id)
+        .await?
+        .ok_or_else(|| "并行传输尚未准备".to_string())?;
+    let chunk = manifest
+        .chunks
+        .get(chunk_index)
+        .filter(|chunk| chunk.index == chunk_index)
+        .cloned()
+        .ok_or_else(|| "并行分块序号无效".to_string())?;
+    let transfer = db::get_transfer(pool, transfer_id)
+        .await?
+        .ok_or_else(|| "并行接收传输不存在".to_string())?;
+    if transfer.direction != "receive" || transfer.status != "transferring" {
+        return Err("并行接收传输当前不可写".to_string());
+    }
+
+    let existing_path = parallel_part_path(download_root, transfer_id, chunk_index);
+    if tokio::fs::metadata(&existing_path)
+        .await
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() == chunk.length)
+    {
+        let received = received_parallel_chunks(download_root, &manifest).await?;
+        let bytes = received
+            .iter()
+            .map(|index| manifest.chunks[*index].length)
+            .sum();
+        return Ok(ParallelChunkReceiveResult {
+            complete: received.len() == manifest.chunks.len(),
+            manifest,
+            received: bytes,
+        });
+    }
+
+    let directory = parallel_transfer_dir(download_root, transfer_id);
+    tokio::fs::create_dir_all(&directory)
+        .await
+        .map_err(|error| format!("创建并行分块目录失败: {error}"))?;
+    let temporary = directory.join(format!(
+        ".{chunk_index:06}-{}.tmp",
+        uuid::Uuid::new_v4()
+    ));
+    let mut file = tokio::fs::File::create(&temporary)
+        .await
+        .map_err(|error| format!("创建并行分块临时文件失败: {error}"))?;
+    let mut stream = body.into_data_stream();
+    let mut written = 0u64;
+    let mut reported = 0i64;
+    let mut pending = 0i64;
+    let mut last_report = Instant::now();
+    while let Some(data) = stream.next().await {
+        let data = match data {
+            Ok(data) => data,
+            Err(error) => {
+                drop(file);
+                return Err(
+                    fail_parallel_chunk_attempt(
+                        pool,
+                        transfer_id,
+                        &temporary,
+                        None,
+                        reported,
+                        format!("读取并行分块请求失败: {error}"),
+                    )
+                    .await,
+                );
+            }
+        };
+        written = written.saturating_add(data.len() as u64);
+        if written > chunk.length {
+            drop(file);
+            return Err(
+                fail_parallel_chunk_attempt(
+                    pool,
+                    transfer_id,
+                    &temporary,
+                    None,
+                    reported,
+                    "并行分块超过声明长度".to_string(),
+                )
+                .await,
+            );
+        }
+        if let Err(error) = file.write_all(&data).await {
+            drop(file);
+            return Err(
+                fail_parallel_chunk_attempt(
+                    pool,
+                    transfer_id,
+                    &temporary,
+                    None,
+                    reported,
+                    format!("写入并行分块失败: {error}"),
+                )
+                .await,
+            );
+        }
+        pending += data.len() as i64;
+        if pending >= 1024 * 1024 || last_report.elapsed() >= Duration::from_millis(250) {
+            if let Err(error) = adjust_transfer_progress(pool, transfer_id, pending).await {
+                drop(file);
+                return Err(
+                    fail_parallel_chunk_attempt(
+                        pool,
+                        transfer_id,
+                        &temporary,
+                        None,
+                        reported,
+                        error,
+                    )
+                    .await,
+                );
+            }
+            reported += pending;
+            pending = 0;
+            last_report = Instant::now();
+        }
+    }
+    if pending > 0 {
+        if let Err(error) = adjust_transfer_progress(pool, transfer_id, pending).await {
+            drop(file);
+            return Err(
+                fail_parallel_chunk_attempt(
+                    pool,
+                    transfer_id,
+                    &temporary,
+                    None,
+                    reported,
+                    error,
+                )
+                .await,
+            );
+        }
+        reported += pending;
+    }
+    if written != chunk.length {
+        drop(file);
+        return Err(
+            fail_parallel_chunk_attempt(
+                pool,
+                transfer_id,
+                &temporary,
+                None,
+                reported,
+                "并行分块长度与清单不一致".to_string(),
+            )
+            .await,
+        );
+    }
+    if let Err(error) = file.flush().await {
+        drop(file);
+        return Err(
+            fail_parallel_chunk_attempt(
+                pool,
+                transfer_id,
+                &temporary,
+                None,
+                reported,
+                format!("保存并行分块失败: {error}"),
+            )
+            .await,
+        );
+    }
+    drop(file);
+
+    let _guard = lock_receive_file(&manifest.client_message_id).await;
+    let transfer = match db::get_transfer(pool, transfer_id).await {
+        Ok(Some(transfer)) => transfer,
+        Ok(None) => {
+            return Err(
+                fail_parallel_chunk_attempt(
+                    pool,
+                    transfer_id,
+                    &temporary,
+                    None,
+                    reported,
+                    "并行接收传输不存在".to_string(),
+                )
+                .await,
+            )
+        }
+        Err(error) => {
+            return Err(
+                fail_parallel_chunk_attempt(
+                    pool,
+                    transfer_id,
+                    &temporary,
+                    None,
+                    reported,
+                    error,
+                )
+                .await,
+            )
+        }
+    };
+    if transfer.status != "transferring" {
+        return Err(
+            fail_parallel_chunk_attempt(
+                pool,
+                transfer_id,
+                &temporary,
+                None,
+                reported,
+                "并行接收传输已结束".to_string(),
+            )
+            .await,
+        );
+    }
+    let mut published = false;
+    if tokio::fs::metadata(&existing_path)
+        .await
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() == chunk.length)
+    {
+        rollback_parallel_chunk_attempt(pool, transfer_id, &temporary, None, reported).await?;
+        reported = 0;
+    } else {
+        if let Err(error) = tokio::fs::remove_file(&existing_path).await {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err(
+                    fail_parallel_chunk_attempt(
+                        pool,
+                        transfer_id,
+                        &temporary,
+                        None,
+                        reported,
+                        format!("替换无效并行分块失败: {error}"),
+                    )
+                    .await,
+                );
+            }
+        }
+        if let Err(error) = tokio::fs::rename(&temporary, &existing_path).await {
+            return Err(
+                fail_parallel_chunk_attempt(
+                    pool,
+                    transfer_id,
+                    &temporary,
+                    None,
+                    reported,
+                    format!("发布并行分块失败: {error}"),
+                )
+                .await,
+            );
+        }
+        published = true;
+    }
+    let received = match received_parallel_chunks(download_root, &manifest).await {
+        Ok(received) => received,
+        Err(error) => {
+            return Err(
+                fail_parallel_chunk_attempt(
+                    pool,
+                    transfer_id,
+                    &temporary,
+                    published.then_some(existing_path.as_path()),
+                    reported,
+                    error,
+                )
+                .await,
+            )
+        }
+    };
+    let bytes = received
+        .iter()
+        .map(|index| manifest.chunks[*index].length)
+        .sum();
+    if let Err(error) = sqlx::query(
+        "UPDATE transfers
+         SET bytes_transferred = MAX(bytes_transferred, ?), updated_at = ?
+         WHERE id = ? AND status = 'transferring'",
+    )
+    .bind(bytes as i64)
+    .bind(unix_timestamp())
+    .bind(transfer_id)
+    .execute(pool)
+    .await
+    {
+        return Err(
+            fail_parallel_chunk_attempt(
+                pool,
+                transfer_id,
+                &temporary,
+                published.then_some(existing_path.as_path()),
+                reported,
+                format!("校正并行传输进度失败: {error}"),
+            )
+            .await,
+        );
+    }
+    Ok(ParallelChunkReceiveResult {
+        complete: received.len() == manifest.chunks.len(),
+        manifest,
+        received: bytes,
+    })
+}
+
+pub(crate) async fn merge_parallel_parts(
+    download_root: &Path,
+    manifest: &ParallelTransferManifest,
+) -> Result<PathBuf, String> {
+    let partial_path = received_partial_path(download_root, &manifest.transfer_id);
+    let mut output = tokio::fs::File::create(&partial_path)
+        .await
+        .map_err(|error| format!("创建并行合并文件失败: {error}"))?;
+    let mut total = 0u64;
+    for chunk in &manifest.chunks {
+        let path = parallel_part_path(download_root, &manifest.transfer_id, chunk.index);
+        let mut part = tokio::fs::File::open(&path)
+            .await
+            .map_err(|error| format!("打开并行分块失败: {error}"))?;
+        let copied = tokio::io::copy(&mut part, &mut output)
+            .await
+            .map_err(|error| format!("合并并行分块失败: {error}"))?;
+        if copied != chunk.length {
+            let _ = tokio::fs::remove_file(&partial_path).await;
+            return Err("并行分块长度在合并前发生变化".to_string());
+        }
+        total += copied;
+    }
+    output
+        .flush()
+        .await
+        .map_err(|error| format!("保存并行合并文件失败: {error}"))?;
+    drop(output);
+    if total != manifest.file_size {
+        let _ = tokio::fs::remove_file(&partial_path).await;
+        return Err("并行合并文件大小不一致".to_string());
+    }
+    let digest = sha256_file(&partial_path).await?;
+    if digest != manifest.file_sha256 {
+        let _ = tokio::fs::remove_file(&partial_path).await;
+        cleanup_parallel_transfer(download_root, &manifest.transfer_id).await?;
+        return Err("并行合并文件 SHA-256 校验失败".to_string());
+    }
+    Ok(partial_path)
+}
+
+pub(crate) async fn cleanup_parallel_transfer(
+    download_root: &Path,
+    transfer_id: &str,
+) -> Result<(), String> {
+    let directory = parallel_transfer_dir(download_root, transfer_id);
+    match tokio::fs::remove_dir_all(&directory).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("清理并行传输分块失败: {error}")),
+    }
+}
+
 fn aggregate_file_status(statuses: &[String]) -> Option<&'static str> {
     if statuses.is_empty() {
         None
@@ -1277,6 +2221,345 @@ mod tests {
             aggregate_file_status(&["completed".into(), "failed".into()]),
             Some("failed")
         );
+    }
+
+    #[test]
+    fn parallel_ranges_use_one_small_part_or_four_balanced_parts() {
+        assert_eq!(
+            parallel_chunk_ranges(CHUNK_SIZE as u64),
+            vec![ParallelChunkRange {
+                index: 0,
+                offset: 0,
+                length: CHUNK_SIZE as u64,
+            }]
+        );
+
+        let size = CHUNK_SIZE as u64 + 3;
+        let ranges = parallel_chunk_ranges(size);
+        assert_eq!(ranges.len(), 4);
+        assert_eq!(ranges.first().unwrap().offset, 0);
+        assert_eq!(
+            ranges.iter().map(|range| range.length).sum::<u64>(),
+            size
+        );
+        assert!(ranges.windows(2).all(|pair| {
+            pair[0].offset + pair[0].length == pair[1].offset
+                && pair[0].length.abs_diff(pair[1].length) <= 1
+        }));
+    }
+
+    #[tokio::test]
+    async fn parallel_manifest_rejects_conflicts_and_merges_verified_parts() {
+        let root =
+            std::env::temp_dir().join(format!("xchat-parallel-test-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        let size = CHUNK_SIZE + 3;
+        let data: Vec<u8> = (0..size).map(|index| (index % 251) as u8).collect();
+        let source = root.join("source.bin");
+        tokio::fs::write(&source, &data).await.unwrap();
+        let manifest = ParallelTransferManifest {
+            version: 2,
+            sender_id: "sender".into(),
+            conversation_id: "conversation".into(),
+            client_message_id: "message".into(),
+            transfer_id: "message:receiver".into(),
+            sender_msg_id: "42".into(),
+            file_name: "source.bin".into(),
+            final_file_name: "source.bin".into(),
+            file_size: size as u64,
+            file_sha256: sha256_file(&source).await.unwrap(),
+            chunks: parallel_chunk_ranges(size as u64),
+            message_id: 7,
+        };
+
+        let (_, missing, received) =
+            create_or_resume_parallel_manifest(&root, manifest.clone())
+                .await
+                .unwrap();
+        assert_eq!(missing, vec![0, 1, 2, 3]);
+        assert_eq!(received, 0);
+
+        let mut conflict = manifest.clone();
+        conflict.file_sha256 = "0".repeat(64);
+        assert!(create_or_resume_parallel_manifest(&root, conflict)
+            .await
+            .unwrap_err()
+            .contains("冲突"));
+
+        for chunk in &manifest.chunks {
+            let start = chunk.offset as usize;
+            let end = start + chunk.length as usize;
+            tokio::fs::write(
+                parallel_part_path(&root, &manifest.transfer_id, chunk.index),
+                &data[start..end],
+            )
+            .await
+            .unwrap();
+        }
+        let (_, missing, received) =
+            create_or_resume_parallel_manifest(&root, manifest.clone())
+                .await
+                .unwrap();
+        assert!(missing.is_empty());
+        assert_eq!(received, size as u64);
+
+        let merged = merge_parallel_parts(&root, &manifest).await.unwrap();
+        assert_eq!(tokio::fs::read(&merged).await.unwrap(), data);
+        cleanup_parallel_transfer(&root, &manifest.transfer_id)
+            .await
+            .unwrap();
+        tokio::fs::remove_file(merged).await.unwrap();
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn parallel_chunk_progress_failure_cleans_attempt_and_rolls_back() {
+        let app_dir = std::env::temp_dir().join(format!(
+            "xchat-parallel-progress-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let pool = db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        let download_root = app_dir.join("downloads");
+        tokio::fs::create_dir_all(&download_root).await.unwrap();
+        db::save_or_update_user(
+            &pool,
+            "peer-a".into(),
+            "Alice".into(),
+            "127.0.0.1:9".into(),
+            true,
+            0,
+        )
+        .await
+        .unwrap();
+        let conversation = db::ensure_direct_conversation(&pool, "peer-a")
+            .await
+            .unwrap();
+        let self_id = db::get_user_id(&pool).await.unwrap();
+        let message = db::save_conversation_message(
+            &pool,
+            &conversation.id,
+            "peer-a",
+            Some(&self_id),
+            "large.bin",
+            "file",
+            unix_timestamp(),
+            "received",
+            "parallel-progress-message",
+        )
+        .await
+        .unwrap();
+        let file_size = 2 * 1024 * 1024;
+        let transfer_id = "parallel-progress-transfer";
+        db::create_transfer(
+            &pool,
+            transfer_id,
+            Some(message.id),
+            &conversation.id,
+            "peer-a",
+            "receive",
+            "transferring",
+            file_size,
+        )
+        .await
+        .unwrap();
+        let manifest = ParallelTransferManifest {
+            version: 2,
+            sender_id: "peer-a".into(),
+            conversation_id: conversation.id,
+            client_message_id: "parallel-progress-message".into(),
+            transfer_id: transfer_id.into(),
+            sender_msg_id: "parallel-progress-sender".into(),
+            file_name: "large.bin".into(),
+            final_file_name: "large.bin".into(),
+            file_size: file_size as u64,
+            file_sha256: "0".repeat(64),
+            chunks: parallel_chunk_ranges(file_size as u64),
+            message_id: message.id,
+        };
+        create_or_resume_parallel_manifest(&download_root, manifest)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER fail_second_parallel_progress
+             BEFORE UPDATE OF bytes_transferred ON transfers
+             WHEN NEW.id = 'parallel-progress-transfer'
+               AND NEW.bytes_transferred > 1048576
+             BEGIN
+               SELECT RAISE(FAIL, 'forced progress failure');
+             END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let body = axum::body::Body::from_stream(futures_util::stream::iter([
+            Ok::<_, std::io::Error>(axum::body::Bytes::from(vec![1; 1024 * 1024])),
+            Ok::<_, std::io::Error>(axum::body::Bytes::from(vec![2; 1024 * 1024])),
+        ]));
+        let error =
+            receive_parallel_chunk(&pool, &download_root, transfer_id, 0, body)
+                .await
+                .unwrap_err();
+        assert!(error.contains("更新并行传输进度失败"));
+        let transfer = db::get_transfer(&pool, transfer_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(transfer.bytes_transferred, 0);
+        let mut entries = tokio::fs::read_dir(parallel_transfer_dir(
+            &download_root,
+            transfer_id,
+        ))
+        .await
+        .unwrap();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            assert!(
+                !entry.file_name().to_string_lossy().ends_with(".tmp"),
+                "failed chunk left a temporary file"
+            );
+        }
+
+        pool.close().await;
+        tokio::fs::remove_dir_all(app_dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn parallel_sender_failure_marks_receiver_failed() {
+        let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let terminal_tx = status_tx.clone();
+        let router = axum::Router::new()
+            .route(
+                "/api/uploads/v2/prepare",
+                axum::routing::post(|| async {
+                    axum::Json(serde_json::json!({
+                        "status": "ready",
+                        "received": 0,
+                        "missing_chunks": [0],
+                    }))
+                }),
+            )
+            .route(
+                "/api/uploads/v2/:transfer_id/:chunk_index",
+                axum::routing::post(|| async {
+                    (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "forced chunk failure",
+                    )
+                }),
+            )
+            .route(
+                "/api/uploads/:client_message_id/cancel",
+                axum::routing::post(
+                    move |axum::extract::Query(query): axum::extract::Query<
+                        HashMap<String, String>,
+                    >| {
+                        let terminal_tx = terminal_tx.clone();
+                        async move {
+                            let status = query.get("status").cloned().unwrap_or_default();
+                            terminal_tx.send(status.clone()).unwrap();
+                            axum::Json(serde_json::json!({ "status": status }))
+                        }
+                    },
+                ),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let app_dir = std::env::temp_dir().join(format!(
+            "xchat-parallel-sender-failure-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let pool = db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        db::save_or_update_user(
+            &pool,
+            "peer-a".into(),
+            "Alice".into(),
+            address.to_string(),
+            true,
+            0,
+        )
+        .await
+        .unwrap();
+        let conversation = db::ensure_direct_conversation(&pool, "peer-a")
+            .await
+            .unwrap();
+        let self_id = db::get_user_id(&pool).await.unwrap();
+        let source_path = app_dir.join("failure.bin");
+        tokio::fs::write(&source_path, b"failure").await.unwrap();
+        let message = db::save_conversation_message(
+            &pool,
+            &conversation.id,
+            &self_id,
+            Some("peer-a"),
+            "failure.bin",
+            "file",
+            unix_timestamp(),
+            "sending",
+            "parallel-sender-failure",
+        )
+        .await
+        .unwrap();
+        db::set_file_message_metadata(
+            &pool,
+            message.id,
+            source_path.to_str().unwrap(),
+            7,
+            "transferring",
+        )
+        .await
+        .unwrap();
+        let transfer_id = "parallel-sender-failure:peer-a";
+        db::create_transfer(
+            &pool,
+            transfer_id,
+            Some(message.id),
+            &conversation.id,
+            "peer-a",
+            "send",
+            "queued",
+            7,
+        )
+        .await
+        .unwrap();
+        run_upload(
+            &pool,
+            UploadJob {
+                transfer_id: transfer_id.into(),
+                peer_addr: address.to_string(),
+                conversation_id: conversation.id,
+                client_message_id: "parallel-sender-failure".into(),
+                message_id: message.id,
+                source: ValidatedSource {
+                    path: source_path.to_string_lossy().into_owned(),
+                    file_name: "failure.bin".into(),
+                    size: 7,
+                },
+                group_sync: None,
+                parallel_v2: true,
+                file_sha256: Some(sha256_file(&source_path).await.unwrap()),
+            },
+        )
+        .await;
+
+        assert_eq!(status_rx.try_recv().unwrap(), "failed");
+        let transfer = db::get_transfer(&pool, transfer_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(transfer.status, "failed");
+
+        server.abort();
+        pool.close().await;
+        tokio::fs::remove_dir_all(app_dir).await.unwrap();
     }
 
     #[test]
@@ -1408,6 +2691,7 @@ mod tests {
             awaiting.message.id,
             "peer-a",
             "127.0.0.1:1",
+            false,
         )
         .await
         .unwrap();

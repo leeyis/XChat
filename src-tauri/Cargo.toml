@@ -43,6 +43,7 @@ axum = { version = "0.7", features = ["ws", "multipart"] }
 tower-http = { version = "0.5", features = ["fs", "cors"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
+sha2 = "0.10"
 clap = { version = "4.4", features = ["derive"] }
 rust-embed = "8.0"
 # 工具 - 两端都需要
@@ -70,12 +71,12 @@ tauri-plugin-opener = { version = "2.0", optional = true }
 
 # 非 Android 平台：使用 native-tls 和剪贴板
 [target.'cfg(not(target_os = "android"))'.dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["multipart", "json", "native-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["multipart", "json", "stream", "native-tls"] }
 clipboard-rs = { version = "0.3.3", optional = true }
 
 # Android 平台：使用 rustls-tls（避免 vendored OpenSSL 交叉编译问题）
 [target.'cfg(target_os = "android")'.dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["multipart", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["multipart", "json", "stream", "rustls-tls"] }
 jni = "0.21"
 ndk-context = "0.1"
 

@@ -10,8 +10,14 @@ use crate::peers::PeerManager;
 
 const MULTICAST_IP: &str = "224.0.0.167";
 pub const DISCOVERY_PROTOCOL_VERSION: u16 = 2;
-pub const DISCOVERY_CAPABILITIES: &[&str] = &["group_chat", "receipts", "transfer_cancel"];
+pub const DISCOVERY_CAPABILITIES: &[&str] = &[
+    "group_chat",
+    "receipts",
+    "transfer_cancel",
+    "parallel_file_v2",
+];
 static LOCAL_DEVICE_METADATA: OnceLock<(Option<String>, Option<String>)> = OnceLock::new();
+static LOCAL_IP_ADDRESS: OnceLock<Option<String>> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveryAnnouncement {
@@ -104,6 +110,19 @@ pub(crate) fn local_device_metadata() -> (Option<String>, Option<String>) {
                 (!address.is_unspecified()).then(|| address.to_string())
             });
             (hostname, mac_address)
+        })
+        .clone()
+}
+
+pub(crate) fn local_ip_address() -> Option<String> {
+    LOCAL_IP_ADDRESS
+        .get_or_init(|| {
+            let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+            socket
+                .connect((Ipv4Addr::new(224, 0, 0, 167), 8888))
+                .ok()?;
+            let address = socket.local_addr().ok()?.ip();
+            (!address.is_unspecified() && !address.is_loopback()).then(|| address.to_string())
         })
         .clone()
 }
@@ -346,24 +365,20 @@ pub async fn start_listening(
                     announcement.mac_address.clone(),
                     Some("lan".to_string()),
                     announcement.capabilities.clone(),
+                    !announcement.is_reply,
                 );
 
                 // 保存或更新用户到数据库
-                let _ = crate::db::save_or_update_user(
-                    &pool,
-                    peer_id.clone(),
-                    name.clone(),
-                    peer_addr.clone(),
-                    false,
-                    available_memory_mb,
-                )
-                .await;
-                let _ = crate::db::update_user_metadata(
+                let _ = crate::db::save_or_update_discovered_user(
                     &pool,
                     &peer_id,
+                    &name,
+                    &peer_addr,
+                    available_memory_mb,
                     announcement.hostname.as_deref(),
                     announcement.mac_address.as_deref(),
                     Some("lan"),
+                    !announcement.is_reply,
                 )
                 .await;
 
@@ -492,24 +507,20 @@ pub async fn start_listening(
                     announcement.mac_address.clone(),
                     Some("lan".to_string()),
                     announcement.capabilities.clone(),
+                    !announcement.is_reply,
                 );
 
                 // 保存或更新用户到数据库
-                let _ = crate::db::save_or_update_user(
-                    &pool,
-                    peer_id.clone(),
-                    name.clone(),
-                    peer_addr.clone(),
-                    false,
-                    available_memory_mb,
-                )
-                .await;
-                let _ = crate::db::update_user_metadata(
+                let _ = crate::db::save_or_update_discovered_user(
                     &pool,
                     &peer_id,
+                    &name,
+                    &peer_addr,
+                    available_memory_mb,
                     announcement.hostname.as_deref(),
                     announcement.mac_address.as_deref(),
                     Some("lan"),
+                    !announcement.is_reply,
                 )
                 .await;
 
@@ -611,6 +622,7 @@ mod tests {
 
     #[test]
     fn discovery_extension_round_trips_after_legacy_prefix() {
+        assert!(DISCOVERY_CAPABILITIES.contains(&"parallel_file_v2"));
         let announcement = DiscoveryAnnouncement {
             peer_id: "peer-1".into(),
             name: "Alice".into(),
@@ -629,5 +641,14 @@ mod tests {
             DiscoveryAnnouncement::parse(&encoded).unwrap(),
             Some(announcement)
         );
+    }
+
+    #[test]
+    fn local_ip_address_never_returns_loopback_or_unspecified() {
+        if let Some(address) = local_ip_address() {
+            let address: std::net::IpAddr = address.parse().unwrap();
+            assert!(!address.is_loopback());
+            assert!(!address.is_unspecified());
+        }
     }
 }

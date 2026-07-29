@@ -830,12 +830,67 @@ time,
   font: var(--text-meta)/1.3 var(--font-mono);
 }
 
+.message-file-main .message-transfer-meta {
+  margin-top: 3px;
+  font-size: var(--text-micro);
+}
+
+.message-file-main .progress-track {
+  width: 100%;
+  margin-top: 6px;
+}
+
 .message-file > button,
 .text-action {
   padding: 6px;
   border: 0;
   background: transparent;
   color: var(--accent);
+}
+
+.file-open-menu {
+  position: relative;
+}
+
+.file-open-trigger {
+  padding: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.file-open-popover {
+  position: absolute;
+  z-index: 35;
+  right: 0;
+  bottom: calc(100% + 5px);
+  display: grid;
+  width: max-content;
+  min-width: 138px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+}
+
+.file-open-popover button {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+}
+
+.file-open-popover button:hover,
+.file-open-popover button:focus-visible {
+  background: color-mix(in oklch, var(--fg) 7%, transparent);
 }
 
 .transfer-dock {
@@ -860,6 +915,11 @@ time,
   color: var(--muted);
 }
 
+.transfer-dock .progress-track {
+  width: 100%;
+  margin-top: 5px;
+}
+
 .composer {
   position: relative;
   display: flex;
@@ -880,6 +940,26 @@ time,
   transition:
     border-color var(--duration-exit) var(--ease-out),
     box-shadow var(--duration-exit) var(--ease-out);
+}
+
+.composer.drag-active .compose-box {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 14%, transparent);
+}
+
+.composer.drag-active .compose-box::after {
+  position: absolute;
+  z-index: 40;
+  inset: 5px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--accent);
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--accent) 14%, var(--surface));
+  color: var(--accent);
+  content: attr(data-drop-label);
+  font-weight: 600;
+  pointer-events: none;
 }
 
 .draft-attachments {
@@ -974,7 +1054,7 @@ time,
   z-index: 30;
   bottom: 43px;
   left: 6px;
-  width: 252px;
+  width: min(350px, calc(100vw - 32px));
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -984,14 +1064,18 @@ time,
 
 .emoji-grid {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  max-height: 240px;
+  grid-template-columns: repeat(9, minmax(24px, 1fr));
   gap: 4px;
+  padding-right: 3px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .emoji-grid button {
   display: grid;
-  width: 30px;
-  height: 30px;
+  width: 100%;
+  min-height: 30px;
   place-items: center;
   padding: 0;
   border: 0;
@@ -1523,6 +1607,12 @@ time,
   accent-color: var(--accent);
 }
 
+.setting-readonly {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 .avatar-picker {
   display: flex;
   flex-wrap: wrap;
@@ -1949,6 +2039,10 @@ time,
 
   .setting-row input[type="checkbox"] {
     justify-self: start;
+  }
+
+  .setting-readonly {
+    text-align: left;
   }
 }
 

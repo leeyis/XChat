@@ -6,8 +6,12 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
+  ACTIVE_TRANSFER_STATES,
+  EMOJI_SET,
   fileKind,
   fileStatus,
+  insertTextAtSelection,
+  isPhysicalPointInsideRect,
   isImageFile,
   localFileAvailable,
   matchesShortcut,
@@ -15,22 +19,7 @@ import {
 } from "./xchat.js";
 import CaptureEditor from "./CaptureEditor.jsx";
 
-const EMOJI_SET = [
-  "😀", "😄", "😂", "🥰", "😎", "🤝", "👍",
-  "👏", "🎉", "❤️", "😮", "😢", "😡", "🤔",
-  "🙏", "💪", "✅", "📎", "💻", "📁", "🚀",
-];
-
 const FILE_KINDS = ["all", "image", "document", "audio", "video", "other"];
-
-const ACTIVE_TRANSFER_STATES = new Set([
-  "queued",
-  "waiting_peer",
-  "offering",
-  "awaiting_acceptance",
-  "transferring",
-  "cancelling",
-]);
 
 const copy = {
   "zh-CN": {
@@ -100,6 +89,7 @@ const copy = {
     },
     attachment: "附件",
     emoji: "表情",
+    dropFilesHere: "松开即可添加到发送草稿",
     removeAttachment: "移除附件",
     attachmentReady: "待发送",
     imagePreview: "图片预览",
@@ -110,6 +100,7 @@ const copy = {
     file: "文件",
     receive: "接收",
     open: "打开",
+    openMenu: "打开选项",
     messagePlaceholder: "输入消息…",
     message: "消息",
     capture: "截屏",
@@ -190,6 +181,7 @@ const copy = {
     saveSettings: "保存设置",
     identity: "身份",
     localName: "本机名称",
+    localIp: "本机 IP",
     deviceIdDetail: (id) => `设备 ID ${id}`,
     deviceIdUnavailable: "设备 ID 暂不可用",
     localAvatar: "本机头像",
@@ -337,6 +329,7 @@ const copy = {
     },
     attachment: "Attachment",
     emoji: "Emoji",
+    dropFilesHere: "Drop to add files to the draft",
     removeAttachment: "Remove attachment",
     attachmentReady: "Ready to send",
     imagePreview: "Image preview",
@@ -347,6 +340,7 @@ const copy = {
     file: "File",
     receive: "Receive",
     open: "Open",
+    openMenu: "Open options",
     messagePlaceholder: "Type a message…",
     message: "Message",
     capture: "Capture",
@@ -430,6 +424,7 @@ const copy = {
     saveSettings: "Save settings",
     identity: "Identity",
     localName: "Device name",
+    localIp: "Local IP",
     deviceIdDetail: (id) => `Device ID ${id}`,
     deviceIdUnavailable: "Device ID unavailable",
     localAvatar: "Device avatar",
@@ -737,6 +732,14 @@ function formatSize(bytes) {
   if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`;
   if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`;
   return `${(value / 1024 ** 3).toFixed(1)} GB`;
+}
+
+function formatRate(bytesPerSecond) {
+  return `${Number(bytesPerSecond) > 0 ? formatSize(bytesPerSecond) : "0 B"}/s`;
+}
+
+function formatProgressSize(bytes) {
+  return Number(bytes) > 0 ? formatSize(bytes) : "0 B";
 }
 
 function sourceIdForFile(file) {
@@ -1243,6 +1246,63 @@ function EmptyState({ icon = "chat", title, detail }) {
   );
 }
 
+function FileOpenMenu({ file, workspace, labels, canReveal }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef(null);
+
+  useEffect(() => setOpen(false), [file.conversation_id]);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event) => {
+      if (event.key === "Escape") setOpen(false);
+      if (event.type === "pointerdown" && !root.current?.contains(event.target)) {
+        setOpen(false);
+      }
+    };
+    addEventListener("keydown", close);
+    addEventListener("pointerdown", close);
+    return () => {
+      removeEventListener("keydown", close);
+      removeEventListener("pointerdown", close);
+    };
+  }, [open]);
+
+  const run = (type) => {
+    setOpen(false);
+    workspace.dispatch({ type, file });
+  };
+
+  return (
+    <span className="file-open-menu" ref={root}>
+      <button
+        type="button"
+        className="file-open-trigger"
+        onClick={() => setOpen((value) => !value)}
+        aria-label={labels.openMenu}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        {labels.open} <span aria-hidden="true">⌄</span>
+      </button>
+      {open && (
+        <span className="file-open-popover" role="menu">
+          <button type="button" role="menuitem" onClick={() => run("file.open")}>
+            <Icon name="file" size={17} />
+            {labels.openFile}
+          </button>
+          {canReveal && (
+            <button type="button" role="menuitem" onClick={() => run("file.reveal")}>
+              <Icon name="folder" size={17} />
+              {labels.revealFile}
+            </button>
+          )}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function MessageFile({ message, state, workspace, labels }) {
   const status = fileStatus(message);
   const image = isImageFile(message);
@@ -1260,6 +1320,9 @@ function MessageFile({ message, state, workspace, labels }) {
   const canOpen =
     available &&
     (direction === "incoming" || state.capabilities.openOutgoingFile);
+  const bytesTotal = Number(activeTransfer?.bytes_total || message.file_size || 0);
+  const bytesTransferred = Number(activeTransfer?.bytes_transferred || 0);
+  const percent = activeTransfer?.progress_percent || 0;
   if (image && media.url) {
     return (
       <button
@@ -1294,6 +1357,19 @@ function MessageFile({ message, state, workspace, labels }) {
             : statusText(status, labels) || labels.file}{" "}
           · {formatSize(message.file_size)}
         </span>
+        {activeTransfer && (
+          <>
+            <span className="message-transfer-meta">
+              {percent}% · {formatProgressSize(bytesTransferred)} /{" "}
+              {formatProgressSize(bytesTotal)}
+              {" · "}
+              {formatRate(activeTransfer.speed_bps)}
+            </span>
+            <span className="progress-track" aria-label={labels.progress(percent)}>
+              <i style={{ width: `${percent}%` }} />
+            </span>
+          </>
+        )}
       </span>
       {["offered", "awaiting_acceptance"].includes(status) && (
         <button onClick={() => workspace.dispatch({ type: "file.accept", file: message })}>
@@ -1328,9 +1404,12 @@ function MessageFile({ message, state, workspace, labels }) {
         </button>
       )}
       {canOpen && ["accepted", "completed", "sent"].includes(status) && (
-        <button onClick={() => workspace.dispatch({ type: "file.open", file: message })}>
-          {labels.open}
-        </button>
+        <FileOpenMenu
+          file={message}
+          workspace={workspace}
+          labels={labels}
+          canReveal={state.capabilities.revealFile}
+        />
       )}
     </div>
   );
@@ -1375,7 +1454,9 @@ function DraftAttachment({ attachment, labels, onRemove }) {
 function Composer({ state, conversation, workspace, labels }) {
   const [text, setText] = useState(conversation?.draft || "");
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   const [sending, setSending] = useState(false);
+  const composer = useRef(null);
   const textarea = useRef(null);
   const input = useRef(null);
   const emojiPanel = useRef(null);
@@ -1412,6 +1493,51 @@ function Composer({ state, conversation, workspace, labels }) {
       removeEventListener("pointerdown", close);
     };
   }, [emojiOpen]);
+
+  useEffect(() => {
+    const currentWebview =
+      globalThis.window?.__TAURI__?.webview?.getCurrentWebview?.();
+    if (!currentWebview?.onDragDropEvent) return;
+    let disposed = false;
+    let unlisten = () => {};
+    currentWebview
+      .onDragDropEvent((event) => {
+        const payload = event.payload ?? event;
+        if (payload.type === "leave") {
+          setDragActive(false);
+          return;
+        }
+        const inside = isPhysicalPointInsideRect(
+          payload.position,
+          composer.current?.getBoundingClientRect(),
+          globalThis.devicePixelRatio || 1,
+        );
+        if (payload.type === "over") {
+          setDragActive(inside);
+          return;
+        }
+        if (payload.type === "drop") {
+          setDragActive(false);
+          if (inside && payload.paths?.length) {
+            workspace.dispatch({
+              type: "draft.addPaths",
+              conversationId: conversation.id,
+              paths: payload.paths,
+            });
+          }
+        }
+      })
+      .then((stop) => {
+        if (typeof stop !== "function") return;
+        if (disposed) stop();
+        else unlisten = stop;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten();
+    };
+  }, [conversation.id, workspace]);
 
   const send = async () => {
     const content = text.trim();
@@ -1461,32 +1587,64 @@ function Composer({ state, conversation, workspace, labels }) {
     const element = textarea.current;
     const start = element?.selectionStart ?? text.length;
     const end = element?.selectionEnd ?? start;
-    const next = `${text.slice(0, start)}${emoji}${text.slice(end)}`;
-    setText(next);
+    const next = insertTextAtSelection(text, emoji, start, end);
+    setText(next.value);
+    setEmojiOpen(false);
     requestAnimationFrame(() => {
       element?.focus();
-      element?.setSelectionRange(start + emoji.length, start + emoji.length);
+      element?.setSelectionRange(next.caret, next.caret);
     });
   };
 
   return (
     <footer
-      className="composer"
+      className={`composer ${dragActive ? "drag-active" : ""}`}
+      ref={composer}
       data-od-id="message-composer"
-      onDragOver={(event) => event.preventDefault()}
+      onDragEnter={(event) => {
+        if ([...event.dataTransfer.items].some((item) => item.kind === "file")) {
+          event.preventDefault();
+          setDragActive(true);
+        }
+      }}
+      onDragOver={(event) => {
+        if ([...event.dataTransfer.types].includes("Files")) {
+          event.preventDefault();
+          setDragActive(true);
+        }
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setDragActive(false);
+      }}
       onDrop={(event) => {
         event.preventDefault();
         event.stopPropagation();
-        if (event.dataTransfer.files.length) {
+        setDragActive(false);
+        const files = [];
+        const rejectedNames = [];
+        for (const item of event.dataTransfer.items) {
+          if (item.kind !== "file") continue;
+          const entry = item.webkitGetAsEntry?.();
+          if (entry?.isDirectory) rejectedNames.push(entry.name);
+          else {
+            const file = item.getAsFile();
+            if (file) files.push(file);
+          }
+        }
+        if (!event.dataTransfer.items.length) {
+          files.push(...event.dataTransfer.files);
+        }
+        if (files.length || rejectedNames.length) {
           workspace.dispatch({
             type: "draft.addFiles",
             conversationId: conversation.id,
-            files: [...event.dataTransfer.files],
+            files,
+            rejectedNames,
           });
         }
       }}
     >
-      <div className="compose-box">
+      <div className="compose-box" data-drop-label={labels.dropFilesHere}>
         {attachments.length > 0 && (
           <div className="draft-attachments">
             {attachments.map((attachment) => (
@@ -1696,22 +1854,31 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
       : `${peer?.addr || labels.unknownAddress} · ${
           peer?.is_offline ? labels.offline : labels.online
         }`;
+  const runningTransfers = state.transfers.filter((transfer) =>
+    ACTIVE_TRANSFER_STATES.has(transfer.status),
+  );
+  const transferredBytes = runningTransfers.reduce(
+    (total, transfer) => total + Number(transfer.bytes_transferred || 0),
+    0,
+  );
+  const totalBytes = runningTransfers.reduce(
+    (total, transfer) => total + Number(transfer.bytes_total || 0),
+    0,
+  );
+  const totalSpeed = runningTransfers.reduce(
+    (total, transfer) => total + Number(transfer.speed_bps || 0),
+    0,
+  );
+  const transferPercent = totalBytes
+    ? Math.min(100, Math.round((transferredBytes / totalBytes) * 100))
+    : 0;
 
   return (
     <main
       className="workspace chat-workspace"
       data-od-id="chat-workspace"
       onDragOver={(event) => event.preventDefault()}
-      onDrop={(event) => {
-        event.preventDefault();
-        if (event.dataTransfer.files.length) {
-          workspace.dispatch({
-            type: "draft.addFiles",
-            conversationId: conversation.id,
-            files: [...event.dataTransfer.files],
-          });
-        }
-      }}
+      onDrop={(event) => event.preventDefault()}
     >
       <header className="workspace-head">
         <button
@@ -1831,17 +1998,20 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
           </article>
         ))}
       </div>
-      {state.transfers.some((item) => ACTIVE_TRANSFER_STATES.has(item.status)) && (
+      {runningTransfers.length > 0 && (
         <div className="transfer-dock">
           <Icon name="download" />
           <span>
-            <b>
-              {labels.activeTransfers(
-                state.transfers.filter((item) => ACTIVE_TRANSFER_STATES.has(item.status))
-                  .length,
-              )}
-            </b>
-            <small>{labels.openFileCenterProgress}</small>
+            <b>{labels.activeTransfers(runningTransfers.length)}</b>
+            <small>
+              {transferPercent}% · {formatProgressSize(transferredBytes)} /{" "}
+              {formatProgressSize(totalBytes)}
+              {" · "}
+              {formatRate(totalSpeed)}
+            </small>
+            <span className="progress-track" aria-label={labels.progress(transferPercent)}>
+              <i style={{ width: `${transferPercent}%` }} />
+            </span>
           </span>
         </div>
       )}
@@ -2391,6 +2561,14 @@ function SettingsWorkspace({
             }
           >
             <input value={form.name} onChange={(event) => change("name", event.target.value)} />
+          </SettingRow>
+          <SettingRow label={labels.localIp}>
+            <output className="setting-readonly">{state.self.addr || labels.notProvided}</output>
+          </SettingRow>
+          <SettingRow label={labels.macAddress}>
+            <output className="setting-readonly">
+              {state.self.mac_address || labels.notProvided}
+            </output>
           </SettingRow>
           <div className="avatar-setting">
             <span>

@@ -1,4 +1,4 @@
-use crate::utils::generate_random_name;
+use crate::utils::{is_legacy_generated_name, machine_name};
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqlitePool, Pool, Sqlite};
 use std::path::PathBuf;
@@ -180,14 +180,26 @@ pub async fn update_username(
         return Err("username too long (max 50 chars)".to_string());
     }
 
-    sqlx::query("UPDATE settings SET value = ? WHERE key = 'username'")
-        .bind(new_name.trim())
-        .execute(pool)
-        .await
-        .map_err(|e| {
-            println!("[DB] update failed: {}", e);
-            e.to_string()
-        })?;
+    let mut transaction = pool.begin().await.map_err(|e| e.to_string())?;
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES ('username', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(new_name.trim())
+    .execute(&mut *transaction)
+    .await
+    .map_err(|e| {
+        println!("[DB] update failed: {}", e);
+        e.to_string()
+    })?;
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES ('username_source', 'custom')
+         ON CONFLICT(key) DO UPDATE SET value = 'custom'",
+    )
+    .execute(&mut *transaction)
+    .await
+    .map_err(|e| e.to_string())?;
+    transaction.commit().await.map_err(|e| e.to_string())?;
 
     println!("[DB] username updated successfully");
     Ok(())
@@ -271,6 +283,14 @@ pub async fn init_db_standalone(custom_path: Option<PathBuf>) -> Result<Pool<Sql
 
 // 通用的数据库初始化逻辑
 async fn init_db_with_path(app_dir: PathBuf) -> Result<Pool<Sqlite>, sqlx::Error> {
+    let machine_name = machine_name();
+    init_db_with_path_and_machine_name(app_dir, &machine_name).await
+}
+
+async fn init_db_with_path_and_machine_name(
+    app_dir: PathBuf,
+    machine_name: &str,
+) -> Result<Pool<Sqlite>, sqlx::Error> {
     println!("[DB] 数据库路径: {:?}", app_dir);
 
     // 确保目录一定存在
@@ -485,25 +505,32 @@ async fn init_db_with_path(app_dir: PathBuf) -> Result<Pool<Sqlite>, sqlx::Error
     .execute(&pool)
     .await?;
 
-    // 初始化配置 (如果没有用户名则生成一个)
-    let user_exists = sqlx::query("SELECT value FROM settings WHERE key = 'username'")
-        .fetch_optional(&pool)
-        .await?;
+    // 初始化配置；旧版自动生成名只迁移一次，用户自定义名称不覆盖。
+    let username =
+        sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'username'")
+            .fetch_optional(&pool)
+            .await?;
+    let username_source =
+        sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'username_source'")
+            .fetch_optional(&pool)
+            .await?;
 
-    if user_exists.is_none() {
-        let random_name = generate_random_name();
-        println!("[DB] 生成随机用户名: {}", random_name);
+    if username.is_none() {
+        println!("[DB] 使用本机名称: {}", machine_name);
 
         // 生成唯一的 UUID
         let user_id = uuid::Uuid::new_v4().to_string();
         println!("[DB] 生成用户 ID: {}", user_id);
 
         sqlx::query("INSERT INTO settings (key, value) VALUES ('username', ?)")
-            .bind(random_name)
+            .bind(machine_name)
+            .execute(&pool)
+            .await?;
+        sqlx::query("INSERT INTO settings (key, value) VALUES ('username_source', 'machine')")
             .execute(&pool)
             .await?;
 
-        sqlx::query("INSERT INTO settings (key, value) VALUES ('user_id', ?)")
+        sqlx::query("INSERT OR IGNORE INTO settings (key, value) VALUES ('user_id', ?)")
             .bind(user_id)
             .execute(&pool)
             .await?;
@@ -522,8 +549,33 @@ async fn init_db_with_path(app_dir: PathBuf) -> Result<Pool<Sqlite>, sqlx::Error
 
         println!("[DB] 设置默认下载路径: {}", download_dir);
 
-        sqlx::query("INSERT INTO settings (key, value) VALUES ('download_path', ?)")
+        sqlx::query("INSERT OR IGNORE INTO settings (key, value) VALUES ('download_path', ?)")
             .bind(download_dir)
+            .execute(&pool)
+            .await?;
+    } else if username_source.is_none() {
+        let username = username.as_deref().unwrap();
+        let (value, source) = if is_legacy_generated_name(&username) {
+            (machine_name, "machine")
+        } else {
+            (username, "custom")
+        };
+        sqlx::query(
+            "INSERT INTO settings (key, value) VALUES ('username', ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(value)
+        .execute(&pool)
+        .await?;
+        sqlx::query("INSERT INTO settings (key, value) VALUES ('username_source', ?)")
+            .bind(source)
+            .execute(&pool)
+            .await?;
+    } else if username_source.as_deref() == Some("machine")
+        && username.as_deref() != Some(machine_name)
+    {
+        sqlx::query("UPDATE settings SET value = ? WHERE key = 'username'")
+            .bind(machine_name)
             .execute(&pool)
             .await?;
     }
@@ -1023,7 +1075,9 @@ pub async fn save_or_update_user(
             last_seen = excluded.last_seen,
             is_offline = excluded.is_offline,
             available_memory_mb = CASE
-                WHEN excluded.available_memory_mb > 0 THEN excluded.available_memory_mb
+                WHEN users.available_memory_mb <= 0
+                     AND excluded.available_memory_mb > 0
+                THEN excluded.available_memory_mb
                 ELSE users.available_memory_mb
             END",
     )
@@ -1037,6 +1091,37 @@ pub async fn save_or_update_user(
     .await
     .map_err(|e| format!("保存用户失败: {}", e))?;
 
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn save_or_update_discovered_user(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    id: &str,
+    name: &str,
+    addr: &str,
+    available_memory_mb: u64,
+    hostname: Option<&str>,
+    mac_address: Option<&str>,
+    discovery_source: Option<&str>,
+    authoritative: bool,
+) -> Result<(), String> {
+    save_or_update_user(
+        pool,
+        id.to_string(),
+        name.to_string(),
+        addr.to_string(),
+        false,
+        if authoritative {
+            available_memory_mb
+        } else {
+            0
+        },
+    )
+    .await?;
+    if authoritative {
+        update_user_metadata(pool, id, hostname, mac_address, discovery_source).await?;
+    }
     Ok(())
 }
 
@@ -2951,6 +3036,178 @@ pub async fn set_setting(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn discovered_user_metadata_keeps_the_first_authoritative_memory_snapshot() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE users (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                addr TEXT,
+                last_seen INTEGER,
+                is_offline INTEGER DEFAULT 0,
+                available_memory_mb INTEGER DEFAULT 0,
+                hostname TEXT,
+                mac_address TEXT,
+                remark TEXT,
+                discovery_source TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        save_or_update_discovered_user(
+            &pool,
+            "peer-1",
+            "Alice",
+            "127.0.0.1:8888",
+            0,
+            Some("reply-host"),
+            Some("ac:de:48:00:11:22"),
+            Some("lan"),
+            false,
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE users
+             SET hostname = 'reply-host', mac_address = 'ac:de:48:00:11:22'
+             WHERE id = 'peer-1'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        save_or_update_discovered_user(
+            &pool,
+            "peer-1",
+            "Alice",
+            "127.0.0.1:8888",
+            2356,
+            Some("alice-mac"),
+            Some("82:ae:17:28:c4:04"),
+            Some("lan"),
+            true,
+        )
+        .await
+        .unwrap();
+        save_or_update_discovered_user(
+            &pool,
+            "peer-1",
+            "Alice",
+            "127.0.0.1:8888",
+            0,
+            Some("reply-host"),
+            Some("ac:de:48:00:11:22"),
+            Some("lan"),
+            false,
+        )
+        .await
+        .unwrap();
+        save_or_update_discovered_user(
+            &pool,
+            "peer-1",
+            "Alice",
+            "127.0.0.1:8888",
+            2367,
+            Some("alice-mac"),
+            Some("82:ae:17:28:c4:04"),
+            Some("lan"),
+            true,
+        )
+        .await
+        .unwrap();
+
+        let peer = get_user_metadata(&pool, "peer-1").await.unwrap().unwrap();
+        assert_eq!(peer.available_memory_mb, 2356);
+        assert_eq!(peer.hostname.as_deref(), Some("alice-mac"));
+        assert_eq!(peer.mac_address.as_deref(), Some("82:ae:17:28:c4:04"));
+    }
+
+    #[tokio::test]
+    async fn machine_name_migration_preserves_custom_names() {
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-name-test-{}", uuid::Uuid::new_v4()));
+        let pool = init_db_with_path_and_machine_name(app_dir.clone(), "Office Mac")
+            .await
+            .unwrap();
+        assert_eq!(get_username(&pool).await.unwrap(), "Office Mac");
+        assert_eq!(
+            get_setting(&pool, "username_source")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("machine")
+        );
+        pool.close().await;
+        let pool = init_db_with_path_and_machine_name(app_dir.clone(), "Renamed Office Mac")
+            .await
+            .unwrap();
+        assert_eq!(get_username(&pool).await.unwrap(), "Renamed Office Mac");
+
+        sqlx::query("UPDATE settings SET value = 'Happy-Fox-662' WHERE key = 'username'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM settings WHERE key = 'username_source'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        let pool = init_db_with_path_and_machine_name(app_dir.clone(), "Renamed Mac")
+            .await
+            .unwrap();
+        assert_eq!(get_username(&pool).await.unwrap(), "Renamed Mac");
+        assert_eq!(
+            get_setting(&pool, "username_source")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("machine")
+        );
+
+        sqlx::query("UPDATE settings SET value = 'Alice' WHERE key = 'username'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM settings WHERE key = 'username_source'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        let pool = init_db_with_path_and_machine_name(app_dir.clone(), "Third Mac")
+            .await
+            .unwrap();
+        assert_eq!(get_username(&pool).await.unwrap(), "Alice");
+        assert_eq!(
+            get_setting(&pool, "username_source")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("custom")
+        );
+
+        update_username(&pool, "Bob".into()).await.unwrap();
+        assert_eq!(
+            get_setting(&pool, "username_source")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("custom")
+        );
+        pool.close().await;
+        let pool = init_db_with_path_and_machine_name(app_dir.clone(), "Fourth Mac")
+            .await
+            .unwrap();
+        assert_eq!(get_username(&pool).await.unwrap(), "Bob");
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
 
     #[test]
     fn stable_direct_ids_and_literal_search_patterns() {

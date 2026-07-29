@@ -120,6 +120,7 @@ fn main() {
             lanchat::commands::start_capture_editor,
             lanchat::commands::get_pending_capture,
             lanchat::commands::finish_capture_editor,
+            lanchat::commands::save_capture_editor,
             lanchat::commands::cancel_capture_editor,
             lanchat::commands::pin_capture,
             lanchat::commands::stage_image_attachment,

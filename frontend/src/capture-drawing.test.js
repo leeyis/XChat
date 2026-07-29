@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  addCaptureOperation,
   createTextOperation,
+  createCaptureHistory,
   drawCaptureOperation,
+  moveCaptureSelection,
+  normalizeCaptureSelection,
+  placeCaptureToolbar,
+  redoCaptureOperation,
+  resizeCaptureSelection,
+  undoCaptureOperation,
 } from "./capture-drawing.js";
 
 function fakeContext(label, calls, canvas = { width: 320, height: 200 }) {
@@ -134,5 +142,102 @@ test("text annotations commit trimmed content and cancel blank input", () => {
   assert.equal(
     createTextOperation({ x: 12, y: 24, value: " \n " }, "#0f0", 6),
     null,
+  );
+});
+
+test("capture history supports undo, redo, and clears redo after a new annotation", () => {
+  const rectangle = { tool: "rectangle" };
+  const arrow = { tool: "arrow" };
+  const text = { tool: "text" };
+
+  let history = createCaptureHistory();
+  history = addCaptureOperation(history, rectangle);
+  history = addCaptureOperation(history, arrow);
+  history = undoCaptureOperation(history);
+  assert.deepEqual(history, {
+    operations: [rectangle],
+    redo: [arrow],
+  });
+
+  history = redoCaptureOperation(history);
+  assert.deepEqual(history, {
+    operations: [rectangle, arrow],
+    redo: [],
+  });
+
+  history = undoCaptureOperation(history);
+  history = addCaptureOperation(history, text);
+  assert.deepEqual(history, {
+    operations: [rectangle, text],
+    redo: [],
+  });
+});
+
+test("capture toolbar follows the selection, flips above, and stays on screen", () => {
+  const toolbar = { width: 360, height: 48 };
+  const viewport = { width: 1000, height: 700 };
+
+  assert.deepEqual(
+    placeCaptureToolbar(
+      { x: 400, y: 200, width: 300, height: 200 },
+      toolbar,
+      viewport,
+    ),
+    { left: 340, top: 408, side: "bottom" },
+  );
+  assert.deepEqual(
+    placeCaptureToolbar(
+      { x: 400, y: 650, width: 300, height: 30 },
+      toolbar,
+      viewport,
+    ),
+    { left: 340, top: 594, side: "top" },
+  );
+  assert.deepEqual(
+    placeCaptureToolbar(
+      { x: 10, y: 200, width: 60, height: 200 },
+      toolbar,
+      viewport,
+    ),
+    { left: 8, top: 408, side: "bottom" },
+  );
+});
+
+test("capture selection normalizes, moves, and resizes inside the viewport", () => {
+  const viewport = { width: 1000, height: 700 };
+
+  assert.deepEqual(
+    normalizeCaptureSelection(
+      { x: -20, y: 80 },
+      { x: 120, y: 10 },
+      viewport,
+    ),
+    { x: 0, y: 10, width: 120, height: 70 },
+  );
+  assert.deepEqual(
+    moveCaptureSelection(
+      { x: 700, y: 500, width: 400, height: 300 },
+      { x: 100, y: 100 },
+      viewport,
+    ),
+    { x: 600, y: 400, width: 400, height: 300 },
+  );
+  assert.deepEqual(
+    resizeCaptureSelection(
+      { x: 400, y: 300, width: 300, height: 200 },
+      "nw",
+      { x: 350, y: 250 },
+      viewport,
+    ),
+    { x: 350, y: 250, width: 350, height: 250 },
+  );
+  assert.deepEqual(
+    resizeCaptureSelection(
+      { x: 400, y: 300, width: 300, height: 200 },
+      "w",
+      { x: 690, y: 300 },
+      viewport,
+    ),
+    { x: 676, y: 300, width: 24, height: 200 },
   );
 });

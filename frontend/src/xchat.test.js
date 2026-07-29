@@ -2,10 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   directConversationId,
+  EMOJI_SET,
   fileKind,
   fileStatus,
+  insertTextAtSelection,
+  isPhysicalPointInsideRect,
   localFileAvailable,
   matchesShortcut,
+  measureTransfers,
   mergeMessages,
   normalizeMessage,
   runtimeCapabilities,
@@ -127,4 +131,41 @@ test("file classification and availability use backend metadata when present", (
   assert.equal(fileKind({ mime_type: "video/mp4" }), "video");
   assert.equal(localFileAvailable({ file_status: "completed", local_available: false }), false);
   assert.equal(localFileAvailable({ file_status: "removed" }), false);
+});
+
+test("emoji picker has a broad unique set and inserts at the current selection", () => {
+  assert.ok(EMOJI_SET.length >= 80);
+  assert.equal(new Set(EMOJI_SET).size, EMOJI_SET.length);
+  assert.deepEqual(insertTextAtSelection("你好世界", "😀", 2, 4), {
+    value: "你好😀",
+    caret: 4,
+  });
+});
+
+test("physical Tauri drag coordinates are matched against the CSS composer rect", () => {
+  const rect = { left: 100, right: 300, top: 100, bottom: 200 };
+  assert.equal(isPhysicalPointInsideRect({ x: 400, y: 300 }, rect, 2), true);
+  assert.equal(isPhysicalPointInsideRect({ x: 40, y: 300 }, rect, 2), false);
+});
+
+test("transfer snapshots derive percentage and monotonic speed from byte deltas", () => {
+  const previous = [
+    {
+      id: "transfer-1",
+      status: "transferring",
+      bytes_transferred: 1024,
+      bytes_total: 4096,
+    },
+  ];
+  const [active] = measureTransfers(previous, [
+    { ...previous[0], bytes_transferred: 3072 },
+  ], 1000);
+  assert.equal(active.progress_percent, 75);
+  assert.equal(active.speed_bps, 2048);
+
+  const [completed] = measureTransfers([active], [
+    { ...active, status: "completed", bytes_transferred: 4096 },
+  ], 500);
+  assert.equal(completed.progress_percent, 100);
+  assert.equal(completed.speed_bps, 0);
 });
