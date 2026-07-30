@@ -255,6 +255,13 @@ export function isPhysicalPointInsideRect(position, rect, scale = 1) {
   );
 }
 
+export function nativeDragDropTarget(tauri = globalThis.window?.__TAURI__) {
+  const webview = tauri?.webview?.getCurrentWebview?.();
+  if (webview?.onDragDropEvent) return webview;
+  const window = tauri?.window?.getCurrentWindow?.();
+  return window?.onDragDropEvent ? window : null;
+}
+
 export function measureTransfers(previous = [], current = [], elapsedMs = 0) {
   const before = new Map(previous.map((transfer) => [transfer.id, transfer]));
   const elapsedSeconds = Number(elapsedMs) > 0 ? Number(elapsedMs) / 1000 : 0;
@@ -563,7 +570,7 @@ async function parseResponse(response) {
   return data;
 }
 
-class TauriAdapter {
+export class TauriAdapter {
   constructor(tauri) {
     this.tauri = tauri;
     this.runtime = "tauri";
@@ -758,12 +765,9 @@ class TauriAdapter {
           files.push(path);
         }
       } catch {
-        errors.push(
-          uiCopy(
-            `文件不可读或已不存在：${draftName(path)}`,
-            `The file is unreadable or no longer exists: ${draftName(path)}`,
-          ),
-        );
+        // Finder already supplied this path; filesystem ACLs may still block
+        // frontend metadata access. The Rust sender validates it when sending.
+        files.push(path);
       }
     }
     return { files: await this.attachmentsFromPaths(files), errors };

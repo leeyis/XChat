@@ -11,9 +11,11 @@ import {
   matchesShortcut,
   measureTransfers,
   mergeMessages,
+  nativeDragDropTarget,
   normalizeMessage,
   runtimeCapabilities,
   shortcutLabelFromEvent,
+  TauriAdapter,
 } from "./xchat.js";
 
 test("direct conversation IDs are stable on both peers", () => {
@@ -146,6 +148,33 @@ test("physical Tauri drag coordinates are matched against the CSS composer rect"
   const rect = { left: 100, right: 300, top: 100, bottom: 200 };
   assert.equal(isPhysicalPointInsideRect({ x: 400, y: 300 }, rect, 2), true);
   assert.equal(isPhysicalPointInsideRect({ x: 40, y: 300 }, rect, 2), false);
+});
+
+test("native file drops fall back to the Tauri window API", () => {
+  const target = { onDragDropEvent() {} };
+  assert.equal(
+    nativeDragDropTarget({
+      webview: {},
+      window: { getCurrentWindow: () => target },
+    }),
+    target,
+  );
+});
+
+test("Finder drops survive fs metadata scope rejection", async () => {
+  const adapter = new TauriAdapter({
+    core: { invoke() {} },
+    fs: {
+      async stat() {
+        throw new Error("forbidden path");
+      },
+    },
+  });
+
+  const result = await adapter.validateDroppedPaths(["/Users/eason/Desktop/report.pdf"]);
+
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.files[0].file_path, "/Users/eason/Desktop/report.pdf");
 });
 
 test("transfer snapshots derive percentage and monotonic speed from byte deltas", () => {

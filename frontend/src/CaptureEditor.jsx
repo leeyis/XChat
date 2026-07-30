@@ -478,18 +478,8 @@ function CaptureOverlay({ workspace, english }) {
   const beginInsideSelection = (event) => {
     if (busy || event.button !== 0 || !canvas.current) return;
     event.stopPropagation();
+    if (tool === "text") return;
     const point = pointOnCanvas(event, canvas.current);
-    if (tool === "text") {
-      const scale = canvas.current.width / selectionRef.current.width;
-      changeTextInput({
-        ...point,
-        value: "",
-        color,
-        size: size * scale,
-        displaySize: size,
-      });
-      return;
-    }
     if (tool) {
       const scale = canvas.current.width / selectionRef.current.width;
       interactionRef.current = { kind: "draw" };
@@ -513,6 +503,20 @@ function CaptureOverlay({ workspace, english }) {
     }
     capturePointer(event);
     event.preventDefault();
+  };
+
+  const placeText = (event) => {
+    if (busy || tool !== "text" || !canvas.current) return;
+    event.stopPropagation();
+    const point = pointOnCanvas(event, canvas.current);
+    const scale = canvas.current.width / selectionRef.current.width;
+    changeTextInput({
+      ...point,
+      value: "",
+      color,
+      size: size * scale,
+      displaySize: size,
+    });
   };
 
   const movePointer = (event) => {
@@ -638,6 +642,7 @@ function CaptureOverlay({ workspace, english }) {
               height: selection.height,
             }}
             onPointerDown={beginInsideSelection}
+            onClick={placeText}
           >
             <canvas ref={canvas} />
             {selectionReady && (
@@ -671,6 +676,7 @@ function CaptureOverlay({ workspace, english }) {
                 value={textInput.value}
                 autoFocus
                 onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => event.stopPropagation()}
                 onChange={(event) =>
                   changeTextInput({
                     ...textInputRef.current,

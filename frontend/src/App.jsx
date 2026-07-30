@@ -15,6 +15,7 @@ import {
   isImageFile,
   localFileAvailable,
   matchesShortcut,
+  nativeDragDropTarget,
   shortcutLabelFromEvent,
 } from "./xchat.js";
 import CaptureEditor from "./CaptureEditor.jsx";
@@ -1460,6 +1461,7 @@ function Composer({ state, conversation, workspace, labels }) {
   const textarea = useRef(null);
   const input = useRef(null);
   const emojiPanel = useRef(null);
+  const nativeDragInside = useRef(false);
   const attachments = state.draftAttachments?.[conversation.id] || [];
 
   useEffect(() => {
@@ -1495,15 +1497,15 @@ function Composer({ state, conversation, workspace, labels }) {
   }, [emojiOpen]);
 
   useEffect(() => {
-    const currentWebview =
-      globalThis.window?.__TAURI__?.webview?.getCurrentWebview?.();
-    if (!currentWebview?.onDragDropEvent) return;
+    const currentWebview = nativeDragDropTarget();
+    if (!currentWebview) return;
     let disposed = false;
     let unlisten = () => {};
     currentWebview
       .onDragDropEvent((event) => {
         const payload = event.payload ?? event;
         if (payload.type === "leave") {
+          nativeDragInside.current = false;
           setDragActive(false);
           return;
         }
@@ -1513,12 +1515,15 @@ function Composer({ state, conversation, workspace, labels }) {
           globalThis.devicePixelRatio || 1,
         );
         if (payload.type === "over") {
+          nativeDragInside.current = inside;
           setDragActive(inside);
           return;
         }
         if (payload.type === "drop") {
+          const shouldAttach = inside || nativeDragInside.current;
+          nativeDragInside.current = false;
           setDragActive(false);
-          if (inside && payload.paths?.length) {
+          if (shouldAttach && payload.paths?.length) {
             workspace.dispatch({
               type: "draft.addPaths",
               conversationId: conversation.id,
