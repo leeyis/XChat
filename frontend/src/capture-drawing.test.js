@@ -5,8 +5,12 @@ import {
   createTextOperation,
   createCaptureHistory,
   drawCaptureOperation,
+  fitPinnedCapture,
   moveCaptureSelection,
+  nextPinnedCaptureZoom,
   normalizeCaptureSelection,
+  placeCaptureTextInput,
+  placePinnedCaptureMenu,
   placeCaptureToolbar,
   redoCaptureOperation,
   resizeCaptureSelection,
@@ -142,6 +146,40 @@ test("text annotations commit trimmed content and cancel blank input", () => {
   assert.equal(
     createTextOperation({ x: 12, y: 24, value: " \n " }, "#0f0", 6),
     null,
+  );
+});
+
+test("capture text input stays visible near selection edges", () => {
+  assert.deepEqual(
+    placeCaptureTextInput(
+      { x: 780, y: 360 },
+      { width: 800, height: 400 },
+      { width: 420, height: 220 },
+    ),
+    { left: 194, top: 178, width: 220 },
+  );
+  assert.deepEqual(
+    placeCaptureTextInput(
+      { x: 10, y: 8 },
+      { width: 800, height: 400 },
+      { width: 140, height: 80 },
+    ),
+    { left: 6, top: 6, width: 128 },
+  );
+});
+
+test("pinned capture wheel zoom is bounded and its context menu stays onscreen", () => {
+  assert.equal(fitPinnedCapture(1920, 1080), 0.5);
+  assert.equal(nextPinnedCaptureZoom(0.5, -120), 0.55);
+  assert.equal(nextPinnedCaptureZoom(0.2, 120), 0.2);
+  assert.equal(nextPinnedCaptureZoom(3, -120), 3);
+  assert.deepEqual(
+    placePinnedCaptureMenu(
+      { x: 990, y: 690 },
+      { width: 260, height: 320 },
+      { width: 1000, height: 700 },
+    ),
+    { left: 732, top: 372 },
   );
 });
 

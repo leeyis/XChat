@@ -8,6 +8,7 @@ const EVENT_NAMES = [
   "transfer-changed",
   "settings-changed",
   "new-peer",
+  "peer-online",
   "new-message",
   "messages-resent",
   "upload_progress",
@@ -312,6 +313,49 @@ export function normalizeMessage(raw = {}, selfId = "", conversationId = "") {
     delivered_count: Number(raw.delivered_count ?? 0),
     read_count: Number(raw.read_count ?? 0),
     recipient_count: Number(raw.recipient_count ?? 0),
+  };
+}
+
+const MESSAGE_ALERT_CONTROL_TYPES = new Set([
+  "delivery_ack",
+  "file_download_progress",
+  "file_not_found",
+  "file_status_update",
+  "message_status",
+  "read_receipt",
+  "receipt",
+  "start_upload",
+  "upload_progress",
+]);
+
+export function incomingMessageAlert(raw = {}, selfId = "") {
+  const senderId = raw.sender_id ?? raw.from_id ?? "";
+  const messageType = String(raw.msg_type ?? raw.type ?? "text").toLocaleLowerCase();
+  if (
+    !senderId ||
+    senderId === selfId ||
+    MESSAGE_ALERT_CONTROL_TYPES.has(messageType)
+  ) {
+    return null;
+  }
+  const content = String(raw.content ?? "").trim();
+  const fileName = String(raw.file_name ?? "").trim();
+  if (!content && !fileName) return null;
+  const identity =
+    raw.client_message_id ??
+    raw.clientMessageId ??
+    raw.message_id ??
+    raw.id ??
+    raw.sender_msg_id ??
+    `${raw.timestamp ?? raw.created_at ?? ""}:${content || fileName}`;
+  const isFile = messageType.includes("file") || Boolean(fileName);
+  return {
+    key: `${senderId}:${identity}`,
+    fromId: senderId,
+    title: raw.sender_name ?? raw.from_name ?? "Xchat",
+    body: isFile
+      ? uiCopy(`收到文件：${fileName || content}`, `File: ${fileName || content}`)
+      : content.slice(0, 160),
   };
 }
 
@@ -810,6 +854,38 @@ class TauriAdapter {
     return this.invoke("save_capture_editor", { dataUrl });
   }
 
+  showAlert(title, body, fromId) {
+    return this.invoke("show_notification", { title, body, fromId });
+  }
+
+  startAttention() {
+    return this.invoke("start_tray_flash");
+  }
+
+  stopAttention() {
+    return this.invoke("stop_tray_flash");
+  }
+
+  copyPinnedCapture(scale) {
+    return this.invoke("copy_pinned_capture", { scale });
+  }
+
+  savePinnedCapture() {
+    return this.invoke("save_pinned_capture");
+  }
+
+  resizePinnedCapture(scale) {
+    return this.invoke("resize_pinned_capture", { scale });
+  }
+
+  setPinnedCaptureShadow(enabled) {
+    return this.invoke("set_pinned_capture_shadow", { enabled });
+  }
+
+  closePinnedCapture(destroy) {
+    return this.invoke("close_pinned_capture", { destroy });
+  }
+
   readMessageMedia(messageId) {
     return this.invoke("read_workspace_media", { messageId });
   }
@@ -1282,6 +1358,31 @@ class HttpWsAdapter {
     link.click();
   }
 
+  showAlert(title, body) {
+    if ("Notification" in globalThis && Notification.permission === "granted") {
+      return new Notification(title, { body });
+    }
+    return null;
+  }
+
+  startAttention() {}
+
+  stopAttention() {}
+
+  copyPinnedCapture() {}
+
+  savePinnedCapture() {}
+
+  resizePinnedCapture(scale) {
+    return scale;
+  }
+
+  setPinnedCaptureShadow() {}
+
+  closePinnedCapture(destroy) {
+    if (destroy) globalThis.close();
+  }
+
   async readMessageMedia(messageId) {
     const response = await fetch(`/api/download/${encodeURIComponent(messageId)}`);
     if (!response.ok) throw new TransportError(uiCopy("图片不可用", "Image unavailable"));
@@ -1436,6 +1537,7 @@ export function createXChatModule() {
   let pollTimer;
   let refreshTimer;
   const listeners = new Set();
+  const alertedMessages = new Set();
 
   const publish = (next) => {
     if (next === snapshot) return;
@@ -1551,7 +1653,25 @@ export function createXChatModule() {
       return;
     }
     const payload = event.payload?.payload ?? event.payload;
-    const eventType = String(event.type || "").replaceAll("_", ".");
+    const eventType = String(event.type || "").replaceAll("_", ".").replaceAll("-", ".");
+    if (eventType === "peer.online") {
+      const name = payload?.name || payload?.hostname || uiCopy("局域网主机", "LAN host");
+      addNotice(
+        uiCopy(`${name} 已上线`, `${name} is online`),
+        "success",
+      );
+      if (snapshot.settings.notifications_enabled && snapshot.capabilities.notifications) {
+        Promise.resolve(
+          adapter.showAlert(
+            uiCopy("局域网主机上线", "LAN host online"),
+            uiCopy(`${name} 已上线`, `${name} is online`),
+            payload?.id || "",
+          ),
+        ).catch(() => {});
+      }
+      scheduleRefresh();
+      return;
+    }
     if (
       eventType.includes("capture.finished") ||
       eventType.includes("capture.ready") ||
@@ -1565,8 +1685,28 @@ export function createXChatModule() {
     }
     if (
       (eventType.includes("message") || payload?.from_id || payload?.conversation_id) &&
-      payload?.content !== undefined
+      (payload?.content !== undefined || payload?.file_name)
     ) {
+      const alert = incomingMessageAlert(payload, snapshot.self.id);
+      const needsAttention =
+        document.visibilityState !== "visible" || !document.hasFocus();
+      if (
+        alert &&
+        needsAttention &&
+        snapshot.settings.notifications_enabled &&
+        !alertedMessages.has(alert.key)
+      ) {
+        alertedMessages.add(alert.key);
+        if (alertedMessages.size > 256) {
+          alertedMessages.delete(alertedMessages.values().next().value);
+        }
+        if (snapshot.capabilities.notifications) {
+          Promise.resolve(
+            adapter.showAlert(alert.title, alert.body, alert.fromId),
+          ).catch(() => {});
+        }
+        Promise.resolve(adapter.startAttention()).catch(() => {});
+      }
       const conversationId =
         payload.conversation_id ??
         snapshot.conversations.find((conversation) => conversation.peer_id === payload.from_id)?.id;
@@ -1617,6 +1757,7 @@ export function createXChatModule() {
 
   const markVisibleRead = async (conversationId) => {
     if (!snapshot.capabilities.readReceipts || document.visibilityState !== "visible") return;
+    await Promise.resolve(adapter.stopAttention()).catch(() => {});
     const messageIds = (snapshot.messagesByConversation[conversationId] ?? [])
       .filter(
         (message) =>
@@ -1899,6 +2040,18 @@ export function createXChatModule() {
         return adapter.pinCapture(action.dataUrl);
       case "capture.save":
         return adapter.saveCapture(action.dataUrl);
+      case "capture.pin.copy":
+        return adapter.copyPinnedCapture(action.scale);
+      case "capture.pin.save":
+        return adapter.savePinnedCapture();
+      case "capture.pin.resize":
+        return adapter.resizePinnedCapture(action.scale);
+      case "capture.pin.shadow":
+        return adapter.setPinnedCaptureShadow(action.enabled);
+      case "capture.pin.close":
+        return adapter.closePinnedCapture(action.destroy);
+      case "attention.clear":
+        return adapter.stopAttention();
       case "media.readMessage":
         return adapter.readMessageMedia(action.messageId);
       case "message.markRead":

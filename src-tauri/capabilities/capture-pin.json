@@ -8,6 +8,11 @@
     "core:event:default",
     "core:window:allow-close",
     "core:window:allow-start-dragging",
-    "allow-get-pending-capture"
+    "allow-get-pending-capture",
+    "allow-copy-pinned-capture",
+    "allow-save-pinned-capture",
+    "allow-resize-pinned-capture",
+    "allow-set-pinned-capture-shadow",
+    "allow-close-pinned-capture"
   ]
 }

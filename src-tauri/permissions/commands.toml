@@ -306,6 +306,31 @@ description = "Allows replacing the singleton pinned screenshot window"
 commands.allow = ["pin_capture"]
 
 [[permission]]
+identifier = "allow-copy-pinned-capture"
+description = "Allows copying the current or original-size pinned screenshot"
+commands.allow = ["copy_pinned_capture"]
+
+[[permission]]
+identifier = "allow-save-pinned-capture"
+description = "Allows saving the pinned screenshot to a user-selected PNG path"
+commands.allow = ["save_pinned_capture"]
+
+[[permission]]
+identifier = "allow-resize-pinned-capture"
+description = "Allows resizing the singleton pinned screenshot window"
+commands.allow = ["resize_pinned_capture"]
+
+[[permission]]
+identifier = "allow-set-pinned-capture-shadow"
+description = "Allows toggling the native shadow on the pinned screenshot window"
+commands.allow = ["set_pinned_capture_shadow"]
+
+[[permission]]
+identifier = "allow-close-pinned-capture"
+description = "Allows hiding or destroying the singleton pinned screenshot window"
+commands.allow = ["close_pinned_capture"]
+
+[[permission]]
 identifier = "allow-stage-image-attachment"
 description = "Allows staging a PNG draft in managed application storage"
 commands.allow = ["stage_image_attachment"]

@@ -388,6 +388,16 @@ pub async fn start_listening(
                         "[UDP] 发现用户: {} ({}) at {} (可用内存: {} MB)，准备检查补发队列...",
                         name, peer_id, peer_addr, available_memory_mb
                     );
+                    if let Some(app_handle) = &app {
+                        let _ = app_handle.emit(
+                            "peer-online",
+                            serde_json::json!({
+                                "id": peer_id,
+                                "name": name,
+                                "addr": peer_addr,
+                            }),
+                        );
+                    }
 
                     let pool_clone = pool.clone();
                     let peer_id_clone = peer_id.clone();

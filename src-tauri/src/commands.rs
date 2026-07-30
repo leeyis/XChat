@@ -1815,7 +1815,12 @@ pub fn show_notification(_app: tauri::AppHandle, title: String, body: String, #[
         // macOS / Android 通过 notification plugin，按 from_id 折叠
         use tauri_plugin_notification::NotificationExt;
         let app = _app;
-        let mut builder = app.notification().builder().title(&title).body(&body);
+        let mut builder = app
+            .notification()
+            .builder()
+            .title(&title)
+            .body(&body)
+            .sound("default");
         if !from_id.is_empty() {
             let notif_id = get_notification_id(&from_id);
             builder = builder.id(notif_id);
@@ -1847,15 +1852,18 @@ const ICON_EMPTY: &[u8] = include_bytes!("../icons/icon_empty.png");
 const ICON_NORMAL: &[u8] = include_bytes!("../icons/32x32.png");
 
 /// 开始托盘闪烁
-#[tauri::command]
-pub fn start_tray_flash(
-    #[allow(unused_variables)] app: AppHandle,
-    #[allow(unused_variables)] state: State<'_, TrayFlashState>,
-) {
+fn start_attention_with_state(app: &AppHandle, state: &TrayFlashState) {
     #[cfg(not(target_os = "android"))]
     {
         use tauri::image::Image;
 
+        if let Some(window) = app.get_webview_window("main") {
+            if window.is_focused().unwrap_or(false) {
+                return;
+            }
+            let _ =
+                window.request_user_attention(Some(tauri::UserAttentionType::Critical));
+        }
         println!("[TrayFlash] start_tray_flash 被调用");
         if state.is_flashing.load(Ordering::Relaxed) {
             println!("[TrayFlash] 已在闪烁中，跳过");
@@ -1905,16 +1913,47 @@ pub fn start_tray_flash(
     println!("[TrayFlash] Android 无系统托盘，忽略 start_tray_flash");
 }
 
-/// 停止托盘闪烁
+pub fn start_desktop_attention(app: &AppHandle) {
+    if let Some(state) = app.try_state::<TrayFlashState>() {
+        start_attention_with_state(app, &state);
+    }
+}
+
+/// 开始系统托盘与任务栏/Dock 注意力提醒
 #[tauri::command]
-pub fn stop_tray_flash(#[allow(unused_variables)] state: State<'_, TrayFlashState>) {
+pub fn start_tray_flash(
+    #[allow(unused_variables)] app: AppHandle,
+    #[allow(unused_variables)] state: State<'_, TrayFlashState>,
+) {
+    start_attention_with_state(&app, &state);
+}
+
+/// 停止托盘闪烁
+fn stop_attention_with_state(app: &AppHandle, state: &TrayFlashState) {
     #[cfg(not(target_os = "android"))]
     {
         println!("[TrayFlash] stop_tray_flash 被调用");
         state.is_flashing.store(false, Ordering::Relaxed);
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.request_user_attention(None);
+        }
     }
     #[cfg(target_os = "android")]
     println!("[TrayFlash] Android 无系统托盘，忽略 stop_tray_flash");
+}
+
+pub fn stop_desktop_attention(app: &AppHandle) {
+    if let Some(state) = app.try_state::<TrayFlashState>() {
+        stop_attention_with_state(app, &state);
+    }
+}
+
+#[tauri::command]
+pub fn stop_tray_flash(
+    #[allow(unused_variables)] app: AppHandle,
+    #[allow(unused_variables)] state: State<'_, TrayFlashState>,
+) {
+    stop_attention_with_state(&app, &state);
 }
 
 #[tauri::command]
@@ -1959,6 +1998,33 @@ pub async fn pin_capture(
     data_url: String,
 ) -> Result<crate::capture_editor::CaptureSessionSummary, String> {
     crate::capture_editor::pin(&app, data_url).await
+}
+
+#[tauri::command]
+pub fn copy_pinned_capture(scale: Option<f64>) -> Result<(), String> {
+    crate::capture_editor::copy_pin(scale)
+}
+
+#[tauri::command]
+pub async fn save_pinned_capture(
+    app: AppHandle,
+) -> Result<Option<crate::capture_editor::SavedCapture>, String> {
+    crate::capture_editor::save_pin(&app).await
+}
+
+#[tauri::command]
+pub fn resize_pinned_capture(app: AppHandle, scale: f64) -> Result<f64, String> {
+    crate::capture_editor::resize_pin(&app, scale)
+}
+
+#[tauri::command]
+pub fn set_pinned_capture_shadow(app: AppHandle, enabled: bool) -> Result<(), String> {
+    crate::capture_editor::set_pin_shadow(&app, enabled)
+}
+
+#[tauri::command]
+pub fn close_pinned_capture(app: AppHandle, destroy: bool) -> Result<(), String> {
+    crate::capture_editor::close_pin(&app, destroy)
 }
 
 #[tauri::command]
