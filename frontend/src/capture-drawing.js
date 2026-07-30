@@ -106,6 +106,71 @@ function clamp(value, minimum, maximum) {
   return Math.min(Math.max(value, minimum), maximum);
 }
 
+export function placeCaptureTextInput(
+  point,
+  canvas,
+  selection,
+  desiredWidth = 220,
+  editorHeight = 36,
+  padding = 6,
+) {
+  const width = Math.min(
+    desiredWidth,
+    Math.max(96, selection.width - padding * 2),
+  );
+  const displayX = (point.x / Math.max(1, canvas.width)) * selection.width;
+  const displayY = (point.y / Math.max(1, canvas.height)) * selection.height;
+  return {
+    left: Math.round(
+      clamp(displayX, padding, Math.max(padding, selection.width - width - padding)),
+    ),
+    top: Math.round(
+      clamp(
+        displayY,
+        padding,
+        Math.max(padding, selection.height - editorHeight - padding),
+      ),
+    ),
+    width: Math.round(width),
+  };
+}
+
+export function fitPinnedCapture(
+  width,
+  height,
+  maxWidth = 960,
+  maxHeight = 720,
+) {
+  if (!(width > 0) || !(height > 0)) return 1;
+  return Math.min(1, maxWidth / width, maxHeight / height);
+}
+
+export function nextPinnedCaptureZoom(
+  current,
+  deltaY,
+  minimum = 0.2,
+  maximum = 3,
+) {
+  const factor = deltaY < 0 ? 1.1 : 1 / 1.1;
+  return Math.round(clamp(current * factor, minimum, maximum) * 100) / 100;
+}
+
+export function placePinnedCaptureMenu(
+  point,
+  menu,
+  viewport,
+  padding = 8,
+) {
+  return {
+    left: Math.round(
+      clamp(point.x, padding, Math.max(padding, viewport.width - menu.width - padding)),
+    ),
+    top: Math.round(
+      clamp(point.y, padding, Math.max(padding, viewport.height - menu.height - padding)),
+    ),
+  };
+}
+
 export function normalizeCaptureSelection(start, end, viewport) {
   const startX = clamp(start.x, 0, viewport.width);
   const startY = clamp(start.y, 0, viewport.height);

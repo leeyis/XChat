@@ -7,6 +7,7 @@ import {
   fileStatus,
   insertTextAtSelection,
   isPhysicalPointInsideRect,
+  incomingMessageAlert,
   localFileAvailable,
   matchesShortcut,
   measureTransfers,
@@ -82,6 +83,45 @@ test("message merge replaces optimistic rows and never regresses receipts", () =
   assert.equal(merged[0].id, 42);
   assert.equal(merged[0].status, "read");
   assert.equal(merged[0].read_count, 2);
+});
+
+test("incoming alerts accept remote messages and reject self/control events", () => {
+  assert.deepEqual(
+    incomingMessageAlert(
+      {
+        client_message_id: "message-1",
+        from_id: "peer-1",
+        from_name: "Alice",
+        msg_type: "text",
+        content: "hello",
+      },
+      "self",
+    ),
+    {
+      key: "peer-1:message-1",
+      fromId: "peer-1",
+      title: "Alice",
+      body: "hello",
+    },
+  );
+  assert.equal(
+    incomingMessageAlert(
+      { from_id: "self", msg_type: "text", content: "own message" },
+      "self",
+    ),
+    null,
+  );
+  assert.equal(
+    incomingMessageAlert(
+      {
+        from_id: "peer-1",
+        msg_type: "file_status_update",
+        content: "progress",
+      },
+      "self",
+    ),
+    null,
+  );
 });
 
 test("web-only APIs are decided by the browser, not server platform flags", () => {

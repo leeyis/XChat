@@ -20,6 +20,7 @@ struct Args {
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
+    lanchat::commands::stop_desktop_attention(app);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -123,6 +124,11 @@ fn main() {
             lanchat::commands::save_capture_editor,
             lanchat::commands::cancel_capture_editor,
             lanchat::commands::pin_capture,
+            lanchat::commands::copy_pinned_capture,
+            lanchat::commands::save_pinned_capture,
+            lanchat::commands::resize_pinned_capture,
+            lanchat::commands::set_pinned_capture_shadow,
+            lanchat::commands::close_pinned_capture,
             lanchat::commands::stage_image_attachment,
             lanchat::commands::discard_staged_attachment,
             lanchat::commands::read_workspace_media,
@@ -133,12 +139,18 @@ fn main() {
             // 获取主窗口并设置关闭事件处理
             if let Some(window) = app.get_webview_window("main") {
                 let window_clone = window.clone();
+                let app_handle = app.handle().clone();
                 window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        // 阻止默认关闭行为
-                        api.prevent_close();
-                        // 隐藏窗口而不是关闭
-                        let _ = window_clone.hide();
+                    match event {
+                        tauri::WindowEvent::CloseRequested { api, .. } => {
+                            // 主窗口关闭仅隐藏到系统托盘，退出必须使用托盘菜单。
+                            api.prevent_close();
+                            let _ = window_clone.hide();
+                        }
+                        tauri::WindowEvent::Focused(true) => {
+                            lanchat::commands::stop_desktop_attention(&app_handle);
+                        }
+                        _ => {}
                     }
                 });
             }

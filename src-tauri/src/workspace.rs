@@ -170,6 +170,10 @@ fn notifications_available() -> bool {
     {
         return true;
     }
+    #[cfg(all(feature = "desktop", target_os = "macos"))]
+    {
+        return true;
+    }
     #[cfg(all(feature = "desktop", target_os = "linux"))]
     {
         return std::process::Command::new("sh")

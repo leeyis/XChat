@@ -4,8 +4,12 @@ import {
   createCaptureHistory,
   createTextOperation,
   drawCaptureOperation,
+  fitPinnedCapture,
   moveCaptureSelection,
+  nextPinnedCaptureZoom,
   normalizeCaptureSelection,
+  placeCaptureTextInput,
+  placePinnedCaptureMenu,
   placeCaptureToolbar,
   redoCaptureOperation,
   resizeCaptureSelection,
@@ -24,6 +28,7 @@ const TOOLS = [
 const COLORS = ["#f04444", "#f59e0b", "#16a66a", "#1687f8", "#111827", "#ffffff"];
 const SIZES = [2, 4, 8];
 const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+const PIN_MENU_SIZE = { width: 260, height: 360 };
 
 function pointOnCanvas(event, canvas) {
   const bounds = canvas.getBoundingClientRect();
@@ -138,12 +143,47 @@ function CaptureIcon({ name }) {
 
 function CapturePin({ workspace, english }) {
   const [pending, setPending] = useState(null);
+  const [zoom, setZoom] = useState(1);
+  const [menu, setMenu] = useState(null);
+  const [toolbarVisible, setToolbarVisible] = useState(false);
+  const [shadow, setShadow] = useState(true);
+  const [status, setStatus] = useState("");
+
+  const runPinAction = async (action, successMessage = "") => {
+    setMenu(null);
+    setStatus("");
+    const result = await workspace.dispatch(action);
+    if (result.ok) {
+      if (successMessage && result.data !== null) setStatus(successMessage);
+      return result.data;
+    }
+    setStatus(result.error.message);
+    return null;
+  };
+
+  const applyZoom = async (next) => {
+    if (!pending || next === zoom) return;
+    setMenu(null);
+    const result = await workspace.dispatch({
+      type: "capture.pin.resize",
+      scale: next,
+    });
+    if (result.ok) setZoom(Number(result.data ?? next));
+    else setStatus(result.error.message);
+  };
+
+  const hidePin = () => runPinAction({ type: "capture.pin.close", destroy: false });
+  const destroyPin = () => runPinAction({ type: "capture.pin.close", destroy: true });
+
   useEffect(() => {
     let disposed = false;
     let unlisten = () => {};
     const load = () => workspace.dispatch({ type: "capture.pending" }).then((result) => {
       if (disposed) return;
-      if (result.ok) setPending(result.data);
+      if (result.ok) {
+        setPending(result.data);
+        setZoom(fitPinnedCapture(result.data.width, result.data.height));
+      }
     });
     load();
     globalThis.__TAURI__?.event
@@ -158,22 +198,191 @@ function CapturePin({ workspace, english }) {
       unlisten();
     };
   }, [workspace]);
+
+  useEffect(() => {
+    const dismiss = () => setMenu(null);
+    const escape = (event) => {
+      if (event.key === "Escape") dismiss();
+    };
+    addEventListener("blur", dismiss);
+    addEventListener("resize", dismiss);
+    addEventListener("keydown", escape);
+    return () => {
+      removeEventListener("blur", dismiss);
+      removeEventListener("resize", dismiss);
+      removeEventListener("keydown", escape);
+    };
+  }, []);
+
+  const copyPin = (original) =>
+    runPinAction(
+      {
+        type: "capture.pin.copy",
+        scale: original ? null : zoom,
+      },
+      english ? "Copied" : "已复制",
+    );
+
+  const savePin = () =>
+    runPinAction(
+      { type: "capture.pin.save" },
+      english ? "Saved" : "已保存",
+    );
+
+  const toggleShadow = async () => {
+    const next = !shadow;
+    setShadow(next);
+    await runPinAction({ type: "capture.pin.shadow", enabled: next });
+  };
+
   return (
     <main
-      className="capture-pin"
+      className={`capture-pin${shadow ? " with-shadow" : ""}`}
       onMouseDown={(event) => {
-        if (event.target.closest("button")) return;
+        if (event.button !== 0 || event.target.closest("button, [role='menu']")) return;
+        setMenu(null);
         globalThis.__TAURI__?.window?.getCurrentWindow?.().startDragging?.();
+      }}
+      onWheel={(event) => {
+        event.preventDefault();
+        const next = nextPinnedCaptureZoom(zoom, event.deltaY);
+        void applyZoom(next);
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setMenu(
+          placePinnedCaptureMenu(
+            { x: event.clientX, y: event.clientY },
+            PIN_MENU_SIZE,
+            { width: globalThis.innerWidth, height: globalThis.innerHeight },
+          ),
+        );
       }}
     >
       {pending?.data_url ? (
-        <img src={pending.data_url} alt={pending.file_name || "Capture"} />
+        <img
+          src={pending.data_url}
+          alt={pending.file_name || "Capture"}
+          draggable="false"
+        />
       ) : (
         <span>{english ? "Loading capture…" : "正在加载截图…"}</span>
       )}
-      <button type="button" onClick={closeWindow} aria-label={english ? "Close" : "关闭"}>
-        ×
-      </button>
+      {toolbarVisible && (
+        <div className="capture-pin-toolbar" role="toolbar">
+          <button
+            type="button"
+            onClick={() => void applyZoom(nextPinnedCaptureZoom(zoom, 120))}
+            aria-label={english ? "Zoom out" : "缩小"}
+          >
+            −
+          </button>
+          <button
+            type="button"
+            className="zoom-value"
+            onClick={() => void applyZoom(1)}
+            title={english ? "Original size" : "原始大小"}
+          >
+            {Math.round(zoom * 100)}%
+          </button>
+          <button
+            type="button"
+            onClick={() => void applyZoom(nextPinnedCaptureZoom(zoom, -120))}
+            aria-label={english ? "Zoom in" : "放大"}
+          >
+            +
+          </button>
+          <span aria-hidden="true" />
+          <button type="button" onClick={() => void copyPin(true)}>
+            {english ? "Copy" : "复制"}
+          </button>
+          <button type="button" onClick={() => void savePin()}>
+            {english ? "Save" : "保存"}
+          </button>
+          <button type="button" onClick={() => void hidePin()} aria-label={english ? "Close" : "关闭"}>
+            ×
+          </button>
+        </div>
+      )}
+      {!toolbarVisible && (
+        <button
+          type="button"
+          className="capture-pin-close"
+          onClick={() => void hidePin()}
+          aria-label={english ? "Close" : "关闭"}
+        >
+          ×
+        </button>
+      )}
+      {menu && (
+        <div
+          className="capture-pin-menu"
+          style={{ left: menu.left, top: menu.top }}
+          role="menu"
+          onMouseDown={(event) => event.stopPropagation()}
+          onWheel={(event) => event.stopPropagation()}
+        >
+          <button type="button" role="menuitem" onClick={() => void copyPin(false)}>
+            {english ? "Copy Image" : "复制图像"}
+          </button>
+          <button type="button" role="menuitem" onClick={() => void copyPin(true)}>
+            {english ? "Copy Original Size Image" : "复制原始大小图像"}
+          </button>
+          <button type="button" role="menuitem" onClick={() => void savePin()}>
+            {english ? "Save Image As…" : "图像另存为…"}
+          </button>
+          <span className="menu-separator" aria-hidden="true" />
+          <button type="button" role="menuitem" onClick={() => void applyZoom(1)}>
+            {english ? "Original Size (100%)" : "原始大小（100%）"}
+            <kbd>⌘0</kbd>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() =>
+              void applyZoom(fitPinnedCapture(pending?.width, pending?.height))
+            }
+          >
+            {english ? "Fit to Window" : "适合窗口"}
+          </button>
+          <span className="menu-separator" aria-hidden="true" />
+          <button
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={toolbarVisible}
+            onClick={() => {
+              setToolbarVisible((current) => !current);
+              setMenu(null);
+            }}
+          >
+            <i>{toolbarVisible ? "✓" : ""}</i>
+            {english ? "Show Toolbar" : "显示工具条"}
+          </button>
+          <button
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={shadow}
+            onClick={() => void toggleShadow()}
+          >
+            <i>{shadow ? "✓" : ""}</i>
+            {english ? "Window Shadow" : "窗口阴影"}
+          </button>
+          <span className="menu-separator" aria-hidden="true" />
+          <button type="button" role="menuitem" onClick={() => void hidePin()}>
+            {english ? "Close" : "关闭"}
+          </button>
+          <button
+            type="button"
+            className="danger"
+            role="menuitem"
+            onClick={() => void destroyPin()}
+          >
+            {english ? "Destroy" : "销毁"}
+          </button>
+        </div>
+      )}
+      {status && <div className="capture-pin-status">{status}</div>}
     </main>
   );
 }
@@ -207,6 +416,8 @@ function CaptureOverlay({ workspace, english }) {
   const historyRef = useRef(history);
   const draftRef = useRef(null);
   const textInputRef = useRef(null);
+  const textInputElement = useRef(null);
+  const textInputSequence = useRef(0);
   const interactionRef = useRef(null);
   const cancelRef = useRef(null);
 
@@ -249,6 +460,16 @@ function CaptureOverlay({ workspace, english }) {
     if (operation) addOperation(operation);
     return operation;
   };
+
+  useEffect(() => {
+    if (!textInput?.id) return undefined;
+    const frame = requestAnimationFrame(() => {
+      const target = textInputElement.current;
+      target?.focus({ preventScroll: true });
+      target?.setSelectionRange?.(target.value.length, target.value.length);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [textInput?.id]);
 
   const exportPng = () => {
     commitText();
@@ -666,15 +887,18 @@ function CaptureOverlay({ workspace, english }) {
               ))}
             {textInput && (
               <input
+                ref={textInputElement}
                 className="capture-text-input"
                 style={{
-                  left: `${(textInput.x / canvas.current.width) * 100}%`,
-                  top: `${(textInput.y / canvas.current.height) * 100}%`,
+                  left: textInput.left,
+                  top: textInput.top,
+                  width: textInput.width,
                   color: textInput.color,
                   fontSize: `${Math.max(16, textInput.displaySize * 5)}px`,
                 }}
                 value={textInput.value}
                 autoFocus
+                placeholder={english ? "Type text" : "输入文字"}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => event.stopPropagation()}
                 onChange={(event) =>
@@ -686,6 +910,7 @@ function CaptureOverlay({ workspace, english }) {
                 onBlur={commitText}
                 onKeyDown={(event) => {
                   event.stopPropagation();
+                  if (event.nativeEvent.isComposing) return;
                   if (event.key === "Escape") changeTextInput(null);
                   if (event.key === "Enter") {
                     event.preventDefault();

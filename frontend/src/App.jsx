@@ -3034,6 +3034,21 @@ export default function App({ workspace }) {
   }, [language]);
 
   useEffect(() => {
+    const clearAttention = () => {
+      if (document.visibilityState === "visible" && document.hasFocus()) {
+        workspace.dispatch({ type: "attention.clear" });
+      }
+    };
+    addEventListener("focus", clearAttention);
+    document.addEventListener("visibilitychange", clearAttention);
+    clearAttention();
+    return () => {
+      removeEventListener("focus", clearAttention);
+      document.removeEventListener("visibilitychange", clearAttention);
+    };
+  }, [workspace]);
+
+  useEffect(() => {
     if (!state.capabilities.captureShortcut) return;
     const onKeyDown = (event) => {
       if (
