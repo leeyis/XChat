@@ -217,6 +217,13 @@ fn window_size(width: u32, height: u32, max_width: f64, max_height: f64) -> (f64
     (width as f64 * scale, height as f64 * scale)
 }
 
+fn validate_pin_scale(scale: f64) -> Result<f64, String> {
+    if !scale.is_finite() || !(0.2..=3.0).contains(&scale) {
+        return Err("钉图缩放比例无效".to_string());
+    }
+    Ok(scale)
+}
+
 #[cfg(target_os = "macos")]
 fn display_number_for_geometry(
     current: (i32, i32, u32, u32),
@@ -583,6 +590,154 @@ pub async fn save(
     }))
 }
 
+pub fn copy_pin(scale: Option<f64>) -> Result<(), String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        use clipboard_rs::common::RustImage;
+        use clipboard_rs::{Clipboard, ClipboardContext, FilterType, RustImageData};
+
+        let capture = lock_state()?
+            .pin
+            .clone()
+            .ok_or_else(|| "没有可复制的钉图".to_string())?;
+        let path = capture
+            .path
+            .to_str()
+            .ok_or_else(|| "钉图路径不可用".to_string())?;
+        let image =
+            RustImageData::from_path(path).map_err(|error| format!("读取钉图失败: {error}"))?;
+        let image = if let Some(scale) = scale {
+            let scale = validate_pin_scale(scale)?;
+            if (scale - 1.0).abs() < f64::EPSILON {
+                image
+            } else {
+                image
+                    .resize(
+                        ((capture.width as f64 * scale).round() as u32).max(1),
+                        ((capture.height as f64 * scale).round() as u32).max(1),
+                        FilterType::Lanczos3,
+                    )
+                    .map_err(|error| format!("缩放钉图失败: {error}"))?
+            }
+        } else {
+            image
+        };
+        ClipboardContext::new()
+            .map_err(|error| format!("剪贴板不可用: {error}"))?
+            .set_image(image)
+            .map_err(|error| format!("复制钉图失败: {error}"))
+    }
+    #[cfg(target_os = "android")]
+    {
+        let _ = scale;
+        Err("当前平台不支持复制钉图".to_string())
+    }
+}
+
+pub async fn save_pin(app: &tauri::AppHandle) -> Result<Option<SavedCapture>, String> {
+    let capture = lock_state()?
+        .pin
+        .clone()
+        .ok_or_else(|| "没有可保存的钉图".to_string())?;
+    let bytes = tokio::fs::read(&capture.path)
+        .await
+        .map_err(|error| format!("读取钉图失败: {error}"))?;
+    let mut dialog = app
+        .dialog()
+        .file()
+        .add_filter("PNG", &["png"])
+        .set_file_name(format!(
+            "Xchat-{}.png",
+            chrono::Local::now().format("%Y%m%d-%H%M%S")
+        ))
+        .set_title("保存钉图");
+    if let Some(window) = app.get_webview_window("capture-pin") {
+        dialog = dialog.set_parent(&window);
+    }
+    let Some(selected) = dialog.blocking_save_file() else {
+        return Ok(None);
+    };
+    if lock_state()?
+        .pin
+        .as_ref()
+        .map(|current| &current.session_id)
+        != Some(&capture.session_id)
+    {
+        return Err("钉图会话已变化".to_string());
+    }
+    let mut path = selected
+        .into_path()
+        .map_err(|_| "保存路径不可用".to_string())?;
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| !extension.eq_ignore_ascii_case("png"))
+        .unwrap_or(true)
+    {
+        path.set_extension("png");
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "保存路径不可用".to_string())?;
+    let pending = path.with_file_name(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+    if let Err(error) = tokio::fs::write(&pending, bytes).await {
+        remove_file(&pending);
+        return Err(format!("保存钉图失败: {error}"));
+    }
+    if let Err(error) = tokio::fs::rename(&pending, &path).await {
+        remove_file(&pending);
+        return Err(format!("保存钉图失败: {error}"));
+    }
+    Ok(Some(SavedCapture {
+        file_path: path.to_string_lossy().into_owned(),
+    }))
+}
+
+pub fn resize_pin(app: &tauri::AppHandle, scale: f64) -> Result<f64, String> {
+    let scale = validate_pin_scale(scale)?;
+    let capture = lock_state()?
+        .pin
+        .clone()
+        .ok_or_else(|| "没有可缩放的钉图".to_string())?;
+    let window = app
+        .get_webview_window("capture-pin")
+        .ok_or_else(|| "钉图窗口不可用".to_string())?;
+    window
+        .set_size(tauri::Size::Logical(tauri::LogicalSize::new(
+            capture.width as f64 * scale,
+            capture.height as f64 * scale,
+        )))
+        .map_err(|error| format!("缩放钉图失败: {error}"))?;
+    Ok(scale)
+}
+
+pub fn set_pin_shadow(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    app.get_webview_window("capture-pin")
+        .ok_or_else(|| "钉图窗口不可用".to_string())?
+        .set_shadow(enabled)
+        .map_err(|error| format!("设置钉图阴影失败: {error}"))
+}
+
+pub fn close_pin(app: &tauri::AppHandle, destroy: bool) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("capture-pin") {
+        if destroy {
+            window
+                .close()
+                .map_err(|error| format!("销毁钉图失败: {error}"))
+        } else {
+            window
+                .hide()
+                .map_err(|error| format!("关闭钉图失败: {error}"))
+        }
+    } else {
+        if destroy {
+            clear_pin();
+        }
+        Ok(())
+    }
+}
+
 pub fn cancel(app: &tauri::AppHandle) -> Result<(), String> {
     clear_editor();
     let result = if let Some(window) = app.get_webview_window("capture-editor") {
@@ -748,6 +903,15 @@ mod tests {
         assert_eq!(decoded, bytes);
         assert_eq!((width, height), (1, 1));
         assert!(png_from_data_url("data:text/plain;base64,SGVsbG8=").is_err());
+    }
+
+    #[test]
+    fn pin_scale_rejects_unsafe_values() {
+        assert_eq!(validate_pin_scale(0.2).unwrap(), 0.2);
+        assert_eq!(validate_pin_scale(3.0).unwrap(), 3.0);
+        assert!(validate_pin_scale(0.19).is_err());
+        assert!(validate_pin_scale(3.01).is_err());
+        assert!(validate_pin_scale(f64::NAN).is_err());
     }
 
     #[test]

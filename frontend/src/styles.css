@@ -560,7 +560,7 @@ time,
 }
 
 .settings-nav-row.selected {
-  background: color-mix(in oklch, var(--accent) 13%, var(--surface));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
   color: var(--accent);
   font-weight: 650;
 }
@@ -1798,6 +1798,10 @@ time,
   flex: 0 0 auto;
   border-radius: 50%;
   background: var(--danger);
+}
+
+.toast.success i {
+  background: var(--accent);
 }
 
 @keyframes toast-enter {
