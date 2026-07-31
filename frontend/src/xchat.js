@@ -79,6 +79,10 @@ export const ACTIVE_TRANSFER_STATES = new Set([
   "cancelling",
 ]);
 
+export function isAppActive(visibilityState, focused) {
+  return visibilityState === "visible" && focused;
+}
+
 class TransportError extends Error {
   constructor(message, code = "transport_error", status = 0, retryable = true) {
     super(message);
@@ -335,13 +339,17 @@ const MESSAGE_ALERT_CONTROL_TYPES = new Set([
   "upload_progress",
 ]);
 
+export function isMessageAlertControlType(messageType) {
+  return MESSAGE_ALERT_CONTROL_TYPES.has(String(messageType).toLocaleLowerCase());
+}
+
 export function incomingMessageAlert(raw = {}, selfId = "") {
   const senderId = raw.sender_id ?? raw.from_id ?? "";
   const messageType = String(raw.msg_type ?? raw.type ?? "text").toLocaleLowerCase();
   if (
     !senderId ||
     senderId === selfId ||
-    MESSAGE_ALERT_CONTROL_TYPES.has(messageType)
+    isMessageAlertControlType(messageType)
   ) {
     return null;
   }
@@ -404,7 +412,7 @@ function draftName(source, fallback = "attachment") {
   return source?.file_name ?? source?.name ?? fallback;
 }
 
-function normalizeDraftAttachment(source = {}, extra = {}) {
+export function normalizeDraftAttachment(source = {}, extra = {}) {
   const path = typeof source === "string" ? source : source.path ?? source.file_path ?? "";
   const file = typeof File !== "undefined" && source instanceof File ? source : source.file;
   const name = extra.file_name ?? extra.name ?? draftName(source);
@@ -1692,8 +1700,10 @@ export function createXChatModule() {
       (payload?.content !== undefined || payload?.file_name)
     ) {
       const alert = incomingMessageAlert(payload, snapshot.self.id);
-      const needsAttention =
-        document.visibilityState !== "visible" || !document.hasFocus();
+      const needsAttention = !isAppActive(
+        document.visibilityState,
+        document.hasFocus(),
+      );
       if (
         alert &&
         needsAttention &&
@@ -1760,7 +1770,12 @@ export function createXChatModule() {
   };
 
   const markVisibleRead = async (conversationId) => {
-    if (!snapshot.capabilities.readReceipts || document.visibilityState !== "visible") return;
+    if (
+      !snapshot.capabilities.readReceipts ||
+      !isAppActive(document.visibilityState, document.hasFocus())
+    ) {
+      return;
+    }
     await Promise.resolve(adapter.stopAttention()).catch(() => {});
     const messageIds = (snapshot.messagesByConversation[conversationId] ?? [])
       .filter(
@@ -1955,28 +1970,26 @@ export function createXChatModule() {
           );
         }
         const attachments = [];
+        const errors = [];
         for (const file of action.files ?? []) {
-          if (typeof file === "string" || file?.path || file?.file_path) {
-            attachments.push(normalizeDraftAttachment(file));
-          } else if (file instanceof Blob) {
-            if (adapter.runtime === "tauri" && !isImageFile(file)) {
-              throw new TransportError(
-                uiCopy(
-                  "拖入的普通文件无法读取路径，请使用附件按钮选择",
-                  "Use the attachment button to choose this file",
-                ),
-                "file_path_unavailable",
-                0,
-                false,
-              );
+          try {
+            if (typeof file === "string" || file?.path || file?.file_path) {
+              attachments.push(normalizeDraftAttachment(file));
+            } else if (typeof Blob !== "undefined" && file instanceof Blob) {
+              if (isImageFile(file)) {
+                const staged = await adapter.stageImage(file);
+                attachments.push({ ...staged, file: staged.file ?? file, managed: adapter.runtime === "tauri" });
+              } else {
+                attachments.push(normalizeDraftAttachment(file));
+              }
             }
-            const staged = await adapter.stageImage(file);
-            attachments.push({
-              ...staged,
-              file: staged.file ?? file,
-              managed: adapter.runtime === "tauri",
-            });
+          } catch (error) {
+            errors.push(`${draftName(file)}: ${errorText(error)}`);
           }
+        }
+        if (errors.length) addNotice(errors.join(uiCopy("；", "; ")));
+        if (!attachments.length && (action.files?.length || action.rejectedNames?.length)) {
+          addNotice(uiCopy("没有可添加的文件", "No usable files were found"));
         }
         addDraftAttachments(conversationId, attachments);
         return attachments;
@@ -2120,7 +2133,17 @@ export function createXChatModule() {
           await adapter.cancelTransfer(action.id);
           scheduleRefresh();
         } catch (error) {
-          patch({ transfers: previous });
+          const current = snapshot.transfers.find((transfer) => transfer.id === action.id);
+          if (current?.status === "cancelling") {
+            patch({
+              transfers: snapshot.transfers.map((transfer) =>
+                transfer.id === action.id
+                  ? previous.find((item) => item.id === action.id) || transfer
+                  : transfer,
+              ),
+            });
+          }
+          scheduleRefresh();
           throw error;
         }
         return;

@@ -22,6 +22,15 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+html.capture-view-transparent,
+html.capture-view-transparent body,
+html.capture-view-transparent #root,
+body.capture-view-transparent,
+body.capture-view-transparent #root,
+#root.capture-view-transparent {
+  background: transparent !important;
+}
+
 button,
 input,
 textarea,
@@ -511,7 +520,7 @@ time,
 }
 
 .source-filter.selected {
-  background: color-mix(in oklch, var(--accent) 13%, var(--surface));
+  background: transparent;
   color: var(--accent);
 }
 
@@ -543,6 +552,9 @@ time,
 }
 
 .settings-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: calc(100% - 16px);
   min-height: 44px;
   margin: 3px 8px;
@@ -551,7 +563,14 @@ time,
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--muted);
+  font-weight: 500;
   text-align: left;
+}
+
+.settings-nav-row,
+.settings-nav-row * {
+  transition: none !important;
+  animation: none !important;
 }
 
 .settings-nav-row:hover {
@@ -560,9 +579,11 @@ time,
 }
 
 .settings-nav-row.selected {
-  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
   color: var(--accent);
-  font-weight: 650;
+}
+
+.settings-nav-row .icon {
+  flex: 0 0 auto;
 }
 
 .workspace {
@@ -891,33 +912,6 @@ time,
 .file-open-popover button:hover,
 .file-open-popover button:focus-visible {
   background: color-mix(in oklch, var(--fg) 7%, transparent);
-}
-
-.transfer-dock {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-  margin: 0 16px 8px;
-  padding: 9px 10px;
-  border: 1px solid color-mix(in oklch, var(--accent) 32%, var(--border));
-  border-radius: var(--radius-md);
-  background: color-mix(in oklch, var(--accent) 7%, var(--surface));
-  box-shadow: var(--shadow-1);
-}
-
-.transfer-dock span {
-  display: grid;
-  min-width: 0;
-}
-
-.transfer-dock small {
-  color: var(--muted);
-}
-
-.transfer-dock .progress-track {
-  width: 100%;
-  margin-top: 5px;
 }
 
 .composer {
@@ -1275,6 +1269,8 @@ time,
   border-radius: var(--radius-pill);
   background: transparent;
   color: var(--muted);
+  font-weight: 600;
+  transition: none;
 }
 
 .kind-chip:hover {
@@ -1283,10 +1279,9 @@ time,
 }
 
 .kind-chip.active {
-  border-color: color-mix(in oklch, var(--accent) 28%, var(--border));
-  background: color-mix(in oklch, var(--accent) 11%, var(--surface));
+  border-color: transparent;
+  background: transparent;
   color: var(--accent);
-  font-weight: 600;
 }
 
 .transfer-section {
@@ -1546,7 +1541,7 @@ time,
 
 .settings-scroll {
   padding: 22px;
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
 }
 
 .settings-section {
@@ -1557,6 +1552,32 @@ time,
   border-radius: var(--radius-lg);
   background: var(--surface);
   scroll-margin-top: 20px;
+}
+
+.about-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 8px 0 4px;
+}
+
+.about-mark {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: 14px;
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.about-card p {
+  margin: 5px 0;
+  color: var(--muted);
+}
+
+.about-card small {
+  color: var(--muted);
 }
 
 .setting-row,
@@ -1719,13 +1740,17 @@ time,
 }
 
 .info-actions {
-  display: grid;
-  padding: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
 }
 
 .info-actions button {
-  min-height: 40px;
-  padding: 0 8px;
+  width: auto;
+  min-height: 32px;
+  padding: 0 10px;
   border: 0;
   border-radius: 7px;
   background: transparent;

@@ -1,0 +1,54 @@
+{
+  "name": "XChat Open Design 设计系统",
+  "designSystemId": "user:web-prototype-design-system",
+  "entry": "preview/index.html",
+  "description": "从 Web Prototype 提炼的桌面局域网通讯设计系统，覆盖视觉基础、组件、源资产与应用界面。",
+  "cards": [
+    {
+      "id": "colors",
+      "title": "颜色与主题",
+      "file": "preview/colors.html",
+      "aliases": ["preview/colors-primary.html"],
+      "description": "六个核心令牌、语义状态、导航与头像色。"
+    },
+    {
+      "id": "typography",
+      "title": "字体与信息层级",
+      "file": "preview/typography.html",
+      "aliases": ["preview/typography-specimens.html"],
+      "description": "系统无衬线、宋体展示标题和等宽元数据。"
+    },
+    {
+      "id": "spacing",
+      "title": "间距与密度",
+      "file": "preview/spacing.html",
+      "aliases": ["preview/spacing-tokens.html"],
+      "description": "4px 基线、列表密度与四栏结构。"
+    },
+    {
+      "id": "radius-shadows",
+      "title": "圆角与阴影",
+      "file": "preview/radius-shadows.html",
+      "description": "桌面控件圆角、方向性气泡和分层阴影。"
+    },
+    {
+      "id": "components",
+      "title": "核心组件",
+      "file": "preview/components.html",
+      "aliases": ["preview/components-buttons.html"],
+      "description": "会话、消息、输入器、传输与 AI 工具卡片。"
+    },
+    {
+      "id": "brand-assets",
+      "title": "源资产",
+      "file": "preview/brand-assets.html",
+      "description": "直接加载保存的桌面参考图和输入器特写。"
+    },
+    {
+      "id": "applied-surfaces",
+      "title": "应用表面",
+      "file": "preview/applied-surfaces.html",
+      "description": "聊天、文件中心与 AI 诊断的可用界面套件。"
+    }
+  ]
+}

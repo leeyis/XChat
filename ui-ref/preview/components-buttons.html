@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XChat · 核心组件</title>
+  <link rel="stylesheet" href="preview.css">
+  <style>
+    .conversation{display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;gap:10px;min-height:64px;margin:0 -20px;padding:0 12px}
+    .conversation.selected{background:var(--accent);color:var(--on-accent)}
+    .avatar{display:grid;place-items:center;width:40px;height:40px;border-radius:var(--radius-md);background:var(--avatar-3);color:var(--on-accent);font-weight:700}
+    .conversation-main{min-width:0}.name{font-weight:600}.summary{overflow:hidden;margin-top:3px;color:var(--muted);font-size:var(--text-compact);text-overflow:ellipsis;white-space:nowrap}.selected .summary,.selected .meta{color:color-mix(in oklch,var(--on-accent) 78%,transparent)}
+    .message-stack{display:grid;gap:10px}.message{display:flex;gap:8px}.message.sent{flex-direction:row-reverse}.message .avatar{width:30px;height:30px;border-radius:var(--radius-sm);font-size:var(--text-compact)}.bubble{max-width:72%;padding:9px 12px;border-radius:12px 12px 12px 4px;background:var(--bg)}.sent .bubble{border-radius:12px 12px 4px 12px;background:var(--accent);color:var(--on-accent)}
+    .composer{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--bg)}.composer textarea{display:block;width:100%;min-height:72px;padding:11px 12px 4px;resize:none;border:0;outline:0;background:transparent}.composer-tools{display:flex;align-items:center;justify-content:space-between;padding:4px 6px 6px}.tool-group{display:flex;gap:4px}.icon-button{display:grid;place-items:center;width:36px;height:36px;border:0;border-radius:var(--radius-sm);background:transparent;color:var(--muted)}.icon-button:hover{background:color-mix(in oklch,var(--fg) 7%,transparent);color:var(--fg)}
+    .file-card{padding:12px;border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-1)}.file-top{display:grid;grid-template-columns:40px 1fr auto;align-items:center;gap:10px}.file-icon{display:grid;place-items:center;width:40px;height:40px;border-radius:var(--radius-md);background:color-mix(in oklch,var(--fg) 6%,transparent);color:var(--muted)}.file-name{font-weight:600}.progress{height:5px;margin:10px 0 6px 50px;overflow:hidden;border-radius:3px;background:color-mix(in oklch,var(--fg) 8%,transparent)}.progress i{display:block;width:50%;height:100%;background:var(--accent)}.transfer-meta{display:flex;justify-content:space-between;margin-left:50px;color:var(--muted);font:var(--text-meta)/1 var(--font-mono)}
+    .ai-card{overflow:hidden;border:1px solid var(--border);border-radius:var(--radius-lg)}.ai-card summary{display:flex;min-height:42px;align-items:center;justify-content:space-between;padding:0 12px;cursor:pointer;font-weight:600}.ai-card summary::after{color:var(--muted);content:"⌄"}.ai-card[open] summary::after{transform:rotate(180deg)}.ai-body{padding:11px 12px;border-top:1px solid var(--border);color:var(--muted);font:var(--text-meta)/1.65 var(--font-mono)}
+  </style>
+</head>
+<body>
+  <main class="preview-page" data-od-id="component-preview">
+    <header class="preview-head"><div><p class="eyebrow">组件 05</p><h1>核心组件</h1><p class="lede">高密度但不拥挤；每个状态都保留原因、进度和下一步。</p></div></header>
+    <section class="grid">
+      <article class="panel" data-od-id="conversation-row-component">
+        <h2>会话行</h2><p class="caption">整行绿色表示当前会话。</p><hr class="rule">
+        <div class="conversation selected"><span class="avatar">张</span><span class="conversation-main"><span class="name">张三</span><span class="summary">好的，文件收到了</span></span><span class="meta">14:32<br>2 条</span></div>
+        <div class="conversation"><span class="avatar" style="--avatar-3:var(--avatar-7)">M</span><span class="conversation-main"><span class="name">MacBook-Pro</span><span class="summary">季度报告.pdf</span></span><span class="meta">昨天</span></div>
+      </article>
+      <article class="panel" data-od-id="message-component">
+        <h2>消息与收据</h2><p class="caption">群聊身份与已读状态可核对。</p><hr class="rule">
+        <div class="message-stack">
+          <div class="message"><span class="avatar">张</span><div><div class="bubble">IP 变化后仍按 MAC 匹配。</div><span class="meta">10:18</span></div></div>
+          <div class="message sent"><span class="avatar" style="--avatar-3:var(--avatar-7)">E</span><div><div class="bubble">收到，备注继续绑定设备身份。</div><span class="meta">10:24 · 已读</span></div></div>
+        </div>
+      </article>
+      <article class="panel" data-od-id="file-transfer-component">
+        <h2>文件传输</h2><p class="caption">阶段、进度、速度和动作同屏。</p><hr class="rule">
+        <div class="file-card">
+          <div class="file-top"><span class="file-icon"><svg class="icon"><use href="../build/xchat-icons.svg#icon-file"></use></svg></span><div><div class="file-name">季度报告.pdf</div><div class="meta">正在发送</div></div><button class="button" type="button">取消</button></div>
+          <div class="progress"><i></i></div><div class="transfer-meta"><span>1.2 / 2.4 MB</span><span>3.2 MB/s</span></div>
+        </div>
+      </article>
+      <article class="panel wide" data-od-id="message-composer-component">
+        <h2>消息输入器</h2><p class="caption">完整边框容器，上方文本，下方工具与发送。</p><hr class="rule">
+        <div class="composer">
+          <textarea aria-label="消息内容">网络设置已经确认，可以继续传输。</textarea>
+          <div class="composer-tools"><div class="tool-group"><button class="icon-button" aria-label="表情"><svg class="icon"><use href="../build/xchat-icons.svg#icon-emoji"></use></svg></button><button class="icon-button" aria-label="截屏"><svg class="icon"><use href="../build/xchat-icons.svg#icon-capture"></use></svg></button><button class="icon-button" aria-label="文件"><svg class="icon"><use href="../build/xchat-icons.svg#icon-folder"></use></svg></button></div><button class="button primary" type="button">发送</button></div>
+        </div>
+      </article>
+      <article class="panel" data-od-id="ai-tool-component">
+        <h2>AI 工具卡片</h2><p class="caption">思考、调用和结果使用同一结构。</p><hr class="rule">
+        <details class="ai-card" open><summary>工具调用 · network_scan</summary><div class="ai-body">{"subnet":"192.168.1.0/24","ports":[8888]}</div></details>
+      </article>
+    </section>
+  </main>
+</body>
+</html>
+

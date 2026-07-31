@@ -11,6 +11,7 @@ import {
   fileKind,
   fileStatus,
   insertTextAtSelection,
+  isAppActive,
   isPhysicalPointInsideRect,
   isImageFile,
   localFileAvailable,
@@ -81,13 +82,17 @@ const copy = {
     allConversations: "所有会话",
     filterByStatus: "按状态筛选",
     settingsSections: {
-      identity: "身份",
-      appearance: "外观",
-      notification: "通知",
-      download: "下载与传输",
-      network: "网络",
-      shortcut: "快捷键",
+      identity: { label: "身份", icon: "user" },
+      appearance: { label: "外观", icon: "appearance" },
+      notification: { label: "通知", icon: "bell" },
+      download: { label: "下载与传输", icon: "download" },
+      network: { label: "网络", icon: "network" },
+      shortcut: { label: "快捷键", icon: "keyboard" },
+      about: { label: "关于", icon: "info" },
     },
+    aboutTitle: "关于 Xchat",
+    aboutDescription: "局域网聊天与文件传输，数据保留在你的设备之间。",
+    version: "版本",
     attachment: "附件",
     emoji: "表情",
     dropFilesHere: "松开即可添加到发送草稿",
@@ -321,13 +326,17 @@ const copy = {
     allConversations: "All conversations",
     filterByStatus: "Filter by status",
     settingsSections: {
-      identity: "Identity",
-      appearance: "Appearance",
-      notification: "Notifications",
-      download: "Downloads & transfers",
-      network: "Network",
-      shortcut: "Shortcuts",
+      identity: { label: "Identity", icon: "user" },
+      appearance: { label: "Appearance", icon: "appearance" },
+      notification: { label: "Notifications", icon: "bell" },
+      download: { label: "Downloads & transfers", icon: "download" },
+      network: { label: "Network", icon: "network" },
+      shortcut: { label: "Shortcuts", icon: "keyboard" },
+      about: { label: "About", icon: "info" },
     },
+    aboutTitle: "About Xchat",
+    aboutDescription: "LAN chat and file transfer that keeps your data between your devices.",
+    version: "Version",
     attachment: "Attachment",
     emoji: "Emoji",
     dropFilesHere: "Drop to add files to the draft",
@@ -564,6 +573,21 @@ function Icon({ name, size = 20 }) {
         </>
       );
       break;
+    case "user":
+      body = <><circle cx="12" cy="8" r="3" /><path d="M5 20c.8-3.2 3.1-5 7-5s6.2 1.8 7 5" /></>;
+      break;
+    case "appearance":
+      body = <><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></>;
+      break;
+    case "bell":
+      body = <><path d="M6 17h12l-1.2-2V10a4.8 4.8 0 0 0-9.6 0v5Z" /><path d="M10 20h4" /></>;
+      break;
+    case "network":
+      body = <><circle cx="12" cy="5" r="2" /><circle cx="5" cy="18" r="2" /><circle cx="19" cy="18" r="2" /><path d="m10.8 6.8-4.6 9.4M13.2 6.8l4.6 9.4M7 18h10" /></>;
+      break;
+    case "keyboard":
+      body = <><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M7 14h10" /></>;
+      break;
     case "more":
       body = (
         <>
@@ -584,9 +608,9 @@ function Icon({ name, size = 20 }) {
     case "capture":
       body = (
         <>
-          <circle cx="6" cy="7" r="3" />
-          <circle cx="6" cy="17" r="3" />
-          <path d="m8.5 8.5 11 7.5M8.5 15.5 20 8M4 12h4" />
+          <circle cx="7" cy="7" r="3" />
+          <circle cx="7" cy="17" r="3" />
+          <path d="m9.5 8.5 10.5 3.5-10.5 3.5M7 10v4" />
         </>
       );
       break;
@@ -724,6 +748,12 @@ function formatTime(timestamp, locale) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(timestamp * 1000));
+}
+
+function appVersion() {
+  return typeof globalThis.__XCHAT_VERSION__ === "string" && globalThis.__XCHAT_VERSION__
+    ? globalThis.__XCHAT_VERSION__
+    : "0.1.0";
 }
 
 function formatSize(bytes) {
@@ -1211,7 +1241,7 @@ function ListPane({
           </>
         )}
         {section === "settings" &&
-          Object.entries(labels.settingsSections).map(([id, label]) => (
+          Object.entries(labels.settingsSections).map(([id, section]) => (
             <button
               className={`settings-nav-row ${
                 settingsSection === id ? "selected" : ""
@@ -1220,7 +1250,8 @@ function ListPane({
               onClick={() => onSettingsSection(id)}
               aria-current={settingsSection === id ? "location" : undefined}
             >
-              {label}
+              <Icon name={section.icon} size={17} />
+              <span>{section.label}</span>
             </button>
           ))}
       </div>
@@ -1691,13 +1722,24 @@ function Composer({ state, conversation, workspace, labels }) {
             }
           }}
           onPaste={(event) => {
-            const files = [...event.clipboardData.files].filter(isImageFile);
-            if (files.length) {
+            const files = [...event.clipboardData.files];
+            const paths = [];
+            const uriText = event.clipboardData.getData("text/uri-list") || event.clipboardData.getData("text/plain");
+            for (const value of uriText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)) {
+              if (value.startsWith("file://")) {
+                try { paths.push(decodeURIComponent(new URL(value).pathname)); } catch { /* ignore malformed clipboard URL */ }
+              } else if (/^(\/|[A-Za-z]:[\\/])/.test(value)) {
+                paths.push(value);
+              }
+            }
+            if (files.length || paths.length) {
+              event.preventDefault();
               workspace.dispatch({
                 type: "draft.addFiles",
                 conversationId: conversation.id,
                 files,
               });
+              if (paths.length) workspace.dispatch({ type: "draft.addPaths", conversationId: conversation.id, paths });
             }
           }}
           rows="2"
@@ -1822,7 +1864,10 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
   }, [conversation?.id, messages.length, state.focusedMessageId]);
 
   useEffect(() => {
-    if (conversation && document.visibilityState === "visible") {
+    if (
+      conversation &&
+      isAppActive(document.visibilityState, document.hasFocus())
+    ) {
       workspace.dispatch({ type: "message.markRead", conversationId: conversation.id });
     }
   }, [conversation?.id, messages.length, workspace]);
@@ -1830,16 +1875,19 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
   useEffect(() => {
     if (!conversation) return;
     const markReadWhenVisible = () => {
-      if (document.visibilityState === "visible") {
+      if (isAppActive(document.visibilityState, document.hasFocus())) {
         workspace.dispatch({
           type: "message.markRead",
           conversationId: conversation.id,
         });
       }
     };
+    addEventListener("focus", markReadWhenVisible);
     document.addEventListener("visibilitychange", markReadWhenVisible);
-    return () =>
+    return () => {
+      removeEventListener("focus", markReadWhenVisible);
       document.removeEventListener("visibilitychange", markReadWhenVisible);
+    };
   }, [conversation?.id, workspace]);
 
   if (!conversation) {
@@ -1859,24 +1907,6 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
       : `${peer?.addr || labels.unknownAddress} · ${
           peer?.is_offline ? labels.offline : labels.online
         }`;
-  const runningTransfers = state.transfers.filter((transfer) =>
-    ACTIVE_TRANSFER_STATES.has(transfer.status),
-  );
-  const transferredBytes = runningTransfers.reduce(
-    (total, transfer) => total + Number(transfer.bytes_transferred || 0),
-    0,
-  );
-  const totalBytes = runningTransfers.reduce(
-    (total, transfer) => total + Number(transfer.bytes_total || 0),
-    0,
-  );
-  const totalSpeed = runningTransfers.reduce(
-    (total, transfer) => total + Number(transfer.speed_bps || 0),
-    0,
-  );
-  const transferPercent = totalBytes
-    ? Math.min(100, Math.round((transferredBytes / totalBytes) * 100))
-    : 0;
 
   return (
     <main
@@ -2003,23 +2033,6 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
           </article>
         ))}
       </div>
-      {runningTransfers.length > 0 && (
-        <div className="transfer-dock">
-          <Icon name="download" />
-          <span>
-            <b>{labels.activeTransfers(runningTransfers.length)}</b>
-            <small>
-              {transferPercent}% · {formatProgressSize(transferredBytes)} /{" "}
-              {formatProgressSize(totalBytes)}
-              {" · "}
-              {formatRate(totalSpeed)}
-            </small>
-            <span className="progress-track" aria-label={labels.progress(transferPercent)}>
-              <i style={{ width: `${transferPercent}%` }} />
-            </span>
-          </span>
-        </div>
-      )}
       <Composer
         state={state}
         conversation={conversation}
@@ -2677,8 +2690,19 @@ function SettingsWorkspace({
                 event.preventDefault();
                 change("capture_shortcut", shortcut);
               }}
-            />
+          />
           </SettingRow>
+        </section>
+        <section className="settings-section settings-about" id="settings-about">
+          <h2>{labels.aboutTitle}</h2>
+          <div className="about-card">
+            <div className="about-mark"><Icon name="info" size={28} /></div>
+            <div>
+              <b>Xchat</b>
+              <p>{labels.aboutDescription}</p>
+              <small>{labels.version} {appVersion()}</small>
+            </div>
+          </div>
         </section>
       </div>
     </main>
@@ -3035,7 +3059,7 @@ export default function App({ workspace }) {
 
   useEffect(() => {
     const clearAttention = () => {
-      if (document.visibilityState === "visible" && document.hasFocus()) {
+      if (isAppActive(document.visibilityState, document.hasFocus())) {
         workspace.dispatch({ type: "attention.clear" });
       }
     };
@@ -3163,7 +3187,7 @@ export default function App({ workspace }) {
     requestAnimationFrame(() =>
       document
         .getElementById(`settings-${id}`)
-        ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+        ?.scrollIntoView({ behavior: "auto", block: "start" }),
     );
   };
 

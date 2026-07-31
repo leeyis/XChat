@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XChat · 间距与密度</title>
+  <link rel="stylesheet" href="preview.css">
+  <style>
+    .scale{display:grid;gap:13px}
+    .space-row{display:grid;grid-template-columns:72px 1fr 52px;align-items:center;gap:14px}
+    .space-bar{height:12px;width:var(--w);border-radius:3px;background:var(--accent)}
+    .layout-demo{display:grid;grid-template-columns:56px 160px minmax(200px,1fr) 120px;height:260px;overflow:hidden;border:1px solid var(--border);border-radius:var(--radius-lg)}
+    .layout-demo div{display:grid;place-items:center;border-right:1px solid var(--border);color:var(--muted);font:var(--text-meta)/1.3 var(--font-mono);text-align:center}
+    .layout-demo div:first-child{background:var(--rail);color:var(--rail-fg)}
+    .layout-demo div:nth-child(2){background:color-mix(in oklch,var(--bg) 86%,var(--surface))}
+    .layout-demo div:nth-child(3){background:var(--bg);color:var(--fg)}
+    .layout-demo div:last-child{border-right:0;background:var(--surface)}
+    @media(max-width:640px){.layout-demo{grid-template-columns:56px 1fr}.layout-demo div:nth-child(2),.layout-demo div:last-child{display:none}}
+  </style>
+</head>
+<body>
+  <main class="preview-page" data-od-id="spacing-preview">
+    <header class="preview-head">
+      <div><p class="eyebrow">视觉基础 03</p><h1>间距与密度</h1><p class="lede">4px 基线服务紧凑桌面操作；更大的留白只用于主要工作区和审阅表面。</p></div>
+    </header>
+    <section class="grid">
+      <article class="panel">
+        <h2>间距标尺</h2><p class="caption">控件内部优先 8 / 12 / 16。</p><hr class="rule">
+        <div class="scale">
+          <div class="space-row"><span class="meta">space-1</span><i class="space-bar" style="--w:4px"></i><span class="meta">4px</span></div>
+          <div class="space-row"><span class="meta">space-2</span><i class="space-bar" style="--w:8px"></i><span class="meta">8px</span></div>
+          <div class="space-row"><span class="meta">space-3</span><i class="space-bar" style="--w:12px"></i><span class="meta">12px</span></div>
+          <div class="space-row"><span class="meta">space-4</span><i class="space-bar" style="--w:16px"></i><span class="meta">16px</span></div>
+          <div class="space-row"><span class="meta">space-6</span><i class="space-bar" style="--w:24px"></i><span class="meta">24px</span></div>
+          <div class="space-row"><span class="meta">space-10</span><i class="space-bar" style="--w:40px"></i><span class="meta">40px</span></div>
+        </div>
+      </article>
+      <article class="panel wide">
+        <h2>四栏桌面骨架</h2><p class="caption">生产比例为 56 / 280 / 弹性主区 / 240；此处按比例缩放。</p><hr class="rule">
+        <div class="layout-demo" aria-label="四栏布局示意">
+          <div>56<br>导航</div><div>280<br>列表</div><div>minmax(420, 1fr)<br>主工作区</div><div>240<br>信息</div>
+        </div>
+      </article>
+    </section>
+  </main>
+</body>
+</html>
+

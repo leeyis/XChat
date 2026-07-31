@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XChat · 颜色与主题</title>
+  <link rel="stylesheet" href="preview.css">
+  <style>
+    .swatches{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+    .swatch{overflow:hidden;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface)}
+    .swatch-color{height:112px;background:var(--swatch)}
+    .swatch-info{padding:12px}
+    .swatch-info strong{display:block;margin-bottom:3px}
+    .swatch-info code{color:var(--muted);font:var(--text-meta)/1.35 var(--font-mono)}
+    .state-row{display:flex;flex-wrap:wrap;gap:12px}
+    .state{display:flex;align-items:center;gap:8px;min-width:130px}
+    .state i{width:14px;height:14px;border-radius:50%;background:var(--state)}
+    @media(max-width:700px){.swatches{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  </style>
+</head>
+<body>
+  <main class="preview-page" data-od-id="color-preview">
+    <header class="preview-head">
+      <div><p class="eyebrow">视觉基础 01</p><h1>颜色与主题</h1><p class="lede">六个核心令牌维持信息层级，绿色只标记当前、主动作与进度。</p></div>
+      <div class="toolbar"><button class="button" id="themeToggle" type="button">切换深色</button></div>
+    </header>
+    <section class="swatches" aria-label="核心颜色">
+      <article class="swatch"><div class="swatch-color" style="--swatch:var(--bg)"></div><div class="swatch-info"><strong>背景</strong><code>--bg</code></div></article>
+      <article class="swatch"><div class="swatch-color" style="--swatch:var(--surface)"></div><div class="swatch-info"><strong>表面</strong><code>--surface</code></div></article>
+      <article class="swatch"><div class="swatch-color" style="--swatch:var(--fg)"></div><div class="swatch-info"><strong>前景</strong><code>--fg</code></div></article>
+      <article class="swatch"><div class="swatch-color" style="--swatch:var(--muted)"></div><div class="swatch-info"><strong>次级</strong><code>--muted</code></div></article>
+      <article class="swatch"><div class="swatch-color" style="--swatch:var(--border)"></div><div class="swatch-info"><strong>边界</strong><code>--border</code></div></article>
+      <article class="swatch"><div class="swatch-color" style="--swatch:var(--accent)"></div><div class="swatch-info"><strong>XChat 绿</strong><code>--accent · oklch(0.659 0.145 159.36)</code></div></article>
+    </section>
+    <section class="panel full" style="margin-top:16px">
+      <h2>语义状态</h2><p class="caption">颜色与清晰文案一起表达结果，不单独依赖色相。</p><hr class="rule">
+      <div class="state-row">
+        <span class="state" style="--state:var(--success)"><i></i>在线 · 可连接</span>
+        <span class="state" style="--state:var(--warning)"><i></i>等待 · 需确认</span>
+        <span class="state" style="--state:var(--danger)"><i></i>已失效 · 可重试</span>
+        <span class="state" style="--state:var(--accent)"><i></i>正在传输 · 50%</span>
+      </div>
+    </section>
+  </main>
+  <script>
+    const toggle = document.getElementById("themeToggle");
+    toggle.addEventListener("click", () => {
+      const dark = document.documentElement.dataset.theme === "dark";
+      document.documentElement.dataset.theme = dark ? "light" : "dark";
+      toggle.textContent = dark ? "切换深色" : "切换浅色";
+    });
+  </script>
+</body>
+</html>
+

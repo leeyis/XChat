@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XChat · 应用表面</title>
+  <link rel="stylesheet" href="preview.css">
+  <style>
+    .surface-grid{display:grid;gap:20px}
+    .surface-head{display:flex;align-items:end;justify-content:space-between;gap:16px;margin-bottom:10px}
+    .surface-head h2,.surface-head p{margin:0}
+    .surface-frame{overflow:hidden;border:1px solid var(--border);border-radius:var(--radius-xl);background:var(--surface);box-shadow:var(--shadow-1)}
+    .surface-frame iframe{display:block;width:100%;height:640px;border:0}
+    @media(max-width:760px){.surface-head{align-items:start;flex-direction:column}.surface-frame iframe{height:720px}}
+  </style>
+</head>
+<body>
+  <main class="preview-page" data-od-id="applied-surfaces-preview">
+    <header class="preview-head"><div><p class="eyebrow">应用 07</p><h1>应用表面</h1><p class="lede">聊天、文件中心与 AI 诊断共享同一导航、密度、状态和响应逻辑。</p></div><a class="button primary" href="../ui_kits/app/index.html">打开套件入口</a></header>
+    <section class="surface-grid">
+      <article>
+        <div class="surface-head"><div><h2>聊天工作台</h2><p class="caption">会话、设备身份、消息、传输与完整输入器。</p></div><a class="button" href="../ui_kits/app/chat-workspace.html">单独查看</a></div>
+        <div class="surface-frame"><iframe src="../ui_kits/app/chat-workspace.html" title="XChat 聊天工作台"></iframe></div>
+      </article>
+      <article>
+        <div class="surface-head"><div><h2>文件中心</h2><p class="caption">按来源与类型筛选，保留预览、路径和删除动作。</p></div><a class="button" href="../ui_kits/app/file-center.html">单独查看</a></div>
+        <div class="surface-frame"><iframe src="../ui_kits/app/file-center.html" title="XChat 文件中心"></iframe></div>
+      </article>
+      <article>
+        <div class="surface-head"><div><h2>AI 网络诊断</h2><p class="caption">思考、工具调用、结果和模型选择器共用可折叠卡片语言。</p></div><a class="button" href="../ui_kits/app/ai-diagnostics.html">单独查看</a></div>
+        <div class="surface-frame"><iframe src="../ui_kits/app/ai-diagnostics.html" title="XChat AI 网络诊断"></iframe></div>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

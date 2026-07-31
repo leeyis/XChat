@@ -6,18 +6,27 @@ import {
   fileKind,
   fileStatus,
   insertTextAtSelection,
+  isAppActive,
   isPhysicalPointInsideRect,
   incomingMessageAlert,
+  isMessageAlertControlType,
   localFileAvailable,
   matchesShortcut,
   measureTransfers,
   mergeMessages,
   nativeDragDropTarget,
+  normalizeDraftAttachment,
   normalizeMessage,
   runtimeCapabilities,
   shortcutLabelFromEvent,
   TauriAdapter,
 } from "./xchat.js";
+
+test("read receipts and attention clear only while the app is active", () => {
+  assert.equal(isAppActive("visible", true), true);
+  assert.equal(isAppActive("visible", false), false);
+  assert.equal(isAppActive("hidden", true), false);
+});
 
 test("direct conversation IDs are stable on both peers", () => {
   assert.equal(
@@ -124,6 +133,30 @@ test("incoming alerts accept remote messages and reject self/control events", ()
   );
 });
 
+test("incoming file alerts use the remote file name and control filtering", () => {
+  assert.equal(isMessageAlertControlType("file_download_progress"), true);
+  assert.equal(isMessageAlertControlType("file"), false);
+  assert.deepEqual(
+    incomingMessageAlert(
+      {
+        id: 42,
+        from_id: "peer-1",
+        from_name: "Alice",
+        msg_type: "file",
+        file_name: "report.pdf",
+        content: "",
+      },
+      "self",
+    ),
+    {
+      key: "peer-1:42",
+      fromId: "peer-1",
+      title: "Alice",
+      body: "收到文件：report.pdf",
+    },
+  );
+});
+
 test("web-only APIs are decided by the browser, not server platform flags", () => {
   const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
   const notificationDescriptor = Object.getOwnPropertyDescriptor(globalThis, "Notification");
@@ -215,6 +248,16 @@ test("Finder drops survive fs metadata scope rejection", async () => {
 
   assert.deepEqual(result.errors, []);
   assert.equal(result.files[0].file_path, "/Users/eason/Desktop/report.pdf");
+});
+
+test("draft attachment normalization accepts browser files and native paths", () => {
+  const browserFile = { name: "notes.txt", size: 12, type: "text/plain" };
+  const browser = normalizeDraftAttachment(browserFile);
+  assert.equal(browser.file_name, "notes.txt");
+  assert.equal(browser.file_size, 12);
+  const native = normalizeDraftAttachment("/tmp/archive.zip");
+  assert.equal(native.file_path, "/tmp/archive.zip");
+  assert.equal(native.file_name, "archive.zip");
 });
 
 test("transfer snapshots derive percentage and monotonic speed from byte deltas", () => {

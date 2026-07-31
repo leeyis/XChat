@@ -101,6 +101,23 @@
 - 现有远端终态 endpoint 对 `status=failed` 本就保留 v2 part；发送端遗漏来自 `run_upload` 的 `!job.parallel_v2` 条件，移除即可复用安全边界。
 - finalize 的重复文件来自“hard link 已成功、DB 尚未完成”的崩溃窗口；重试时校验并复用 manifest 预期路径即可保持幂等，无需引入新存储层。
 
+### 阶段 13 根因与集成边界
+- 当前主线缺少完整钉图窗口行为、系统通知/托盘提醒和设备上线通知；这些能力已经集中存在于提交 `9c27425`，完整合入比逐段重写更小且能保留同一旁枝的协议与权限配套。
+- 当前文本操作没有稳定标识，历史模型只支持末尾追加/弹出，因此无法对既有文本做一次性的替换或移动，也无法把一次编辑作为单个撤销步骤。
+- 设置导航粉红色来自 `.settings-nav-row.selected` 的显式混色背景；删除该背景即可保留绿色文字/字重和灰色 hover，无需新增状态。
+- 用户已暂存 `AGENTS.md`、`plan/UI-DESIGN-PC.md`，并保留 `.happycode/`、`ui-ref/`；集成过程不得把这些内容纳入产品提交或覆盖。
+- 通知旁枝原先会在“页面可见但窗口失焦”时先启动托盘提醒，又被自动已读立即清除；消息提醒、自动已读和清除注意力必须统一使用 `visible && hasFocus()`。
+- Web 截图编辑器的 pending 数据来自 localStorage，可用受控图片完成无真实截图权限的浏览器交互回归；本轮实测二次编辑、原子撤销/重做、拖动定位和钉图菜单均通过。
+
+### 阶段 14 截图交互根因
+- 预览重绘用 `hiddenTextId === operation.id` 隐藏编辑中的文本；无文本编辑时两边均为 `undefined`，因此所有没有 ID 的马赛克、画笔、矩形等已提交操作都会被跳过。拖动草稿可见，松手进入 history 后立即消失。
+- 文本单击后变成 `.capture-text-input`，该输入框直接阻止 `pointerdown` 冒泡，所以编辑态拖动无法进入 `beginInsideSelection → movePointer → endPointer`。
+- 空文本当前被 `createTextOperation` 返回 `null`，`commitText` 随即退出并恢复原操作；用户最新语义要求空值删除，历史模型需要一个可撤销的 remove 操作。
+- 钉图视图仅加载已经扁平化的 PNG，没有 Canvas/history；现有缩放小工具条不是截图编辑工具条。最小完整方案是“显示工具条”时把当前钉图重新送入同一个 `CaptureOverlay` 编辑会话，编辑后再次钉图覆盖当前钉图。
+- 修复后浏览器真实回放中，马赛克 Canvas 哈希由基线 `3844884312` 变为 `1185266231`，松手后仍保持 `1185266231`；文本编辑框实时从 `(320,299)` 移到 `(420,359)`，清空后消失，撤销后在新位置恢复。
+- 钉图右键“显示工具条”现在挂载同一个 `CaptureOverlay`，整图选区锁定为 viewport，原独立 `.capture-pin-toolbar` 不再存在；取消编辑返回原钉图且 pending 不变。
+- 浏览器 `HttpWsAdapter.pinCapture` 仍只用 `open(dataUrl)` 模拟钉图，不能验证原位覆盖；Tauri `pin` 已支持 existing-pin 原位替换并用会话校验保留失败前旧图。
+
 ## 资源
 - `ui-ref/DESIGN.md`
 - `ui-ref/README.md`

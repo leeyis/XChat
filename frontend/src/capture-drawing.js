@@ -51,31 +51,63 @@ function browserCanvas() {
 }
 
 export function createCaptureHistory() {
-  return { operations: [], redo: [] };
+  return { operations: [], undo: [], redo: [] };
 }
 
 export function addCaptureOperation(history, operation) {
   return {
     operations: [...history.operations, operation],
+    undo: [...history.undo, history.operations],
     redo: [],
   };
 }
 
 export function undoCaptureOperation(history) {
-  if (!history.operations.length) return history;
-  const operations = history.operations.slice(0, -1);
+  if (!history.undo.length) return history;
   return {
-    operations,
-    redo: [...history.redo, history.operations.at(-1)],
+    operations: history.undo.at(-1),
+    undo: history.undo.slice(0, -1),
+    redo: [...history.redo, history.operations],
   };
 }
 
 export function redoCaptureOperation(history) {
   if (!history.redo.length) return history;
   return {
-    operations: [...history.operations, history.redo.at(-1)],
+    operations: history.redo.at(-1),
+    undo: [...history.undo, history.operations],
     redo: history.redo.slice(0, -1),
   };
+}
+
+export function replaceCaptureOperation(history, id, nextOperation) {
+  const index = history.operations.findIndex(
+    (operation) => operation.id === id,
+  );
+  if (index < 0) return history;
+  const operations = history.operations.slice();
+  operations[index] = { ...nextOperation, id };
+  return {
+    operations,
+    undo: [...history.undo, history.operations],
+    redo: [],
+  };
+}
+
+export function removeCaptureOperation(history, id) {
+  const operations = history.operations.filter(
+    (operation) => operation.id !== id,
+  );
+  if (operations.length === history.operations.length) return history;
+  return {
+    operations,
+    undo: [...history.undo, history.operations],
+    redo: [],
+  };
+}
+
+export function isCaptureOperationHidden(operation, hiddenTextId) {
+  return hiddenTextId != null && operation.id === hiddenTextId;
 }
 
 export function placeCaptureToolbar(
@@ -104,6 +136,26 @@ export function placeCaptureToolbar(
 
 function clamp(value, minimum, maximum) {
   return Math.min(Math.max(value, minimum), maximum);
+}
+
+export const CAPTURE_PIN_TOOLBAR_AREA = 72;
+
+export function expandCaptureWindowSize(
+  size,
+  scaleFactor = 1,
+  extraHeight = CAPTURE_PIN_TOOLBAR_AREA,
+) {
+  const width = Number(size?.width);
+  const height = Number(size?.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null;
+  }
+  const factor = Number(scaleFactor) > 0 ? Number(scaleFactor) : 1;
+  return {
+    type: "Physical",
+    width: Math.round(width),
+    height: Math.round(height + extraHeight * factor),
+  };
 }
 
 export function placeCaptureTextInput(
@@ -135,6 +187,26 @@ export function placeCaptureTextInput(
   };
 }
 
+export function placeCaptureTextControls(
+  input,
+  selectionWidth,
+  buttonSize = 28,
+  gap = 8,
+  inset = 4,
+) {
+  const width = buttonSize * 2 + gap;
+  const inputHeight = Math.max(
+    38,
+    Number(input.displayFontSize || 16) * 1.25 + 10,
+  );
+  return {
+    left: Math.round(clamp(input.left + input.width - width - inset, 6, Math.max(6, selectionWidth - width - 6))),
+    top: Math.round(input.top + (inputHeight - buttonSize) / 2),
+    width,
+    height: buttonSize,
+  };
+}
+
 export function fitPinnedCapture(
   width,
   height,
@@ -155,6 +227,10 @@ export function nextPinnedCaptureZoom(
   return Math.round(clamp(current * factor, minimum, maximum) * 100) / 100;
 }
 
+export function togglePinnedCaptureToolbar(visible) {
+  return !Boolean(visible);
+}
+
 export function placePinnedCaptureMenu(
   point,
   menu,
@@ -168,6 +244,26 @@ export function placePinnedCaptureMenu(
     top: Math.round(
       clamp(point.y, padding, Math.max(padding, viewport.height - menu.height - padding)),
     ),
+  };
+}
+
+export function placePinnedCaptureToolbarBelowImage(
+  image,
+  toolbar,
+  viewport,
+  gap = 8,
+  padding = 8,
+) {
+  const left = clamp(
+    image.x + image.width - toolbar.width,
+    padding,
+    Math.max(padding, viewport.width - toolbar.width - padding),
+  );
+  const below = image.y + image.height + gap;
+  return {
+    left: Math.round(left),
+    top: Math.round(below),
+    gap,
   };
 }
 
@@ -271,21 +367,147 @@ export function drawCaptureOperation(
   } else if (operation.tool === "arrow") {
     drawArrow(context, operation.start, operation.end, operation.size);
   } else if (operation.tool === "text") {
-    context.font = `600 ${Math.max(16, operation.size * 5)}px -apple-system, sans-serif`;
+    const style = normalizeCaptureTextStyle(operation);
+    context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
     context.textBaseline = "top";
     context.fillText(operation.text, operation.start.x, operation.start.y);
   }
   context.restore();
 }
 
-export function createTextOperation(input, color, size) {
+export const DEFAULT_CAPTURE_TEXT_STYLE = {
+  fontFamily: "-apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+  fontWeight: "600",
+  fontStyle: "normal",
+};
+
+export function normalizeCaptureTextStyle(operation = {}) {
+  return {
+    fontFamily: operation.fontFamily || DEFAULT_CAPTURE_TEXT_STYLE.fontFamily,
+    fontWeight: operation.fontWeight || DEFAULT_CAPTURE_TEXT_STYLE.fontWeight,
+    fontStyle: operation.fontStyle || DEFAULT_CAPTURE_TEXT_STYLE.fontStyle,
+    fontSize: Math.max(16, Number(operation.fontSize || operation.size * 5 || 20)),
+  };
+}
+
+export function updateCaptureTextStyle(input, style = {}, scale = 1) {
+  if (!input) return input;
+  const next = { ...input };
+  if (style.color !== undefined) next.color = style.color;
+  if (style.fontFamily !== undefined) next.fontFamily = style.fontFamily;
+  if (style.fontWeight !== undefined) next.fontWeight = style.fontWeight;
+  if (style.fontStyle !== undefined) next.fontStyle = style.fontStyle;
+  if (style.fontSize !== undefined) {
+    next.displayFontSize = Number(style.fontSize);
+    next.fontSize = Number(style.fontSize) * Math.max(1, Number(scale) || 1);
+  }
+  return next;
+}
+
+/**
+ * Resolve the font-size values used by the canvas operation and the DOM input.
+ *
+ * Capture operations store their font size in canvas pixels, while the editor
+ * controls use CSS/display pixels.  Keeping this conversion in one place is
+ * important when an existing annotation is reopened: feeding the canvas value
+ * back into the display control and scaling it again on the next edit would
+ * make each newly-created input grow on every edit/delete cycle.
+ */
+export function resolveCaptureTextInputFontSize(
+  source = null,
+  scale = 1,
+  fallbackDisplaySize = 20,
+) {
+  const safeScale = Number.isFinite(Number(scale)) && Number(scale) > 0
+    ? Number(scale)
+    : 1;
+  const fallback = Math.max(1, Number(fallbackDisplaySize) || 20);
+  const storedSize = Number(source?.fontSize || source?.size * 5);
+  if (Number.isFinite(storedSize) && storedSize > 0) {
+    return {
+      fontSize: storedSize,
+      displayFontSize: storedSize / safeScale,
+    };
+  }
+  return {
+    fontSize: fallback * safeScale,
+    displayFontSize: fallback,
+  };
+}
+
+export function createTextOperation(input, color, size, style = {}) {
   const text = String(input?.value ?? "").trim();
   if (!text) return null;
   return {
+    id: input?.id,
     tool: "text",
     start: { x: input.x, y: input.y },
     text,
     color,
     size,
+    fontFamily: style.fontFamily || DEFAULT_CAPTURE_TEXT_STYLE.fontFamily,
+    fontWeight: style.fontWeight || DEFAULT_CAPTURE_TEXT_STYLE.fontWeight,
+    fontStyle: style.fontStyle || DEFAULT_CAPTURE_TEXT_STYLE.fontStyle,
+    fontSize: Math.max(16, Number(style.fontSize || size * 5)),
+  };
+}
+
+export function shouldCancelCaptureTextEdit(original, value) {
+  return Boolean(original) && !String(value ?? "").trim();
+}
+
+function captureTextBounds(operation, measureText) {
+  const style = normalizeCaptureTextStyle(operation);
+  const height = style.fontSize;
+  const width = Math.max(
+    0,
+    Number(measureText(operation.text, height, operation)) || 0,
+  );
+  return {
+    x: operation.start.x,
+    y: operation.start.y,
+    width,
+    height,
+  };
+}
+
+export function hitTestCaptureText(operations, point, measureText) {
+  for (let index = operations.length - 1; index >= 0; index -= 1) {
+    const operation = operations[index];
+    if (operation.tool !== "text") continue;
+    const bounds = captureTextBounds(operation, measureText);
+    if (
+      point.x >= bounds.x &&
+      point.x <= bounds.x + bounds.width &&
+      point.y >= bounds.y &&
+      point.y <= bounds.y + bounds.height
+    ) {
+      return operation;
+    }
+  }
+  return null;
+}
+
+export function moveCaptureTextOperation(
+  operation,
+  delta,
+  canvas,
+  measureText,
+) {
+  const bounds = captureTextBounds(operation, measureText);
+  return {
+    ...operation,
+    start: {
+      x: clamp(
+        operation.start.x + delta.x,
+        0,
+        Math.max(0, canvas.width - bounds.width),
+      ),
+      y: clamp(
+        operation.start.y + delta.y,
+        0,
+        Math.max(0, canvas.height - bounds.height),
+      ),
+    },
   };
 }

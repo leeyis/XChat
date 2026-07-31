@@ -170,6 +170,7 @@
 | 2026-07-29 | 删除旧截图兼容入口的首个补丁未匹配 mobile capability 尾部 | 1 | 读取实际 JSON 后使用精确上下文，第二次成功 |
 | 2026-07-29 | Chrome 扩展未开放本地文件 URL，file chooser QA 返回 `Not allowed` | 1 | 使用浏览器会话剪贴板粘贴 PNG，草稿与发送验证成功 |
 | 2026-07-29 | Computer Use 无法识别 raw Tauri debug binary | 2 | 不继续切换自动化技术；以原生启动日志和双实例浏览器 QA 验证 |
+| 2026-07-30 | 将 `permissions/commands.toml` 误传给 `jq` | 1 | JSON 与 TOML 分开验证；TOML 交由 Cargo metadata/check 解析 |
 
 ## 五问重启检查
 | 问题 | 答案 |
@@ -204,3 +205,37 @@
   - `docs/plans/2026-07-29-xchat-feedback-round-2-implementation.md`
   - `task_plan.md`
   - `progress.md`
+
+### 阶段 13：截图钉图、通知与文本二次编辑
+- **状态：** complete
+- 已执行：
+  - 恢复并完整阅读 `task_plan.md`、`findings.md`、`progress.md`。
+  - 确认代码知识图 `XChat` 已存在并覆盖当前 React/Tauri 架构。
+  - 记录文件规划技能缺失 `scripts/catchup.py`；改用手工五问恢复上下文。
+  - 用户确认完整合入 `9c27425`，并批准文本工具方案 A 与通知整条旁枝。
+  - 红灯 `rtk npm test` 同时捕获钉图 helper、文本编辑/移动 helper 与设置透明选中态缺失。
+  - 已完整 cherry-pick `9c27425`；保留 `45d5f7c` 的首次文本输入与 Finder 拖放修复。
+  - 文本操作增加稳定 ID、顶层命中、边界内移动和快照式历史；点击旧文本编辑、拖动超过 4px 移动，均可一次撤销/重做。
+  - 设置选中态移除背景，仅保留绿色文字与字重；静态 CSS 回归通过。
+  - 审计并修复后台可见但失焦时通知刚启动即被自动已读清除的竞态，统一采用 `visible && hasFocus()`。
+  - 受控 Web 截图编辑器实测首次聚焦、二次编辑、撤销/重做和拖动；钉图右键菜单 10 项完整且边缘位置受限。
+  - `rtk npm test` 23/23、Vite 生产构建、Rust library 41/41、desktop lib 与 web bin 编译、JSON 与 whitespace 检查均通过。
+  - Tauri dev 完成 Vite 与 Rust 构建并运行到二进制；由于已安装 Xchat 正在运行，单实例插件将调试启动交给旧进程后退出，未擅自终止用户应用。
+
+### 阶段 14：截图交互反馈修复
+- **状态：** complete
+- 已执行：
+  - 读取三项用户反馈并对照当前截图编辑器、钉图视图与历史模型。
+  - 浏览器真实指针回放确认：马赛克拖动时 Canvas 哈希从 `3844884312` 变为 `908550699`，松手后恢复 `3844884312`，而撤销按钮已启用，证明操作已入 history 但被预览过滤。
+  - 建立 `isCaptureOperationHidden` 与 `removeCaptureOperation` 红灯测试；`rtk node --test frontend/src/capture-drawing.test.js` 因两个导出尚不存在而按预期失败。
+  - 并行审计确认文本编辑框截断拖动事件，空文本沿用旧“取消”语义；钉图小工具条与截图工具条没有共享编辑状态。
+  - 用显式非空 ID 判断替代 `undefined === undefined`，马赛克及其他无 ID 标注松手后继续渲染。
+  - 编辑态文本增加独立拖动手柄，拖动实时更新但松手只写入一次历史；清空旧文本变为可撤销删除。
+  - 删除独立钉图小工具条；右键“显示工具条”挂载同一个截图 `CaptureOverlay`，取消不改图，完成/保存通过现有 `capture.pin` 原位更新。
+  - Rust 钉图命令支持已有 `capture-pin` 会话原位替换；失败保留旧状态和文件，成功后再清理旧图，且不关闭钉图窗口或恢复主窗口。
+  - 浏览器回放通过：马赛克松手后哈希保持变化；文本移动、清空、撤销恢复通过；钉图复用 12 项原工具按钮，取消返回且 pending 不变。
+  - `rtk npm test` 25/25、`rtk npm run build`、Rust library 42/42、desktop lib、web bin 与 `rtk git diff --check` 全部通过。
+  - Tauri dev 已构建运行到二进制；已安装 Xchat 的单实例锁接管启动，因此未擅自终止用户正在运行的应用。
+- 遇到的错误：
+  - `browse eval/js` 执行异步复现脚本时无结果输出；没有重复同一路径，改为分步哈希采样和 Node 红灯测试。
+  - 浏览器 Web mock 的 `capture.pin` 只会新开图片窗口，不能验证原位覆盖；真实路径由 Rust 状态测试覆盖。

@@ -2,18 +2,31 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   addCaptureOperation,
+  CAPTURE_PIN_TOOLBAR_AREA,
   createTextOperation,
   createCaptureHistory,
   drawCaptureOperation,
+  expandCaptureWindowSize,
   fitPinnedCapture,
+  hitTestCaptureText,
+  isCaptureOperationHidden,
   moveCaptureSelection,
+  moveCaptureTextOperation,
   nextPinnedCaptureZoom,
+  normalizeCaptureTextStyle,
+  updateCaptureTextStyle,
+  togglePinnedCaptureToolbar,
   normalizeCaptureSelection,
   placeCaptureTextInput,
+  placeCaptureTextControls,
   placePinnedCaptureMenu,
+  placePinnedCaptureToolbarBelowImage,
   placeCaptureToolbar,
   redoCaptureOperation,
+  replaceCaptureOperation,
   resizeCaptureSelection,
+  resolveCaptureTextInputFontSize,
+  shouldCancelCaptureTextEdit,
   undoCaptureOperation,
 } from "./capture-drawing.js";
 
@@ -134,18 +147,124 @@ test("all capture annotation tools render through the canvas boundary", () => {
 
 test("text annotations commit trimmed content and cancel blank input", () => {
   assert.deepEqual(
-    createTextOperation({ x: 12, y: 24, value: "  note  " }, "#0f0", 6),
+    createTextOperation(
+      { id: "text-1", x: 12, y: 24, value: "  note  " },
+      "#0f0",
+      6,
+    ),
     {
+      id: "text-1",
       tool: "text",
       start: { x: 12, y: 24 },
       text: "note",
       color: "#0f0",
       size: 6,
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      fontWeight: "600",
+      fontStyle: "normal",
+      fontSize: 30,
     },
   );
   assert.equal(
     createTextOperation({ x: 12, y: 24, value: " \n " }, "#0f0", 6),
     null,
+  );
+});
+
+test("text styles normalize old operations and persist explicit font settings", () => {
+  assert.deepEqual(normalizeCaptureTextStyle({ size: 4 }), {
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    fontWeight: "600",
+    fontStyle: "normal",
+    fontSize: 20,
+  });
+  assert.deepEqual(
+    createTextOperation(
+      { x: 1, y: 2, value: "styled" },
+      "#fff",
+      4,
+      { fontFamily: "Arial", fontWeight: "700", fontStyle: "italic", fontSize: 28 },
+    ),
+    {
+      id: undefined,
+      tool: "text",
+      start: { x: 1, y: 2 },
+      text: "styled",
+      color: "#fff",
+      size: 4,
+      fontFamily: "Arial",
+      fontWeight: "700",
+      fontStyle: "italic",
+      fontSize: 28,
+    },
+  );
+});
+
+test("active text input style changes are reflected immediately and preserve canvas scale", () => {
+  const input = {
+    value: "你好",
+    color: "#f00",
+    fontFamily: "Arial, sans-serif",
+    fontWeight: "600",
+    fontStyle: "normal",
+    fontSize: 40,
+    displayFontSize: 20,
+  };
+  assert.deepEqual(updateCaptureTextStyle(input, {
+    color: "#1687f8",
+    fontFamily: "Songti SC, SimSun, serif",
+    fontWeight: "700",
+    fontStyle: "italic",
+    fontSize: 24,
+  }, 2), {
+    ...input,
+    color: "#1687f8",
+    fontFamily: "Songti SC, SimSun, serif",
+    fontWeight: "700",
+    fontStyle: "italic",
+    fontSize: 48,
+    displayFontSize: 24,
+  });
+});
+
+test("reopening text annotations keeps display font size stable across edit cycles", () => {
+  const scale = 2;
+  const reopened = resolveCaptureTextInputFontSize({ fontSize: 40 }, scale, 20);
+  assert.deepEqual(reopened, { fontSize: 40, displayFontSize: 20 });
+
+  // A new annotation after deleting the reopened one must use the display
+  // value (20px) as its fallback, not the old canvas value (40px).
+  const createdAgain = resolveCaptureTextInputFontSize(
+    null,
+    scale,
+    reopened.displayFontSize,
+  );
+  const createdThirdTime = resolveCaptureTextInputFontSize(
+    null,
+    scale,
+    createdAgain.displayFontSize,
+  );
+  assert.deepEqual(createdAgain, { fontSize: 40, displayFontSize: 20 });
+  assert.deepEqual(createdThirdTime, { fontSize: 40, displayFontSize: 20 });
+
+  // Legacy operations only have the brush-like `size`; they must follow the
+  // same conversion and must not poison the next editor cycle.
+  const legacy = resolveCaptureTextInputFontSize({ size: 4 }, scale, 20);
+  assert.deepEqual(legacy, { fontSize: 20, displayFontSize: 10 });
+  assert.deepEqual(
+    resolveCaptureTextInputFontSize(null, scale, legacy.displayFontSize),
+    { fontSize: 20, displayFontSize: 10 },
+  );
+});
+
+test("text input controls stay vertically centered for small and large fonts", () => {
+  assert.deepEqual(
+    placeCaptureTextControls({ left: 100, top: 20, width: 260, displayFontSize: 14 }, 500),
+    { left: 292, top: 25, width: 64, height: 28 },
+  );
+  assert.deepEqual(
+    placeCaptureTextControls({ left: 100, top: 20, width: 260, displayFontSize: 40 }, 500),
+    { left: 292, top: 36, width: 64, height: 28 },
   );
 });
 
@@ -168,6 +287,76 @@ test("capture text input stays visible near selection edges", () => {
   );
 });
 
+test("text annotations can be hit, moved, edited, undone, and redone atomically", () => {
+  const first = createTextOperation(
+    { id: "text-1", x: 10, y: 10, value: "first" },
+    "#f00",
+    4,
+  );
+  const topmost = createTextOperation(
+    { id: "text-2", x: 20, y: 20, value: "topmost" },
+    "#0f0",
+    4,
+  );
+  const measureText = () => 80;
+
+  assert.equal(
+    hitTestCaptureText([first, topmost], { x: 30, y: 30 }, measureText)?.id,
+    "text-2",
+  );
+  assert.equal(
+    hitTestCaptureText([first, topmost], { x: 180, y: 90 }, measureText),
+    null,
+  );
+
+  const moved = moveCaptureTextOperation(
+    topmost,
+    { x: 1000, y: 1000 },
+    { width: 200, height: 100 },
+    measureText,
+  );
+  assert.deepEqual(moved.start, { x: 120, y: 80 });
+
+  let history = addCaptureOperation(createCaptureHistory(), topmost);
+  history = replaceCaptureOperation(history, topmost.id, {
+    ...moved,
+    text: "edited",
+  });
+  assert.equal(history.operations[0].text, "edited");
+  assert.deepEqual(history.operations[0].start, { x: 120, y: 80 });
+
+  history = undoCaptureOperation(history);
+  assert.equal(history.operations[0].text, "topmost");
+  assert.deepEqual(history.operations[0].start, { x: 20, y: 20 });
+
+  history = redoCaptureOperation(history);
+  assert.equal(history.operations[0].text, "edited");
+  assert.deepEqual(history.operations[0].start, { x: 120, y: 80 });
+});
+
+test("clearing an edited text annotation cancels without deleting it", () => {
+  const text = createTextOperation(
+    { id: "text-1", x: 10, y: 10, value: "remove me" },
+    "#f00",
+    4,
+  );
+  assert.equal(shouldCancelCaptureTextEdit(text, "   "), true);
+  assert.equal(shouldCancelCaptureTextEdit(text, "updated"), false);
+  assert.equal(shouldCancelCaptureTextEdit(null, "   "), false);
+});
+
+test("preview only hides the text operation currently being edited", () => {
+  assert.equal(isCaptureOperationHidden({ tool: "mosaic" }, undefined), false);
+  assert.equal(
+    isCaptureOperationHidden({ id: "text-1", tool: "text" }, "text-1"),
+    true,
+  );
+  assert.equal(
+    isCaptureOperationHidden({ id: "text-2", tool: "text" }, "text-1"),
+    false,
+  );
+});
+
 test("pinned capture wheel zoom is bounded and its context menu stays onscreen", () => {
   assert.equal(fitPinnedCapture(1920, 1080), 0.5);
   assert.equal(nextPinnedCaptureZoom(0.5, -120), 0.55);
@@ -183,6 +372,56 @@ test("pinned capture wheel zoom is bounded and its context menu stays onscreen",
   );
 });
 
+test("pinned capture toolbar visibility toggles predictably", () => {
+  assert.equal(togglePinnedCaptureToolbar(false), true);
+  assert.equal(togglePinnedCaptureToolbar(true), false);
+});
+
+test("pin editing expands a physical window without changing the image viewport", () => {
+  assert.deepEqual(
+    expandCaptureWindowSize({ width: 640, height: 720 }, 2),
+    { type: "Physical", width: 640, height: 720 + CAPTURE_PIN_TOOLBAR_AREA * 2 },
+  );
+  assert.equal(expandCaptureWindowSize({ width: 0, height: 720 }, 2), null);
+  assert.equal(expandCaptureWindowSize({ width: 640, height: 720 }, 0).height, 720 + CAPTURE_PIN_TOOLBAR_AREA);
+});
+
+test("pinned capture toolbar stays in the transparent area below the image", () => {
+  assert.deepEqual(
+    placePinnedCaptureToolbarBelowImage(
+      { x: 100, y: 40, width: 400, height: 200 },
+      { width: 360, height: 48 },
+      { width: 640, height: 320 },
+    ),
+    { left: 140, top: 248, gap: 8 },
+  );
+  const image = { x: 20, y: 0, width: 400, height: 180 };
+  const toolbar = { width: 360, height: 48 };
+  const placed = placePinnedCaptureToolbarBelowImage(
+    image,
+    toolbar,
+    { width: 640, height: 248 },
+  );
+  assert.equal(placed.top, image.y + image.height + 8);
+  assert.ok(placed.top >= image.y + image.height);
+  assert.ok(placed.top + toolbar.height <= 248 - 8);
+
+  const imageViewport = { x: 0, y: 0, width: 640, height: 720 };
+  const expandedViewport = {
+    width: 640,
+    height: 720 + CAPTURE_PIN_TOOLBAR_AREA,
+  };
+  const normalToolbar = { width: 520, height: 52 };
+  const normalPlacement = placePinnedCaptureToolbarBelowImage(
+    imageViewport,
+    normalToolbar,
+    expandedViewport,
+  );
+  assert.equal(normalPlacement.top, 728);
+  assert.ok(normalPlacement.top >= imageViewport.height + 8);
+  assert.ok(normalPlacement.top + normalToolbar.height <= expandedViewport.height - 8);
+});
+
 test("capture history supports undo, redo, and clears redo after a new annotation", () => {
   const rectangle = { tool: "rectangle" };
   const arrow = { tool: "arrow" };
@@ -192,23 +431,16 @@ test("capture history supports undo, redo, and clears redo after a new annotatio
   history = addCaptureOperation(history, rectangle);
   history = addCaptureOperation(history, arrow);
   history = undoCaptureOperation(history);
-  assert.deepEqual(history, {
-    operations: [rectangle],
-    redo: [arrow],
-  });
+  assert.deepEqual(history.operations, [rectangle]);
 
   history = redoCaptureOperation(history);
-  assert.deepEqual(history, {
-    operations: [rectangle, arrow],
-    redo: [],
-  });
+  assert.deepEqual(history.operations, [rectangle, arrow]);
+  assert.equal(history.redo.length, 0);
 
   history = undoCaptureOperation(history);
   history = addCaptureOperation(history, text);
-  assert.deepEqual(history, {
-    operations: [rectangle, text],
-    redo: [],
-  });
+  assert.deepEqual(history.operations, [rectangle, text]);
+  assert.equal(history.redo.length, 0);
 });
 
 test("capture toolbar follows the selection, flips above, and stays on screen", () => {

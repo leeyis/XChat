@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XChat · 应用界面套件</title>
+  <link rel="stylesheet" href="../../colors_and_type.css">
+  <link rel="stylesheet" href="shared.css">
+  <style>
+    body{overflow:auto}
+    .kit{width:min(1180px,calc(100% - 32px));margin:0 auto;padding:48px 0 64px}
+    .kit-head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:28px;margin-bottom:28px}
+    .eyebrow{margin:0 0 8px;color:var(--accent);font:600 var(--text-meta)/1.2 var(--font-mono);letter-spacing:.1em;text-transform:uppercase}
+    h1{max-width:780px;margin:0 0 10px;font:600 clamp(2.2rem,5vw,4.8rem)/1.02 var(--font-display);letter-spacing:-.045em}
+    .lede{max-width:720px;margin:0;color:var(--muted);font-size:var(--text-panel)}
+    .kit-links{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}
+    .kit-links a{text-decoration:none}
+    .system-strip{display:grid;grid-template-columns:repeat(4,1fr);overflow:hidden;margin-bottom:22px;border:1px solid var(--border);border-radius:var(--radius-xl);background:var(--surface)}
+    .system-strip div{padding:16px;border-right:1px solid var(--border)}.system-strip div:last-child{border-right:0}
+    .system-strip strong{display:block;margin-bottom:4px}.system-strip span{color:var(--muted);font-size:var(--text-compact)}
+    .screen-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+    .screen-card{display:flex;min-width:0;flex-direction:column;overflow:hidden;border:1px solid var(--border);border-radius:var(--radius-xl);background:var(--surface);text-decoration:none;transition:transform var(--duration-enter) var(--ease-out),box-shadow var(--duration-enter) var(--ease-out)}
+    .screen-card:hover{transform:translateY(-3px);box-shadow:var(--shadow-1)}
+    .screen-visual{height:220px;padding:18px;background:var(--bg)}
+    .mini-shell{display:grid;grid-template-columns:22px 76px 1fr;height:100%;overflow:hidden;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface)}
+    .mini-rail{background:var(--rail)}.mini-list{border-right:1px solid var(--border);background:color-mix(in oklch,var(--bg) 92%,var(--surface))}
+    .mini-main{position:relative;padding:14px}.mini-main i,.mini-list i{display:block;height:7px;margin:8px;border-radius:4px;background:var(--border)}
+    .mini-main i:nth-child(2){width:55%;background:var(--accent)}.mini-main i:nth-child(3){width:72%}.mini-main i:nth-child(4){position:absolute;right:12px;bottom:12px;width:42%;height:32px;background:var(--accent)}
+    .file-mini{display:grid;gap:8px}.file-mini i{display:block;height:34px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface)}.file-mini i:nth-child(2){box-shadow:inset 4px 0 var(--accent)}
+    .ai-mini{display:grid;gap:8px}.ai-mini i{display:block;height:40px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface)}.ai-mini i:nth-child(3){border-color:color-mix(in oklch,var(--danger) 55%,var(--border))}
+    .screen-copy{display:flex;flex:1;flex-direction:column;padding:18px}.screen-copy h2{margin:0 0 7px;font-size:var(--text-page)}.screen-copy p{margin:0 0 16px;color:var(--muted)}.screen-copy span{margin-top:auto;color:var(--accent);font-weight:600}
+    @media(max-width:860px){.kit-head{grid-template-columns:1fr}.kit-links{justify-content:flex-start}.screen-grid{grid-template-columns:1fr}.system-strip{grid-template-columns:repeat(2,1fr)}.system-strip div:nth-child(2){border-right:0}.system-strip div:nth-child(-n+2){border-bottom:1px solid var(--border)}}
+  </style>
+</head>
+<body>
+  <main class="kit" data-od-id="ui-kit-launcher">
+    <header class="kit-head">
+      <div><p class="eyebrow">XChat · Applied UI Kit</p><h1 data-od-id="ui-kit-title">局域网沟通，状态始终说清楚</h1><p class="lede">三个可操作表面共享相同身份、传输、反馈和响应语言；从工作流进入，而不是从孤立组件拼装。</p></div>
+      <nav class="kit-links" aria-label="套件链接"><a class="button secondary" href="../../DESIGN.md">设计规范</a><a class="button primary" href="components.html">组件速查</a></nav>
+    </header>
+    <section class="system-strip" aria-label="系统摘要">
+      <div><strong>稳定身份</strong><span>备注 + 主机名 + MAC</span></div>
+      <div><strong>完整传输</strong><span>阶段 + 进度 + 动作</span></div>
+      <div><strong>单一强调</strong><span>XChat 绿只标当前</span></div>
+      <div><strong>桌面骨架</strong><span>56 / 280 / 1fr / 240</span></div>
+    </section>
+    <section class="screen-grid" aria-label="应用页面">
+      <a class="screen-card" href="chat-workspace.html" data-od-id="kit-card-chat">
+        <div class="screen-visual"><div class="mini-shell"><div class="mini-rail"></div><div class="mini-list"><i></i><i></i><i></i><i></i></div><div class="mini-main"><i></i><i></i><i></i><i></i></div></div></div>
+        <div class="screen-copy"><h2>聊天工作台</h2><p>会话选择、消息收据、设备身份、文件传输和完整输入器。</p><span>打开工作台 →</span></div>
+      </a>
+      <a class="screen-card" href="file-center.html" data-od-id="kit-card-files">
+        <div class="screen-visual"><div class="mini-shell"><div class="mini-rail"></div><div class="mini-list"><i></i><i></i><i></i></div><div class="mini-main file-mini"><i></i><i></i><i></i><i></i></div></div></div>
+        <div class="screen-copy"><h2>文件中心</h2><p>按来源、类型和搜索联合筛选，并完成预览、定位与删除。</p><span>打开文件中心 →</span></div>
+      </a>
+      <a class="screen-card" href="ai-diagnostics.html" data-od-id="kit-card-ai">
+        <div class="screen-visual"><div class="mini-shell"><div class="mini-rail"></div><div class="mini-list"><i></i><i></i><i></i></div><div class="mini-main ai-mini"><i></i><i></i><i></i></div></div></div>
+        <div class="screen-copy"><h2>AI 网络诊断</h2><p>把思考、工具调用、错误结果与模型选择保持在同一结构中。</p><span>打开诊断界面 →</span></div>
+      </a>
+    </section>
+  </main>
+</body>
+</html>

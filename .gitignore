@@ -41,3 +41,4 @@ test_compile.sh
 lanchat-release.keystore
 lanclaw
 copy.sh
+.gstack/

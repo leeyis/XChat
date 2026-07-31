@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XChat · 圆角与阴影</title>
+  <link rel="stylesheet" href="preview.css">
+  <style>
+    .radius-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+    .radius-sample{display:grid;place-items:center;aspect-ratio:1.4;border:1px solid var(--border);border-radius:var(--r);background:color-mix(in oklch,var(--accent) 8%,var(--surface));color:var(--accent);font:var(--text-meta)/1 var(--font-mono)}
+    .shadow-demo{display:grid;grid-template-columns:repeat(2,1fr);gap:24px;padding:28px;background:var(--bg)}
+    .shadow-card{min-height:150px;padding:18px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface);box-shadow:var(--shadow)}
+    .bubbles{display:grid;gap:14px}
+    .bubble{width:min(300px,80%);padding:10px 12px;background:var(--surface);box-shadow:0 1px 1px color-mix(in oklch,var(--fg) 6%,transparent)}
+    .bubble.received{border-radius:12px 12px 12px 4px}
+    .bubble.sent{justify-self:end;border-radius:12px 12px 4px 12px;background:var(--accent);color:var(--on-accent)}
+    @media(max-width:650px){.radius-grid{grid-template-columns:repeat(2,1fr)}.shadow-demo{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <main class="preview-page" data-od-id="radius-shadow-preview">
+    <header class="preview-head">
+      <div><p class="eyebrow">视觉基础 04</p><h1>圆角与阴影</h1><p class="lede">圆角软化桌面控件；阴影只解释层级，不把普通分区悬浮起来。</p></div>
+    </header>
+    <section class="grid">
+      <article class="panel">
+        <h2>圆角标尺</h2><hr class="rule">
+        <div class="radius-grid">
+          <div class="radius-sample" style="--r:var(--radius-xs)">5</div>
+          <div class="radius-sample" style="--r:var(--radius-sm)">7</div>
+          <div class="radius-sample" style="--r:var(--radius-md)">9</div>
+          <div class="radius-sample" style="--r:var(--radius-lg)">10</div>
+          <div class="radius-sample" style="--r:var(--radius-xl)">12</div>
+          <div class="radius-sample" style="--r:var(--radius-pill)">胶囊</div>
+        </div>
+      </article>
+      <article class="panel wide">
+        <h2>方向性气泡</h2><p class="caption">靠近发送者一侧保留 4px 尾角。</p><hr class="rule">
+        <div class="bubbles"><div class="bubble received">我已通过局域网自动发现这台设备。</div><div class="bubble sent">收到，我把季度报告发给你。</div></div>
+        <hr class="rule">
+        <div class="shadow-demo">
+          <div class="shadow-card" style="--shadow:var(--shadow-1)"><strong>轻抬升</strong><p class="caption">文件卡片、图片消息</p></div>
+          <div class="shadow-card" style="--shadow:var(--shadow-2)"><strong>浮层</strong><p class="caption">模态框、Emoji 面板</p></div>
+        </div>
+      </article>
+    </section>
+  </main>
+</body>
+</html>
+

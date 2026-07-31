@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XChat · 文件中心</title>
+  <link rel="stylesheet" href="shared.css">
+</head>
+<body>
+  <section class="app-shell" data-od-id="file-center-screen">
+    <aside class="rail" data-od-id="files-primary-navigation">
+      <button class="profile-button" type="button" aria-label="我的设备">E<span class="presence"></span></button>
+      <nav class="rail-nav" aria-label="主要功能">
+        <a class="rail-button" href="chat-workspace.html" aria-label="会话"><svg class="icon large"><use href="../../build/xchat-icons.svg#icon-chat"></use></svg></a>
+        <a class="rail-button" href="components.html" aria-label="设备与组件"><svg class="icon large"><use href="../../build/xchat-icons.svg#icon-device"></use></svg></a>
+        <a class="rail-button active" href="file-center.html" aria-label="文件"><svg class="icon large"><use href="../../build/xchat-icons.svg#icon-folder"></use></svg></a>
+      </nav>
+      <div class="rail-bottom"><button class="rail-button" id="themeButton" type="button" aria-label="切换深色主题"><svg class="icon large"><use href="../../build/xchat-icons.svg#icon-settings"></use></svg></button></div>
+    </aside>
+
+    <aside class="list-pane" data-od-id="file-source-list">
+      <div class="list-head">
+        <label class="search-field"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-search"></use></svg><input class="search" id="fileSearch" placeholder="搜索文件或来源"></label>
+      </div>
+      <div class="list-scroll" id="sourceList">
+        <button class="source-row selected" type="button" data-source="all"><span class="avatar" style="--avatar:var(--avatar-7)"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-folder"></use></svg></span><span class="row-main"><span class="row-name">全部文件</span><span class="preview-line">所有设备与群聊</span></span><span class="meta">8</span></button>
+        <div class="list-group">群聊</div>
+        <button class="source-row" type="button" data-source="group"><span class="avatar" style="--avatar:var(--avatar-5)">产</span><span class="row-main"><span class="row-name">产品设计组</span><span class="preview-line">群聊</span></span><span class="meta">3</span></button>
+        <div class="list-group">设备与联系人</div>
+        <button class="source-row" type="button" data-source="zhang"><span class="avatar" style="--avatar:var(--avatar-3)">张</span><span class="row-main"><span class="row-name">张三</span><span class="preview-line">zhang-mbp</span></span><span class="meta">3</span></button>
+        <button class="source-row" type="button" data-source="mac"><span class="avatar" style="--avatar:var(--avatar-7)">M</span><span class="row-main"><span class="row-name">MacBook-Pro</span><span class="preview-line">192.168.1.17</span></span><span class="meta">1</span></button>
+        <button class="source-row" type="button" data-source="ai"><span class="avatar" style="--avatar:var(--avatar-6)">AI</span><span class="row-main"><span class="row-name">LANClaw</span><span class="preview-line">网络诊断助手</span></span><span class="meta">1</span></button>
+      </div>
+    </aside>
+
+    <main class="file-workspace" data-od-id="shared-file-workspace">
+      <header class="workspace-head">
+        <div><div class="workspace-title" id="fileTitle">全部文件</div><div class="workspace-subtitle" id="fileCount">8 个项目</div></div>
+        <button class="icon-button" id="refreshButton" type="button" aria-label="刷新文件"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-refresh"></use></svg></button>
+      </header>
+      <nav class="kind-bar" id="kindBar" aria-label="文件类型">
+        <button class="kind-chip active" type="button" data-kind="all">全部</button>
+        <button class="kind-chip" type="button" data-kind="image">图片</button>
+        <button class="kind-chip" type="button" data-kind="document">文档</button>
+        <button class="kind-chip" type="button" data-kind="audio">音频</button>
+        <button class="kind-chip" type="button" data-kind="video">视频</button>
+        <button class="kind-chip" type="button" data-kind="other">其他</button>
+      </nav>
+      <div class="file-results" id="fileResults">
+        <div class="file-table" data-od-id="shared-file-table">
+          <article class="file-row" data-file data-id="screen" data-kind="image" data-source="zhang" data-name="网络设置截图.png" data-size="3.8 MB" data-time="今天 14:28">
+            <span class="file-type image"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-image"></use></svg></span><div class="file-cell"><div class="file-primary">网络设置截图.png</div><div class="file-secondary">张三 发来</div></div><div class="file-source file-source-col"><span class="avatar" style="--avatar:var(--avatar-3)">张</span><span>张三</span></div><div class="file-secondary file-time-col">今天 14:28</div><div class="file-secondary file-size-col">3.8 MB</div><div class="file-actions"><button class="icon-button" type="button" data-preview aria-label="在线预览"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-eye"></use></svg></button><button class="icon-button" type="button" data-folder aria-label="打开所在文件夹"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-folder"></use></svg></button><button class="icon-button" type="button" data-delete aria-label="删除文件"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-trash"></use></svg></button></div>
+          </article>
+          <article class="file-row" data-file data-id="pdf" data-kind="document" data-source="group" data-name="XChat 产品需求说明.pdf" data-size="2.4 MB" data-time="今天 10:26">
+            <span class="file-type"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-file"></use></svg></span><div class="file-cell"><div class="file-primary">XChat 产品需求说明.pdf</div><div class="file-secondary">群聊文件</div></div><div class="file-source file-source-col"><span class="avatar" style="--avatar:var(--avatar-5)">产</span><span>产品设计组</span></div><div class="file-secondary file-time-col">今天 10:26</div><div class="file-secondary file-size-col">2.4 MB</div><div class="file-actions"><button class="icon-button" type="button" data-preview aria-label="在线预览"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-eye"></use></svg></button><button class="icon-button" type="button" data-folder aria-label="打开所在文件夹"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-folder"></use></svg></button><button class="icon-button" type="button" data-delete aria-label="删除文件"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-trash"></use></svg></button></div>
+          </article>
+          <article class="file-row" data-file data-id="audio" data-kind="audio" data-source="group" data-name="局域网会议录音.m4a" data-size="18.6 MB" data-time="昨天 18:42">
+            <span class="file-type"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-audio"></use></svg></span><div class="file-cell"><div class="file-primary">局域网会议录音.m4a</div><div class="file-secondary">设计主机 发来</div></div><div class="file-source file-source-col"><span class="avatar" style="--avatar:var(--avatar-5)">产</span><span>产品设计组</span></div><div class="file-secondary file-time-col">昨天 18:42</div><div class="file-secondary file-size-col">18.6 MB</div><div class="file-actions"><button class="icon-button" type="button" data-preview aria-label="在线预览"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-eye"></use></svg></button><button class="icon-button" type="button" data-folder aria-label="打开所在文件夹"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-folder"></use></svg></button><button class="icon-button" type="button" data-delete aria-label="删除文件"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-trash"></use></svg></button></div>
+          </article>
+          <article class="file-row" data-file data-id="video" data-kind="video" data-source="mac" data-name="设备发现演示.mp4" data-size="84.2 MB" data-time="昨天 16:08">
+            <span class="file-type"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-video"></use></svg></span><div class="file-cell"><div class="file-primary">设备发现演示.mp4</div><div class="file-secondary">我发送</div></div><div class="file-source file-source-col"><span class="avatar" style="--avatar:var(--avatar-7)">M</span><span>MacBook-Pro</span></div><div class="file-secondary file-time-col">昨天 16:08</div><div class="file-secondary file-size-col">84.2 MB</div><div class="file-actions"><button class="icon-button" type="button" data-preview aria-label="在线预览"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-eye"></use></svg></button><button class="icon-button" type="button" data-folder aria-label="打开所在文件夹"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-folder"></use></svg></button><button class="icon-button" type="button" data-delete aria-label="删除文件"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-trash"></use></svg></button></div>
+          </article>
+          <article class="file-row" data-file data-id="sheet" data-kind="document" data-source="zhang" data-name="设备清单.xlsx" data-size="326 KB" data-time="周一 09:16">
+            <span class="file-type"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-file"></use></svg></span><div class="file-cell"><div class="file-primary">设备清单.xlsx</div><div class="file-secondary">我发送</div></div><div class="file-source file-source-col"><span class="avatar" style="--avatar:var(--avatar-3)">张</span><span>张三</span></div><div class="file-secondary file-time-col">周一 09:16</div><div class="file-secondary file-size-col">326 KB</div><div class="file-actions"><button class="icon-button" type="button" data-preview aria-label="在线预览"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-eye"></use></svg></button><button class="icon-button" type="button" data-folder aria-label="打开所在文件夹"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-folder"></use></svg></button><button class="icon-button" type="button" data-delete aria-label="删除文件"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-trash"></use></svg></button></div>
+          </article>
+          <article class="file-row" data-file data-id="log" data-kind="other" data-source="ai" data-name="诊断日志.zip" data-size="6.4 MB" data-time="7月23日">
+            <span class="file-type"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-file"></use></svg></span><div class="file-cell"><div class="file-primary">诊断日志.zip</div><div class="file-secondary">LANClaw 发来</div></div><div class="file-source file-source-col"><span class="avatar" style="--avatar:var(--avatar-6)">AI</span><span>LANClaw</span></div><div class="file-secondary file-time-col">7月23日</div><div class="file-secondary file-size-col">6.4 MB</div><div class="file-actions"><button class="icon-button" type="button" data-folder aria-label="打开所在文件夹"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-folder"></use></svg></button><button class="icon-button" type="button" data-delete aria-label="删除文件"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-trash"></use></svg></button></div>
+          </article>
+        </div>
+        <div class="file-empty" id="fileEmpty" hidden><div><svg class="icon large" style="margin:0 auto 12px"><use href="../../build/xchat-icons.svg#icon-folder"></use></svg><strong>没有符合条件的文件</strong><p>调整类型、来源或搜索条件后再试。</p></div></div>
+      </div>
+    </main>
+    <aside class="info-pane"></aside>
+  </section>
+
+  <div class="backdrop" id="previewModal" aria-hidden="true">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="previewTitle">
+      <header class="modal-head"><div><strong id="previewTitle">文件预览</strong><div class="meta" id="previewMeta"></div></div><button class="icon-button" id="previewClose" type="button" aria-label="关闭">×</button></header>
+      <div class="modal-body"><div class="preview-stage" id="previewStage"></div></div>
+      <footer class="modal-foot"><button class="button secondary" id="previewFolder" type="button">打开所在文件夹</button><button class="button primary" id="previewDone" type="button">完成</button></footer>
+    </section>
+  </div>
+
+  <div class="backdrop" id="deleteModal" aria-hidden="true">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="deleteTitle">
+      <header class="modal-head"><strong id="deleteTitle">删除这个文件？</strong><button class="icon-button" id="deleteClose" type="button" aria-label="关闭">×</button></header>
+      <div class="modal-body"><p id="deleteText">将从本机删除文件，聊天记录仍会保留文件消息。</p></div>
+      <footer class="modal-foot"><button class="button secondary" id="deleteCancel" type="button">取消</button><button class="button danger" id="deleteConfirm" type="button">删除文件</button></footer>
+    </section>
+  </div>
+
+  <div class="toast" id="toast" role="status">文件列表已刷新</div>
+
+  <script>
+    const rows = [...document.querySelectorAll("[data-file]")];
+    const sourceButtons = [...document.querySelectorAll("[data-source]")];
+    const kindButtons = [...document.querySelectorAll("[data-kind]")];
+    const search = document.getElementById("fileSearch");
+    const fileCount = document.getElementById("fileCount");
+    const fileTitle = document.getElementById("fileTitle");
+    const fileEmpty = document.getElementById("fileEmpty");
+    const toast = document.getElementById("toast");
+    let activeSource = "all";
+    let activeKind = "all";
+    let activeRow = null;
+    let toastTimer;
+
+    function showToast(message) {
+      toast.textContent = message;
+      toast.classList.add("show");
+      window.clearTimeout(toastTimer);
+      toastTimer = window.setTimeout(() => toast.classList.remove("show"), 2200);
+    }
+
+    function applyFilters() {
+      const query = search.value.trim().toLowerCase();
+      let count = 0;
+      rows.forEach((row) => {
+        const matchesSource = activeSource === "all" || row.dataset.source === activeSource;
+        const matchesKind = activeKind === "all" || row.dataset.kind === activeKind;
+        const matchesQuery = row.dataset.name.toLowerCase().includes(query) || row.textContent.toLowerCase().includes(query);
+        const visible = row.isConnected && matchesSource && matchesKind && matchesQuery;
+        row.hidden = !visible;
+        if (visible) count += 1;
+      });
+      fileCount.textContent = `${count} 个项目`;
+      fileEmpty.hidden = count !== 0;
+      document.querySelector(".file-table").hidden = count === 0;
+    }
+
+    sourceButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        activeSource = button.dataset.source;
+        sourceButtons.forEach((item) => item.classList.toggle("selected", item === button));
+        fileTitle.textContent = button.querySelector(".row-name").textContent;
+        applyFilters();
+      });
+    });
+
+    kindButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        activeKind = button.dataset.kind;
+        kindButtons.forEach((item) => item.classList.toggle("active", item === button));
+        if (activeSource === "all") fileTitle.textContent = activeKind === "all" ? "全部文件" : `${button.textContent}文件`;
+        applyFilters();
+      });
+    });
+
+    search.addEventListener("input", applyFilters);
+
+    function openBackdrop(id) {
+      const layer = document.getElementById(id);
+      layer.classList.add("open");
+      layer.setAttribute("aria-hidden", "false");
+    }
+
+    function closeBackdrop(id) {
+      const layer = document.getElementById(id);
+      layer.classList.remove("open");
+      layer.setAttribute("aria-hidden", "true");
+    }
+
+    function openPreview(row) {
+      activeRow = row;
+      document.getElementById("previewTitle").textContent = row.dataset.name;
+      document.getElementById("previewMeta").textContent = `${row.dataset.size} · ${row.dataset.time}`;
+      const stage = document.getElementById("previewStage");
+      stage.replaceChildren();
+      if (row.dataset.kind === "image") {
+        const image = document.createElement("img");
+        image.src = "../../assets/xchat-desktop-reference.png";
+        image.alt = `${row.dataset.name} 图片预览`;
+        stage.append(image);
+      } else {
+        const card = document.createElement("div");
+        card.style.cssText = "width:min(420px,82%);padding:38px;border:1px solid var(--border);background:var(--surface);box-shadow:var(--shadow-2)";
+        const title = document.createElement("h3");
+        title.style.fontFamily = "var(--font-display)";
+        title.textContent = row.dataset.name;
+        const note = document.createElement("p");
+        note.className = "meta";
+        note.textContent = row.dataset.kind === "audio" ? "音频预览 · 02:18 / 05:42" : row.dataset.kind === "video" ? "视频预览 · 00:48" : "文档在线预览 · 第 1 页";
+        card.append(title, note);
+        stage.append(card);
+      }
+      openBackdrop("previewModal");
+    }
+
+    rows.forEach((row) => {
+      row.querySelector("[data-preview]")?.addEventListener("click", () => openPreview(row));
+      row.querySelector("[data-folder]").addEventListener("click", () => showToast(`已打开「${row.dataset.name}」所在文件夹`));
+      row.querySelector("[data-delete]").addEventListener("click", () => {
+        activeRow = row;
+        document.getElementById("deleteText").textContent = `将从本机删除「${row.dataset.name}」，聊天记录仍会保留文件消息。`;
+        openBackdrop("deleteModal");
+      });
+    });
+
+    document.getElementById("deleteConfirm").addEventListener("click", () => {
+      if (activeRow) {
+        const name = activeRow.dataset.name;
+        activeRow.remove();
+        closeBackdrop("deleteModal");
+        applyFilters();
+        showToast(`已删除「${name}」`);
+      }
+    });
+
+    document.getElementById("previewClose").addEventListener("click", () => closeBackdrop("previewModal"));
+    document.getElementById("previewDone").addEventListener("click", () => closeBackdrop("previewModal"));
+    document.getElementById("previewFolder").addEventListener("click", () => showToast(`已打开「${activeRow?.dataset.name || "文件"}」所在文件夹`));
+    document.getElementById("deleteClose").addEventListener("click", () => closeBackdrop("deleteModal"));
+    document.getElementById("deleteCancel").addEventListener("click", () => closeBackdrop("deleteModal"));
+    document.getElementById("refreshButton").addEventListener("click", () => {
+      applyFilters();
+      showToast("文件列表已刷新");
+    });
+    document.getElementById("themeButton").addEventListener("click", () => {
+      const dark = document.documentElement.dataset.theme === "dark";
+      document.documentElement.dataset.theme = dark ? "light" : "dark";
+      showToast(dark ? "已切换浅色主题" : "已切换深色主题");
+    });
+  </script>
+</body>
+</html>

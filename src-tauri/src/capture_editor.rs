@@ -26,6 +26,50 @@ struct CaptureState {
     pin: Option<CaptureFile>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PinOrigin {
+    Editor,
+    ExistingPin,
+}
+
+fn pin_source(state: &CaptureState) -> Result<(CaptureFile, PinOrigin), String> {
+    if let Some(editor) = state.editor.clone() {
+        Ok((editor, PinOrigin::Editor))
+    } else if let Some(pin) = state.pin.clone() {
+        Ok((pin, PinOrigin::ExistingPin))
+    } else {
+        Err("没有待处理的截图".to_string())
+    }
+}
+
+fn replace_pin(
+    state: &mut CaptureState,
+    origin: PinOrigin,
+    source_session_id: &str,
+    pin: CaptureFile,
+) -> Result<(Option<CaptureFile>, Option<CaptureFile>), String> {
+    let editor = match origin {
+        PinOrigin::Editor => {
+            if state.editor.as_ref().map(|item| item.session_id.as_str())
+                != Some(source_session_id)
+            {
+                return Err("截图编辑会话已变化".to_string());
+            }
+            state.editor.take()
+        }
+        PinOrigin::ExistingPin => {
+            if state.editor.is_some()
+                || state.pin.as_ref().map(|item| item.session_id.as_str())
+                    != Some(source_session_id)
+            {
+                return Err("钉图会话已变化".to_string());
+            }
+            None
+        }
+    };
+    Ok((state.pin.replace(pin), editor))
+}
+
 struct TempCapturePath(Option<PathBuf>);
 
 impl TempCapturePath {
@@ -756,45 +800,41 @@ pub async fn pin(
     data_url: String,
 ) -> Result<CaptureSessionSummary, String> {
     let (bytes, width, height) = png_from_data_url(&data_url)?;
-    let editor = lock_state()?
-        .editor
-        .clone()
-        .ok_or_else(|| "没有待处理的截图".to_string())?;
+    let (source, origin) = {
+        let state = lock_state()?;
+        pin_source(&state)?
+    };
+    let existing_window = app.get_webview_window("capture-pin");
+    if origin == PinOrigin::ExistingPin && existing_window.is_none() {
+        return Err("钉图窗口不可用".to_string());
+    }
     let capture_dir = std::env::temp_dir().join("xchat-captures");
     tokio::fs::create_dir_all(&capture_dir)
         .await
         .map_err(|error| format!("创建截图缓存目录失败: {error}"))?;
     let session_id = uuid::Uuid::new_v4().to_string();
     let path = capture_dir.join(format!("pin-{session_id}.png"));
+    let mut temp_path = TempCapturePath::new(path.clone());
     tokio::fs::write(&path, &bytes)
         .await
         .map_err(|error| format!("保存钉图失败: {error}"))?;
     let pin = CaptureFile {
         session_id,
-        conversation_id: editor.conversation_id.clone(),
+        conversation_id: source.conversation_id.clone(),
         path,
-        file_name: "capture.png".to_string(),
+        file_name: source.file_name.clone(),
         file_size: bytes.len() as u64,
         width,
         height,
     };
-    clear_pin();
-    {
-        let mut state = lock_state()?;
-        state.pin = Some(pin.clone());
-    }
 
     let (window_width, window_height) = window_size(width, height, 960.0, 720.0);
-    if let Some(window) = app.get_webview_window("capture-pin") {
-        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
-            window_width,
-            window_height,
-        )));
-        let _ = window.show();
-        let _ = window.set_focus();
-        let _ = window.emit("capture-pin-updated", capture_summary(&pin));
+    let mut created_window = false;
+    let window = if let Some(window) = existing_window {
+        window
     } else {
-        let window = match WebviewWindowBuilder::new(
+        created_window = true;
+        match WebviewWindowBuilder::new(
             app,
             "capture-pin",
             WebviewUrl::App("index.html?view=capture-pin".into()),
@@ -804,33 +844,62 @@ pub async fn pin(
         .center()
         .resizable(true)
         .decorations(false)
+        .transparent(true)
         .always_on_top(true)
         .skip_taskbar(true)
+        .visible(false)
         .build()
         {
             Ok(window) => window,
-            Err(error) => {
-                clear_pin();
-                return Err(format!("打开钉图窗口失败: {error}"));
+            Err(error) => return Err(format!("打开钉图窗口失败: {error}")),
+        }
+    };
+    if let Err(error) = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
+        window_width,
+        window_height,
+    ))) {
+        if created_window {
+            let _ = window.close();
+        }
+        return Err(format!("调整钉图窗口失败: {error}"));
+    }
+
+    let (replaced_pin, editor) = match lock_state()
+        .and_then(|mut state| replace_pin(&mut state, origin, &source.session_id, pin.clone()))
+    {
+        Ok(replaced) => replaced,
+        Err(error) => {
+            if created_window {
+                let _ = window.close();
             }
-        };
+            return Err(error);
+        }
+    };
+    if created_window {
         window.on_window_event(|event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 clear_pin();
             }
         });
     }
-    {
-        let mut state = lock_state()?;
-        if state.editor.as_ref().map(|item| &item.session_id) == Some(&editor.session_id) {
-            state.editor = None;
+    temp_path.disarm();
+    if let Some(previous) = replaced_pin {
+        remove_file(&previous.path);
+    }
+    if let Some(editor) = &editor {
+        remove_file(&editor.path);
+    }
+
+    let _ = window.show();
+    let _ = window.set_focus();
+    let _ = window.emit("capture-pin-updated", capture_summary(&pin));
+
+    if origin == PinOrigin::Editor {
+        if let Some(window) = app.get_webview_window("capture-editor") {
+            let _ = window.close();
         }
+        restore_main_window(app);
     }
-    remove_file(&editor.path);
-    if let Some(window) = app.get_webview_window("capture-editor") {
-        let _ = window.close();
-    }
-    restore_main_window(app);
     Ok(capture_summary(&pin))
 }
 
@@ -912,6 +981,39 @@ mod tests {
         assert!(validate_pin_scale(0.19).is_err());
         assert!(validate_pin_scale(3.01).is_err());
         assert!(validate_pin_scale(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn pin_replacement_prefers_editor_and_can_update_an_existing_pin() {
+        let capture = |session_id: &str| CaptureFile {
+            session_id: session_id.to_string(),
+            conversation_id: Some("conversation".to_string()),
+            path: PathBuf::from(format!("{session_id}.png")),
+            file_name: "capture.png".to_string(),
+            file_size: 24,
+            width: 1,
+            height: 1,
+        };
+        let mut state = CaptureState {
+            editor: Some(capture("editor")),
+            pin: Some(capture("old-pin")),
+        };
+
+        let (source, origin) = pin_source(&state).unwrap();
+        assert_eq!(origin, PinOrigin::Editor);
+        let (old_pin, editor) =
+            replace_pin(&mut state, origin, &source.session_id, capture("new-pin")).unwrap();
+        assert_eq!(old_pin.unwrap().session_id, "old-pin");
+        assert_eq!(editor.unwrap().session_id, "editor");
+        assert_eq!(state.pin.as_ref().unwrap().session_id, "new-pin");
+
+        let (source, origin) = pin_source(&state).unwrap();
+        assert_eq!(origin, PinOrigin::ExistingPin);
+        let (old_pin, editor) =
+            replace_pin(&mut state, origin, &source.session_id, capture("updated-pin")).unwrap();
+        assert_eq!(old_pin.unwrap().session_id, "new-pin");
+        assert!(editor.is_none());
+        assert_eq!(state.pin.as_ref().unwrap().session_id, "updated-pin");
     }
 
     #[test]

@@ -15,6 +15,15 @@
   user-select: none;
 }
 
+.capture-editor,
+.capture-screen,
+.capture-stage,
+.capture-selection,
+.capture-handle {
+  transition: none !important;
+  animation: none !important;
+}
+
 .capture-screen {
   position: absolute;
   z-index: 0;
@@ -90,6 +99,10 @@
 
 .capture-selection.drawing {
   cursor: crosshair;
+}
+
+.capture-selection.drawing.tool-text {
+  cursor: text;
 }
 
 .capture-selection canvas {
@@ -206,14 +219,14 @@
 .capture-text-input {
   position: absolute;
   z-index: 12;
+  box-sizing: border-box;
   min-width: 0;
   max-width: calc(100% - 12px);
-  padding: 5px 8px;
+  padding: 5px 74px 5px 8px;
   transform: translateY(-2px);
-  border: 1px solid currentColor;
+  border: 1px solid rgb(255 255 255 / 0.3);
   border-radius: 5px;
-  outline: 2px solid rgb(255 255 255 / 0.5);
-  outline-offset: 1px;
+  outline: 0;
   background: rgb(10 10 10 / 0.72);
   box-shadow: 0 5px 18px rgb(0 0 0 / 0.32);
   caret-color: currentColor;
@@ -222,6 +235,68 @@
   line-height: 1.25;
   pointer-events: auto;
   user-select: text;
+}
+
+.capture-text-drag-handle {
+  position: static;
+  z-index: 13;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: rgb(255 255 255 / 0.16);
+  color: rgb(255 255 255 / 0.9);
+  cursor: grab;
+  font: 700 18px/1 -apple-system, BlinkMacSystemFont, sans-serif;
+  touch-action: none;
+}
+
+.capture-text-delete-button {
+  position: static;
+  z-index: 13;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: rgb(255 255 255 / 0.12);
+  color: rgb(255 255 255 / 0.9);
+  cursor: pointer;
+}
+
+.capture-text-controls {
+  position: absolute;
+  z-index: 13;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  pointer-events: auto;
+}
+
+.capture-text-delete-button:hover,
+.capture-text-delete-button:focus-visible {
+  outline: 0;
+  background: rgb(220 70 70 / 0.78);
+}
+
+.capture-text-delete-button svg {
+  width: 17px;
+  height: 17px;
+}
+
+.capture-text-drag-handle:hover,
+.capture-text-drag-handle:focus-visible {
+  outline: 0;
+  background: rgb(255 255 255 / 0.28);
+}
+
+.capture-text-drag-handle:active {
+  cursor: grabbing;
 }
 
 .capture-text-input::placeholder {
@@ -423,9 +498,7 @@
   color: white;
   font-size: 20px;
   opacity: 0;
-  transition:
-    opacity 120ms ease,
-    background 120ms ease;
+  transition: none;
 }
 
 .capture-pin:hover > .capture-pin-close,
@@ -456,6 +529,41 @@
   color: #25282d;
   cursor: default;
   backdrop-filter: blur(18px);
+}
+
+.capture-pin-editing .capture-screen {
+  inset: 0 auto auto 0;
+  width: 100%;
+  height: var(--capture-pin-image-height);
+  object-fit: fill;
+}
+
+.capture-pin-editing,
+.capture-pin-editing .capture-stage {
+  background: transparent;
+}
+
+.capture-pin-editing .capture-stage {
+  inset: 0 auto auto 0;
+  width: 100%;
+  height: var(--capture-pin-image-height);
+  overflow: visible;
+}
+
+.capture-pin-editing .capture-selection {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.capture-pin-editing .capture-toolbar {
+  position: fixed;
+  bottom: auto;
+  transform: none;
+}
+
+.capture-pin-editing .capture-toolbar .capture-style-panel {
+  bottom: calc(100% + 7px);
+  top: auto;
 }
 
 .capture-pin-toolbar > span {
@@ -581,8 +689,8 @@
 @media (prefers-reduced-motion: no-preference) {
   .capture-toolbar,
   .capture-style-panel,
-  .capture-pin-menu,
-  .capture-pin-toolbar {
+  .capture-pin-toolbar,
+  .capture-pin-menu {
     animation: capture-pop 120ms ease-out;
   }
 }

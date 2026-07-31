@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XChat · 聊天工作台</title>
+  <link rel="stylesheet" href="shared.css">
+</head>
+<body>
+  <section class="app-shell info-open" id="app" data-od-id="chat-workspace-screen">
+    <aside class="rail" data-od-id="chat-primary-navigation">
+      <button class="profile-button" type="button" aria-label="我的设备">E<span class="presence"></span></button>
+      <nav class="rail-nav" aria-label="主要功能">
+        <a class="rail-button active" href="chat-workspace.html" aria-label="会话">
+          <svg class="icon large"><use href="../../build/xchat-icons.svg#icon-chat"></use></svg><span class="badge">2</span>
+        </a>
+        <a class="rail-button" href="components.html" aria-label="设备与组件">
+          <svg class="icon large"><use href="../../build/xchat-icons.svg#icon-device"></use></svg>
+        </a>
+        <a class="rail-button" href="file-center.html" aria-label="文件">
+          <svg class="icon large"><use href="../../build/xchat-icons.svg#icon-folder"></use></svg>
+        </a>
+      </nav>
+      <div class="rail-bottom"><button class="rail-button" id="themeButton" type="button" aria-label="切换深色主题"><svg class="icon large"><use href="../../build/xchat-icons.svg#icon-settings"></use></svg></button></div>
+    </aside>
+
+    <aside class="list-pane" data-od-id="chat-conversation-list">
+      <div class="list-head">
+        <label class="search-field"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-search"></use></svg><input class="search" id="conversationSearch" placeholder="搜索会话、消息或 MAC"></label>
+        <button class="icon-button" id="newGroupButton" type="button" aria-label="新建群聊"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-plus"></use></svg></button>
+      </div>
+      <div class="list-scroll" id="conversationList">
+        <button class="conversation selected" type="button" data-chat-id="zhang" data-name="张三" data-host="zhang-mbp" data-address="192.168.1.42:8888" data-mac="A4:5E:60:7B:21:19">
+          <span class="avatar" style="--avatar:var(--avatar-3)">张</span><span class="row-main"><span class="name-row"><span class="row-name">张三</span><span class="status-dot"></span></span><span class="preview-line">好的，文件收到了</span></span><span class="row-side"><span class="meta">14:32</span><span class="unread">2</span></span>
+        </button>
+        <button class="conversation" type="button" data-chat-id="group" data-name="产品设计组" data-host="3 位成员" data-address="2 台设备在线" data-mac="成员 MAC 唯一标识">
+          <span class="avatar" style="--avatar:var(--avatar-5)">产</span><span class="row-main"><span class="name-row"><span class="row-name">产品设计组</span><span class="tag">群聊</span></span><span class="preview-line">张三：截图已经发到群里</span></span><span class="row-side"><span class="meta">10:26</span><span class="unread">5</span></span>
+        </button>
+        <button class="conversation" type="button" data-chat-id="mac" data-name="MacBook-Pro" data-host="MacBook-Pro" data-address="192.168.1.17:8888" data-mac="38:F9:D3:6A:04:C2">
+          <span class="avatar" style="--avatar:var(--avatar-7)">M</span><span class="row-main"><span class="name-row"><span class="row-name">MacBook-Pro</span><span class="status-dot"></span></span><span class="preview-line">季度报告.pdf</span></span><span class="row-side"><span class="meta">昨天</span></span>
+        </button>
+        <button class="conversation" type="button" data-chat-id="study" data-name="书房台式机" data-host="DESKTOP-STUDY" data-address="192.168.1.68:8888" data-mac="7C:10:C9:44:8E:31">
+          <span class="avatar" style="--avatar:var(--avatar-4)">书</span><span class="row-main"><span class="name-row"><span class="row-name">书房台式机</span><span class="status-dot offline"></span></span><span class="preview-line">[草稿] 那个配置文件…</span></span><span class="row-side"><span class="meta">3天前</span></span>
+        </button>
+        <button class="conversation" type="button" data-chat-id="ai" data-name="LANClaw" data-host="lanclaw.local" data-address="192.168.1.5:8888" data-mac="02:42:AC:11:00:05">
+          <span class="avatar" style="--avatar:var(--avatar-6)">AI</span><span class="row-main"><span class="name-row"><span class="row-name">LANClaw</span><span class="tag ai">AI</span></span><span class="preview-line">已整理网络诊断结果</span></span><span class="row-side"><span class="meta">周一</span></span>
+        </button>
+      </div>
+    </aside>
+
+    <main class="workspace" data-od-id="chat-message-workspace">
+      <header class="workspace-head">
+        <div><div class="workspace-title" id="chatTitle">张三</div><div class="workspace-subtitle" id="chatSubtitle">192.168.1.42:8888 · 在线</div></div>
+        <div class="workspace-actions">
+          <button class="icon-button" id="transferButton" type="button" aria-label="传输中心"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-download"></use></svg></button>
+          <button class="icon-button" id="infoButton" type="button" aria-label="设备信息"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-info"></use></svg></button>
+          <button class="icon-button" type="button" aria-label="更多操作"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-more"></use></svg></button>
+        </div>
+      </header>
+
+      <div class="messages" id="messageList" aria-live="polite">
+        <div class="day-separator">昨天</div>
+        <div class="message"><span class="avatar" style="--avatar:var(--avatar-3)">张</span><div class="message-stack"><div class="bubble">你好，我是 zhang-mbp。这台设备已通过局域网自动发现。</div><span class="message-time">18:06</span></div></div>
+        <div class="message sent"><span class="avatar" style="--avatar:var(--avatar-7)">E</span><div class="message-stack"><div class="bubble">收到，我把季度报告发给你。</div><span class="message-time">18:07 <span class="receipt">已读</span></span></div></div>
+        <div class="day-separator">今天</div>
+        <div class="message"><span class="avatar" style="--avatar:var(--avatar-3)">张</span><div class="message-stack"><div class="bubble">好的，文件收到了。IP 变化后，备注仍然绑定当前 MAC。</div><span class="message-time">14:32</span></div></div>
+      </div>
+
+      <button class="transfer-dock" id="transferDock" type="button" data-od-id="chat-transfer-summary">
+        <svg class="icon"><use href="../../build/xchat-icons.svg#icon-download"></use></svg>
+        <span class="dock-main"><span class="dock-line"><span class="dock-name">季度报告.pdf</span><span class="num">1.2 / 2.4 MB</span></span><span class="progress"><i style="--progress:50%"></i></span></span>
+        <span class="meta">3.2 MB/s · 还有 1 项</span>
+      </button>
+
+      <div class="composer-wrap" data-od-id="chat-message-composer">
+        <div class="composer">
+          <textarea id="messageInput" rows="2" placeholder="输入消息…" aria-label="消息内容"></textarea>
+          <div class="compose-toolbar">
+            <div class="compose-tools">
+              <button class="icon-button" id="emojiButton" type="button" aria-label="插入常用表情"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-emoji"></use></svg></button>
+              <button class="icon-button" id="captureButton" type="button" aria-label="截屏"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-capture"></use></svg></button>
+              <button class="icon-button" id="attachButton" type="button" aria-label="发送文件"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-folder"></use></svg></button>
+              <input id="fileInput" type="file" hidden>
+            </div>
+            <button class="button primary" id="sendButton" type="button" disabled>发送</button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <aside class="info-pane" data-od-id="chat-device-information">
+      <div class="info-scroll">
+        <section class="identity"><span class="avatar" id="identityAvatar" style="--avatar:var(--avatar-3)">张</span><div class="identity-name" id="identityName">张三</div><div class="identity-status"><span class="status-dot"></span>在线</div></section>
+        <dl class="info-section">
+          <div class="kv"><dt>主机名</dt><dd id="identityHost">zhang-mbp</dd></div>
+          <div class="kv"><dt>当前地址</dt><dd class="num" id="identityAddress">192.168.1.42:8888</dd></div>
+          <div class="kv"><dt>MAC 身份</dt><dd class="num" id="identityMac">A4:5E:60:7B:21:19</dd></div>
+          <div class="kv"><dt>发现方式</dt><dd>UDP 自动发现</dd></div>
+          <div class="kv"><dt>最后在线</dt><dd>刚刚</dd></div>
+        </dl>
+        <section class="info-section"><strong>共享文件 · 3</strong><p class="preview-line">季度报告.pdf</p><p class="preview-line">网络设置截图.png</p><p class="preview-line">诊断日志.zip</p></section>
+        <section class="info-section"><button class="button secondary" id="remarkButton" type="button">修改设备备注</button></section>
+      </div>
+    </aside>
+  </section>
+
+  <div class="backdrop" id="transferModal" aria-hidden="true">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="transferTitle">
+      <header class="modal-head"><strong id="transferTitle">传输中心</strong><button class="icon-button close-modal" type="button" aria-label="关闭">×</button></header>
+      <div class="modal-body">
+        <div class="file-row" style="grid-template-columns:44px minmax(0,1fr) 90px">
+          <span class="file-type"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-file"></use></svg></span>
+          <div class="file-cell"><div class="file-primary">季度报告.pdf</div><div class="file-secondary">正在发送 · 1.2 / 2.4 MB · 3.2 MB/s</div><div class="progress" style="margin-top:8px"><i style="--progress:50%"></i></div></div>
+          <button class="button secondary" type="button">取消</button>
+        </div>
+        <div class="file-row" style="grid-template-columns:44px minmax(0,1fr) 90px">
+          <span class="file-type"><svg class="icon"><use href="../../build/xchat-icons.svg#icon-file"></use></svg></span>
+          <div class="file-cell"><div class="file-primary">设计源文件.fig</div><div class="file-secondary">未下载 · 12.8 MB</div></div>
+          <button class="button secondary" type="button">下载</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="toast" id="toast" role="status">操作已完成</div>
+
+  <script>
+    const app = document.getElementById("app");
+    const chatTitle = document.getElementById("chatTitle");
+    const chatSubtitle = document.getElementById("chatSubtitle");
+    const identityName = document.getElementById("identityName");
+    const identityAvatar = document.getElementById("identityAvatar");
+    const identityHost = document.getElementById("identityHost");
+    const identityAddress = document.getElementById("identityAddress");
+    const identityMac = document.getElementById("identityMac");
+    const messageInput = document.getElementById("messageInput");
+    const sendButton = document.getElementById("sendButton");
+    const messageList = document.getElementById("messageList");
+    const toast = document.getElementById("toast");
+    let toastTimer;
+
+    function showToast(message) {
+      toast.textContent = message;
+      toast.classList.add("show");
+      window.clearTimeout(toastTimer);
+      toastTimer = window.setTimeout(() => toast.classList.remove("show"), 2200);
+    }
+
+    document.querySelectorAll("[data-chat-id]").forEach((row) => {
+      row.addEventListener("click", () => {
+        document.querySelectorAll("[data-chat-id]").forEach((item) => item.classList.toggle("selected", item === row));
+        const isGroup = row.dataset.chatId === "group";
+        chatTitle.textContent = row.dataset.name;
+        chatSubtitle.textContent = isGroup ? "3 位成员 · 以 MAC 地址识别身份" : `${row.dataset.address} · ${row.dataset.chatId === "study" ? "离线" : "在线"}`;
+        identityName.textContent = row.dataset.name;
+        identityAvatar.textContent = row.dataset.name.slice(0, 1);
+        identityHost.textContent = row.dataset.host;
+        identityAddress.textContent = row.dataset.address;
+        identityMac.textContent = row.dataset.mac;
+        showToast(`已切换至「${row.dataset.name}」`);
+      });
+    });
+
+    document.getElementById("conversationSearch").addEventListener("input", (event) => {
+      const query = event.target.value.trim().toLowerCase();
+      document.querySelectorAll("[data-chat-id]").forEach((row) => {
+        row.hidden = !row.textContent.toLowerCase().includes(query) && !row.dataset.mac.toLowerCase().includes(query);
+      });
+    });
+
+    document.getElementById("infoButton").addEventListener("click", () => {
+      app.classList.toggle("info-open");
+    });
+
+    document.getElementById("themeButton").addEventListener("click", () => {
+      const dark = document.documentElement.dataset.theme === "dark";
+      document.documentElement.dataset.theme = dark ? "light" : "dark";
+      showToast(dark ? "已切换浅色主题" : "已切换深色主题");
+    });
+
+    function openModal() {
+      const modal = document.getElementById("transferModal");
+      modal.classList.add("open");
+      modal.setAttribute("aria-hidden", "false");
+    }
+
+    function closeModal() {
+      const modal = document.getElementById("transferModal");
+      modal.classList.remove("open");
+      modal.setAttribute("aria-hidden", "true");
+    }
+
+    document.getElementById("transferButton").addEventListener("click", openModal);
+    document.getElementById("transferDock").addEventListener("click", openModal);
+    document.querySelector(".close-modal").addEventListener("click", closeModal);
+    document.getElementById("transferModal").addEventListener("click", (event) => {
+      if (event.target.id === "transferModal") closeModal();
+    });
+
+    messageInput.addEventListener("input", () => {
+      sendButton.disabled = !messageInput.value.trim();
+      messageInput.style.height = "auto";
+      messageInput.style.height = `${Math.min(messageInput.scrollHeight, 160)}px`;
+    });
+
+    function sendMessage() {
+      const text = messageInput.value.trim();
+      if (!text) return;
+      const row = document.createElement("div");
+      row.className = "message sent";
+      const avatar = document.createElement("span");
+      avatar.className = "avatar";
+      avatar.style.setProperty("--avatar", "var(--avatar-7)");
+      avatar.textContent = "E";
+      const stack = document.createElement("div");
+      stack.className = "message-stack";
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.textContent = text;
+      const time = document.createElement("span");
+      time.className = "message-time";
+      time.textContent = "刚刚 · 未读";
+      stack.append(bubble, time);
+      row.append(avatar, stack);
+      messageList.append(row);
+      messageInput.value = "";
+      messageInput.style.height = "auto";
+      sendButton.disabled = true;
+      messageList.scrollTop = messageList.scrollHeight;
+      window.setTimeout(() => {
+        time.innerHTML = '刚刚 <span class="receipt">已读</span>';
+      }, 1100);
+    }
+
+    sendButton.addEventListener("click", sendMessage);
+    messageInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendMessage();
+      }
+    });
+
+    document.getElementById("emojiButton").addEventListener("click", () => {
+      messageInput.value += " :)";
+      messageInput.dispatchEvent(new Event("input"));
+      messageInput.focus();
+    });
+    document.getElementById("captureButton").addEventListener("click", () => showToast("截屏预览已准备"));
+    document.getElementById("attachButton").addEventListener("click", () => document.getElementById("fileInput").click());
+    document.getElementById("fileInput").addEventListener("change", (event) => {
+      if (event.target.files.length) showToast(`已加入「${event.target.files[0].name}」`);
+    });
+    document.getElementById("newGroupButton").addEventListener("click", () => showToast("新建群聊入口已打开"));
+    document.getElementById("remarkButton").addEventListener("click", () => showToast("设备备注绑定当前 MAC"));
+  </script>
+</body>
+</html>

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XChat · 字体与信息层级</title>
+  <link rel="stylesheet" href="preview.css">
+  <style>
+    .type-sample{display:grid;grid-template-columns:150px minmax(0,1fr);gap:20px;align-items:start;padding:18px 0;border-bottom:1px solid var(--border)}
+    .type-sample:last-child{border-bottom:0}
+    .type-label{color:var(--muted);font:var(--text-meta)/1.45 var(--font-mono)}
+    .display{font:600 clamp(2rem,6vw,4.5rem)/1.05 var(--font-display);letter-spacing:-.035em}
+    .body-sample{max-width:670px;font-size:var(--text-panel)}
+    .mono-sample{font:var(--text-body)/1.8 var(--font-mono);font-variant-numeric:tabular-nums}
+    .hierarchy{display:grid;gap:12px}
+    .hierarchy div{display:flex;align-items:baseline;gap:14px}
+    .hierarchy span:first-child{width:72px;color:var(--muted);font:var(--text-meta)/1 var(--font-mono)}
+    @media(max-width:640px){.type-sample{grid-template-columns:1fr;gap:8px}.display{font-size:2.6rem}}
+  </style>
+</head>
+<body>
+  <main class="preview-page" data-od-id="typography-preview">
+    <header class="preview-head">
+      <div><p class="eyebrow">视觉基础 02</p><h1>字体与信息层级</h1><p class="lede">界面保持系统原生效率，宋体只在说明型标题出现，等宽字体使地址与传输数据可扫读。</p></div>
+    </header>
+    <section class="panel full">
+      <div class="type-sample"><div class="type-label">展示标题<br>Songti SC</div><div class="display">局域网，近在眼前</div></div>
+      <div class="type-sample"><div class="type-label">界面正文<br>系统无衬线</div><div class="body-sample"><strong>产品设计组</strong><br>备注优先于主机名显示；IP 变化后仍按 MAC 识别同一设备。</div></div>
+      <div class="type-sample"><div class="type-label">技术元数据<br>等宽字体</div><div class="mono-sample">A4:5E:60:7B:21:19<br>192.168.1.42:8888<br>1.2 / 2.4 MB · 3.2 MB/s</div></div>
+    </section>
+    <section class="panel full quiet" style="margin-top:16px">
+      <h2>产品层级</h2><div class="hierarchy">
+        <div><span>18 / 680</span><strong style="font-size:var(--text-page)">全部文件</strong></div>
+        <div><span>16 / 650</span><strong style="font-size:var(--text-panel)">张三</strong></div>
+        <div><span>14 / 400</span><span style="width:auto;color:var(--fg);font:inherit">好的，文件收到了。</span></div>
+        <div><span>11 / mono</span><span class="meta" style="width:auto">今天 14:28 · 3.8 MB</span></div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
+

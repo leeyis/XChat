@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XChat · 源资产</title>
+  <link rel="stylesheet" href="preview.css">
+  <style>
+    .asset-grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(280px,.55fr);gap:18px;align-items:start}
+    .asset-card{padding:14px;border:1px solid var(--border);border-radius:var(--radius-xl);background:var(--surface)}
+    .asset-card img{margin-bottom:12px}
+    .asset-note{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+    .asset-note p{margin:0}
+    @media(max-width:760px){.asset-grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <main class="preview-page" data-od-id="brand-assets-preview">
+    <header class="preview-head">
+      <div><p class="eyebrow">资产 06</p><h1>源资产</h1><p class="lede">直接加载保存的原始图像，作为布局、选中态和输入器形态的可审计依据。</p></div>
+      <a class="button" href="../examples/xchat-desktop-prototype.html">打开完整源原型</a>
+    </header>
+    <section class="asset-grid">
+      <article class="asset-card" data-od-id="desktop-reference-asset">
+        <img class="source-image" src="../assets/xchat-desktop-reference.png" alt="XChat 桌面四栏通讯界面参考图">
+        <div class="asset-note"><div><h2>桌面整体参考</h2><p class="caption">冷灰导航、固定会话列表、整行绿色选中态和大面积消息工作区。</p></div><span class="chip">原始像素</span></div>
+      </article>
+      <article class="asset-card" data-od-id="composer-reference-asset">
+        <img class="source-image" src="../assets/xchat-composer-reference.png" alt="XChat 消息输入器参考图">
+        <div class="asset-note"><div><h2>输入器特写</h2><p class="caption">文本区在上，表情、文件、截屏和语音工具固定在底部。</p></div><span class="chip">原始像素</span></div>
+      </article>
+    </section>
+    <section class="panel full quiet" style="margin-top:18px">
+      <h2>资产边界</h2><p class="caption">源项目没有独立 Logo、字标、应用图标、托盘图标或字体文件；本系统不臆造缺失的品牌资产。线性界面图标由源原型整理到 <span class="num">build/xchat-icons.svg</span>。</p>
+    </section>
+  </main>
+</body>
+</html>
+

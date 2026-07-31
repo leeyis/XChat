@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XChat Open Design · 设计系统预览</title>
+  <link rel="stylesheet" href="preview.css">
+  <style>
+    .review-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+    .review-card{overflow:hidden;border:1px solid var(--border);border-radius:var(--radius-xl);background:var(--surface)}
+    .review-card.full{grid-column:1/-1}
+    .review-card-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 18px;border-bottom:1px solid var(--border)}
+    .review-card-head h2{margin:0;font-size:var(--text-panel)}
+    .review-card-head a{color:var(--accent);font-size:var(--text-compact);text-decoration:none}
+    .review-card iframe{display:block;width:100%;height:420px;border:0;background:var(--bg)}
+    .review-card.full iframe{height:620px}
+    .system-note{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:14px;margin-bottom:24px;padding:14px 16px;border:1px solid color-mix(in oklch,var(--accent) 28%,var(--border));border-radius:var(--radius-lg);background:color-mix(in oklch,var(--accent) 6%,var(--surface))}
+    .mark{display:grid;place-items:center;width:36px;height:36px;border-radius:var(--radius-md);background:var(--accent);color:var(--on-accent);font:700 var(--text-meta)/1 var(--font-mono)}
+    @media(max-width:860px){.review-grid{grid-template-columns:1fr}.review-card.full{grid-column:auto}.review-card iframe,.review-card.full iframe{height:520px}}
+  </style>
+</head>
+<body>
+  <main class="preview-page" data-od-id="design-system-review-board">
+    <header class="preview-head">
+      <div>
+        <p class="eyebrow">XChat · Open Design</p>
+        <h1 data-od-id="review-title">冷静、可信、状态完整的桌面通讯系统</h1>
+        <p class="lede">从真实原型与参考截图提炼。先审组件和应用表面，再回看令牌与源资产。</p>
+      </div>
+      <div class="toolbar">
+        <a class="button" href="../DESIGN.md">阅读规范</a>
+        <a class="button primary" href="../ui_kits/app/index.html">打开 UI Kit</a>
+      </div>
+    </header>
+
+    <section class="system-note" aria-label="视觉系统摘要">
+      <span class="mark">XC</span>
+      <div><strong>冷白画布 × 单一绿色强调 × 系统无衬线</strong><div class="caption">56 / 280 / 弹性主区 / 240 四栏骨架，MAC 稳定身份，传输状态完整可恢复。</div></div>
+    </section>
+
+    <section class="review-grid" aria-label="设计系统预览卡片">
+      <article class="review-card" data-od-id="preview-card-colors">
+        <div class="review-card-head"><h2>颜色与主题</h2><a href="colors.html">单独查看</a></div>
+        <iframe src="colors.html" title="颜色与主题预览"></iframe>
+      </article>
+      <article class="review-card" data-od-id="preview-card-typography">
+        <div class="review-card-head"><h2>字体与信息层级</h2><a href="typography.html">单独查看</a></div>
+        <iframe src="typography.html" title="字体与信息层级预览"></iframe>
+      </article>
+      <article class="review-card" data-od-id="preview-card-spacing">
+        <div class="review-card-head"><h2>间距与密度</h2><a href="spacing.html">单独查看</a></div>
+        <iframe src="spacing.html" title="间距与密度预览"></iframe>
+      </article>
+      <article class="review-card" data-od-id="preview-card-radius">
+        <div class="review-card-head"><h2>圆角与阴影</h2><a href="radius-shadows.html">单独查看</a></div>
+        <iframe src="radius-shadows.html" title="圆角与阴影预览"></iframe>
+      </article>
+      <article class="review-card full" data-od-id="preview-card-components">
+        <div class="review-card-head"><h2>核心组件</h2><a href="components.html">单独查看</a></div>
+        <iframe src="components.html" title="核心组件预览"></iframe>
+      </article>
+      <article class="review-card full" data-od-id="preview-card-assets">
+        <div class="review-card-head"><h2>源资产</h2><a href="brand-assets.html">单独查看</a></div>
+        <iframe src="brand-assets.html" title="源资产预览"></iframe>
+      </article>
+      <article class="review-card full" data-od-id="preview-card-surfaces">
+        <div class="review-card-head"><h2>应用表面</h2><a href="applied-surfaces.html">单独查看</a></div>
+        <iframe src="applied-surfaces.html" title="应用表面预览"></iframe>
+      </article>
+    </section>
+  </main>
+</body>
+</html>
+
