@@ -24,6 +24,8 @@ use crate::peers::PeerManager;
 
 // 全局媒体 Token（仅 Android 使用）
 static MEDIA_TOKEN: Mutex<String> = Mutex::new(String::new());
+// ponytail: group message writes are rare; shard this lock by client_message_id if throughput matters.
+static GROUP_MESSAGE_WRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(RustEmbed)]
 #[folder = "../src/"]
@@ -160,6 +162,7 @@ struct CreateGroupRequest {
 struct ConversationMessageRequest {
     client_message_id: String,
     content: String,
+    mention_ids: Vec<String>,
     #[serde(default = "default_message_type")]
     msg_type: String,
 }
@@ -408,6 +411,7 @@ async fn send_conversation_message_http(
         &payload.client_message_id,
         &payload.content,
         &payload.msg_type,
+        payload.mention_ids,
     )
     .await
     {
@@ -1724,6 +1728,7 @@ async fn handle_protocol_message(
             from_name,
             content,
             content_type,
+            mention_ids,
             timestamp,
         } => {
             if !matches!(content_type.as_str(), "text" | "file") {
@@ -1737,36 +1742,96 @@ async fn handle_protocol_message(
             if !members.iter().any(|member| member.peer_id == my_id) {
                 return Err("本机不在该群成员中".to_string());
             }
+            let mention_ids = mention_ids
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            if let Some(mention_id) = mention_ids
+                .iter()
+                .find(|mention_id| {
+                    mention_id.as_str() == from_id.as_str()
+                        || !members
+                            .iter()
+                            .any(|member| member.peer_id == mention_id.as_str())
+                })
+            {
+                return Err(format!("群消息 @ 目标无效: {mention_id}"));
+            }
+            let mention_ids = mention_ids.into_iter().collect::<Vec<_>>();
+            let recipients = members
+                .iter()
+                .map(|member| member.peer_id.clone())
+                .filter(|peer_id| peer_id != &from_id)
+                .collect::<Vec<_>>();
 
-            let stored = crate::db::save_conversation_message(
-                &state.pool,
-                &group_id,
-                &from_id,
-                None,
-                &content,
-                &content_type,
-                wire_i64(timestamp),
-                "delivered",
-                &client_message_id,
-            )
-            .await?;
+            let write_guard = GROUP_MESSAGE_WRITE_LOCK.lock().await;
+            let existing = crate::db::get_message_by_client_id(&state.pool, &client_message_id)
+                .await?;
+            let is_new = existing.is_none();
+            let stored = if let Some(stored) = existing {
+                if stored.conversation_id.as_deref() != Some(group_id.as_str())
+                    || stored.sender_id != from_id
+                    || stored.content != content
+                    || stored.msg_type != content_type
+                {
+                    return Err("client message id conflicts with another message".to_string());
+                }
+                let stored_mentions = crate::db::get_message_receipts(
+                    &state.pool,
+                    &client_message_id,
+                )
+                .await?
+                .into_iter()
+                .filter(|receipt| receipt.mentioned)
+                .map(|receipt| receipt.reader_id)
+                .collect::<std::collections::BTreeSet<_>>();
+                if stored_mentions != mention_ids.iter().cloned().collect() {
+                    return Err("client message id conflicts with another mention set".to_string());
+                }
+                stored
+            } else {
+                let stored = crate::db::save_conversation_message(
+                    &state.pool,
+                    &group_id,
+                    &from_id,
+                    None,
+                    &content,
+                    &content_type,
+                    wire_i64(timestamp),
+                    "delivered",
+                    &client_message_id,
+                )
+                .await?;
+                crate::db::ensure_message_recipients(
+                    &state.pool,
+                    &client_message_id,
+                    &recipients,
+                )
+                .await?;
+                crate::db::mark_message_mentions(&state.pool, &client_message_id, &mention_ids)
+                    .await?;
+                stored
+            };
+            drop(write_guard);
             record_local_delivery(state, &group_id, &client_message_id, &from_id, &my_id).await?;
-            broadcast_incoming_event(
-                state,
-                serde_json::json!({
-                    "id": stored.id,
-                    "conversation_id": group_id,
-                    "client_message_id": client_message_id,
-                    "from_id": from_id,
-                    "sender_id": stored.sender_id,
-                    "from_name": from_name,
-                    "content": stored.content,
-                    "timestamp": stored.timestamp,
-                    "msg_type": stored.msg_type,
-                    "wire_msg_type": "group_message",
-                    "status": stored.status,
-                }),
-            );
+            if is_new {
+                broadcast_incoming_event(
+                    state,
+                    serde_json::json!({
+                        "id": stored.id,
+                        "conversation_id": group_id,
+                        "client_message_id": client_message_id,
+                        "from_id": from_id,
+                        "sender_id": stored.sender_id,
+                        "from_name": from_name,
+                        "content": stored.content,
+                        "timestamp": stored.timestamp,
+                        "msg_type": stored.msg_type,
+                        "wire_msg_type": "group_message",
+                        "status": stored.status,
+                        "mention_ids": mention_ids,
+                    }),
+                );
+            }
         }
         ProtocolMessage::DeliveryAck {
             conversation_id,
@@ -5263,13 +5328,13 @@ mod websocket_protocol_tests {
     use crate::network::protocol::{GroupMember, ProtocolMessage};
 
     #[tokio::test]
-    async fn duplicate_group_message_is_stored_once_with_local_delivery() {
+    async fn duplicate_group_message_keeps_first_mentions_without_rebroadcasting() {
         let app_dir = std::env::temp_dir().join(format!("xchat-ws-test-{}", uuid::Uuid::new_v4()));
         let pool = crate::db::init_db_standalone(Some(app_dir.clone()))
             .await
             .unwrap();
         let my_id = crate::db::get_user_id(&pool).await.unwrap();
-        let (ws_broadcast, _) = broadcast::channel(8);
+        let (ws_broadcast, mut ws_events) = broadcast::channel(8);
         let state = AppState {
             pool: pool.clone(),
             peer_manager: Arc::new(PeerManager::new()),
@@ -5303,6 +5368,11 @@ mod websocket_protocol_tests {
         )
         .await
         .unwrap();
+        let sync_event = ws_events.recv().await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&sync_event).unwrap()["msg_type"],
+            "group_sync"
+        );
         let message = ProtocolMessage::GroupMessage {
             group_id: "group-test".into(),
             client_message_id: "message-test".into(),
@@ -5310,12 +5380,37 @@ mod websocket_protocol_tests {
             from_name: "Alice".into(),
             content: "hello".into(),
             content_type: "text".into(),
+            mention_ids: vec![my_id.clone(), my_id.clone()],
             timestamp: 2,
         };
         handle_protocol_message(&state, message.clone())
             .await
             .unwrap();
-        handle_protocol_message(&state, message).await.unwrap();
+        let first_event = ws_events.recv().await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&first_event).unwrap()["mention_ids"],
+            serde_json::json!([my_id])
+        );
+
+        handle_protocol_message(&state, message.clone()).await.unwrap();
+        assert!(matches!(
+            ws_events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+
+        let mut conflicting = message;
+        let ProtocolMessage::GroupMessage { mention_ids, .. } = &mut conflicting else {
+            unreachable!();
+        };
+        mention_ids.clear();
+        assert!(handle_protocol_message(&state, conflicting)
+            .await
+            .unwrap_err()
+            .contains("mention"));
+        assert!(matches!(
+            ws_events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
 
         let messages = crate::db::get_conversation_messages(&pool, "group-test", 20, 0)
             .await
@@ -5326,7 +5421,12 @@ mod websocket_protocol_tests {
             .unwrap();
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipts[0].reader_id, my_id);
+        assert!(receipts[0].mentioned);
         assert!(receipts[0].delivered_at.is_some());
+        let views = crate::workspace::get_messages(&pool, &state.peer_manager, "group-test", 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(views[0].mention_ids, vec![my_id]);
 
         pool.close().await;
         std::fs::remove_dir_all(app_dir).unwrap();

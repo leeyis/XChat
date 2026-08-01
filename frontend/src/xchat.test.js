@@ -5,6 +5,8 @@ import {
   EMOJI_SET,
   fileKind,
   fileStatus,
+  groupMentionCandidates,
+  HttpWsAdapter,
   insertTextAtSelection,
   isAppActive,
   isPhysicalPointInsideRect,
@@ -14,9 +16,14 @@ import {
   matchesShortcut,
   measureTransfers,
   mergeMessages,
+  mentionQueryAtCaret,
+  mentionToken,
+  nativeClipboardPaths,
   nativeDragDropTarget,
+  normalizeConversation,
   normalizeDraftAttachment,
   normalizeMessage,
+  retainedMentionIds,
   runtimeCapabilities,
   shortcutLabelFromEvent,
   TauriAdapter,
@@ -32,6 +39,20 @@ test("direct conversation IDs are stable on both peers", () => {
   assert.equal(
     directConversationId("peer-b", "peer-a"),
     directConversationId("peer-a", "peer-b"),
+  );
+});
+
+test("conversation normalization attaches the matching peer presence", () => {
+  const conversation = normalizeConversation(
+    { id: "direct:peer-1:self", kind: "direct", peer_id: "peer-1" },
+    [{ id: "peer-1", name: "Alice", is_offline: true }],
+  );
+
+  assert.equal(conversation.peer?.id, "peer-1");
+  assert.equal(conversation.peer?.is_offline, true);
+  assert.equal(
+    normalizeConversation({ peer_id: "peer-2", peer: { id: "peer-2" } }).peer?.id,
+    "peer-2",
   );
 });
 
@@ -94,6 +115,13 @@ test("message merge replaces optimistic rows and never regresses receipts", () =
   assert.equal(merged[0].read_count, 2);
 });
 
+test("message normalization preserves mention target IDs", () => {
+  assert.deepEqual(
+    normalizeMessage({ sender_id: "peer-1", mentionIds: ["self-id"] }).mention_ids,
+    ["self-id"],
+  );
+});
+
 test("incoming alerts accept remote messages and reject self/control events", () => {
   assert.deepEqual(
     incomingMessageAlert(
@@ -154,6 +182,50 @@ test("incoming file alerts use the remote file name and control filtering", () =
       title: "Alice",
       body: "收到文件：report.pdf",
     },
+  );
+});
+
+test("group alerts notify only mentioned recipients while direct alerts stay unchanged", () => {
+  const groupMessage = {
+    client_message_id: "group-message-1",
+    wire_msg_type: "group_message",
+    group_id: "group-1",
+    from_id: "peer-1",
+    from_name: "Alice",
+    content: "hello group",
+    mention_ids: ["other-id"],
+  };
+  assert.equal(incomingMessageAlert(groupMessage, "self-id"), null);
+  assert.ok(
+    incomingMessageAlert(
+      { ...groupMessage, mention_ids: ["self-id"] },
+      "self-id",
+    ),
+  );
+  assert.equal(
+    incomingMessageAlert(
+      {
+        from_id: "peer-1",
+        msg_type: "file",
+        file_name: "report.pdf",
+        conversation_id: "group-1",
+      },
+      "self-id",
+      "group",
+    ),
+    null,
+  );
+  assert.ok(
+    incomingMessageAlert(
+      {
+        ...groupMessage,
+        wire_msg_type: undefined,
+        group_id: undefined,
+        conversation_id: "direct:peer-1:self-id",
+        mention_ids: [],
+      },
+      "self-id",
+    ),
   );
 });
 
@@ -245,6 +317,113 @@ test("emoji picker has a broad unique set and inserts at the current selection",
   });
 });
 
+test("group mention candidates search display names and current IPs but not device IDs", () => {
+  const conversation = {
+    kind: "group",
+    members: [
+      { peer_id: "self-id", display_name: "Me" },
+      { peer_id: "alice-long-device-id", display_name: "Alice" },
+      { peer_id: "bob-long-device-id", display_name: "Bob" },
+    ],
+  };
+  const devices = [
+    { id: "alice-long-device-id", addr: "192.168.1.21" },
+    { id: "bob-long-device-id", addr: "10.0.0.8" },
+  ];
+
+  assert.deepEqual(
+    groupMentionCandidates(conversation, devices, "self-id").map(
+      ({ peer_id }) => peer_id,
+    ),
+    ["alice-long-device-id", "bob-long-device-id"],
+  );
+  assert.deepEqual(
+    groupMentionCandidates(conversation, devices, "self-id", "ali").map(
+      ({ peer_id, display_name, addr }) => ({ peer_id, display_name, addr }),
+    ),
+    [{ peer_id: "alice-long-device-id", display_name: "Alice", addr: "192.168.1.21" }],
+  );
+  assert.deepEqual(
+    groupMentionCandidates(conversation, devices, "self-id", "10.0.0").map(
+      ({ peer_id }) => peer_id,
+    ),
+    ["bob-long-device-id"],
+  );
+  assert.deepEqual(
+    groupMentionCandidates(conversation, devices, "self-id", "long-device-id"),
+    [],
+  );
+});
+
+test("mention query follows the active @ token at the textarea caret", () => {
+  assert.deepEqual(mentionQueryAtCaret("hello @ali", 10), {
+    start: 6,
+    query: "ali",
+  });
+  assert.equal(mentionQueryAtCaret("email@example.com", 17), null);
+  assert.deepEqual(mentionQueryAtCaret("你好，@张", 5), {
+    start: 3,
+    query: "张",
+  });
+  assert.equal(mentionQueryAtCaret("你好@张", 4), null);
+  assert.equal(mentionQueryAtCaret("hello @ali done", 15), null);
+});
+
+test("mention targets survive conversation switches but deleted tokens are not sent", () => {
+  const targets = [
+    { conversation_id: "group-1", peer_id: "alice-id", token: "@Alice" },
+    { conversation_id: "group-1", peer_id: "bob-id", token: "@Bob" },
+    { conversation_id: "group-2", peer_id: "carol-id", token: "@Carol" },
+  ];
+
+  assert.deepEqual(retainedMentionIds("hello @Alice", targets, "group-1"), [
+    "alice-id",
+  ]);
+  assert.deepEqual(retainedMentionIds("hello", targets, "group-1"), []);
+  assert.deepEqual(retainedMentionIds("welcome back @Carol", targets, "group-2"), [
+    "carol-id",
+  ]);
+  assert.deepEqual(
+    retainedMentionIds(
+      "hello @Anna",
+      [{ conversation_id: "group-1", peer_id: "ann-id", token: "@Ann" }],
+      "group-1",
+    ),
+    [],
+  );
+  const alexes = [
+    { peer_id: "alex-1", display_name: "Alex", addr: "10.0.0.1" },
+    { peer_id: "alex-2", display_name: "Alex", addr: "10.0.0.2" },
+  ];
+  const alexTargets = alexes.map((candidate) => ({
+    conversation_id: "group-1",
+    peer_id: candidate.peer_id,
+    token: mentionToken(candidate, alexes),
+  }));
+  assert.deepEqual(
+    alexTargets.map((target) => target.token),
+    ["@Alex(10.0.0.1)", "@Alex(10.0.0.2)"],
+  );
+  assert.deepEqual(
+    retainedMentionIds("only @Alex(10.0.0.2)", alexTargets, "group-1"),
+    ["alex-2"],
+  );
+  const unnamed = [{ peer_id: "one" }, { peer_id: "two" }];
+  assert.deepEqual(
+    unnamed.map((candidate) => mentionToken(candidate, unnamed, "Unnamed")),
+    ["@Unnamed#1", "@Unnamed#2"],
+  );
+});
+
+test("native clipboard paths normalize Windows file URLs and UNC shares", () => {
+  assert.deepEqual(
+    nativeClipboardPaths(
+      "file:///C:/Users/Alice/report.pdf\nfile://server/share/design.png\n/tmp/note.txt",
+    ),
+    ["C:/Users/Alice/report.pdf", "//server/share/design.png", "/tmp/note.txt"],
+  );
+});
+
 test("physical Tauri drag coordinates are matched against the CSS composer rect", () => {
   const rect = { left: 100, right: 300, top: 100, bottom: 200 };
   assert.equal(isPhysicalPointInsideRect({ x: 400, y: 300 }, rect, 2), true);
@@ -276,6 +455,95 @@ test("Finder drops survive fs metadata scope rejection", async () => {
 
   assert.deepEqual(result.errors, []);
   assert.equal(result.files[0].file_path, "/Users/eason/Desktop/report.pdf");
+});
+
+test("pathless Tauri attachments fail without reopening the file picker", async () => {
+  let pickerOpened = false;
+  const adapter = new TauriAdapter({
+    core: { invoke() {} },
+    dialog: {
+      async open() {
+        pickerOpened = true;
+        return "/Users/eason/Desktop/report.pdf";
+      },
+    },
+  });
+
+  await assert.rejects(
+    adapter.sendFiles({ id: "conversation-1" }, [{ name: "report.pdf" }]),
+    (error) => error.code === "file_unavailable",
+  );
+  assert.equal(pickerOpened, false);
+});
+
+test("Tauri clipboard file reads return native Finder paths", async () => {
+  const calls = [];
+  const adapter = new TauriAdapter({
+    core: {
+      invoke(command, payload) {
+        calls.push([command, payload]);
+        return ["/Users/eason/Desktop/report.pdf"];
+      },
+    },
+  });
+
+  assert.deepEqual(await adapter.readClipboardFiles(), [
+    "/Users/eason/Desktop/report.pdf",
+  ]);
+  assert.deepEqual(calls, [["read_clipboard_files", undefined]]);
+});
+
+test("desktop and web message adapters send stable mention IDs", async () => {
+  const tauriCalls = [];
+  const tauri = new TauriAdapter({
+    core: {
+      invoke(command, payload) {
+        tauriCalls.push([command, payload]);
+        return {};
+      },
+    },
+  });
+  await tauri.sendMessage(
+    { id: "group-1", kind: "group" },
+    "message-1",
+    "hello @Alice",
+    "text",
+    ["alice-id"],
+  );
+  assert.deepEqual(tauriCalls[0], [
+    "send_conversation_message",
+    {
+      conversationId: "group-1",
+      clientMessageId: "message-1",
+      content: "hello @Alice",
+      msgType: "text",
+      mentionIds: ["alice-id"],
+    },
+  ]);
+
+  const webCalls = [];
+  const web = new HttpWsAdapter();
+  web.json = (...args) => {
+    webCalls.push(args);
+    return {};
+  };
+  await web.sendMessage(
+    { id: "group-1", kind: "group" },
+    "message-1",
+    "hello @Alice",
+    "text",
+    ["alice-id"],
+  );
+  assert.deepEqual(webCalls[0], [
+    "/api/conversations/group-1/messages",
+    "POST",
+    {
+      client_message_id: "message-1",
+      content: "hello @Alice",
+      msg_type: "text",
+      mention_ids: ["alice-id"],
+    },
+  ]);
 });
 
 test("draft attachment normalization accepts browser files and native paths", () => {

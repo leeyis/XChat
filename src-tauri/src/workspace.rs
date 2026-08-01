@@ -17,6 +17,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+// ponytail: text sends are rare; shard this lock by client_message_id if throughput matters.
+static MESSAGE_WRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeCapabilities {
@@ -141,6 +144,7 @@ pub struct WorkspaceMessage {
     pub delivered_count: usize,
     pub read_count: usize,
     pub recipient_count: usize,
+    pub mention_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -297,6 +301,11 @@ async fn message_view(
         .iter()
         .filter(|receipt| receipt.read_at.is_some())
         .count();
+    let mention_ids = receipts
+        .iter()
+        .filter(|receipt| receipt.mentioned)
+        .map(|receipt| receipt.reader_id.clone())
+        .collect();
     let own = message.sender_id == self_id || message.sender_id == "me";
     let peer_id = if own {
         message.receiver_id.clone()
@@ -346,6 +355,7 @@ async fn message_view(
         delivered_count,
         read_count,
         recipient_count,
+        mention_ids,
     })
 }
 
@@ -607,6 +617,7 @@ pub async fn send_message(
     client_message_id: &str,
     content: &str,
     msg_type: &str,
+    mention_ids: Vec<String>,
 ) -> Result<WorkspaceMessage, String> {
     let content = content.trim();
     if content.is_empty() || content.len() > 64 * 1024 {
@@ -624,19 +635,37 @@ pub async fn send_message(
     let self_id = db::get_user_id(pool).await?;
     let self_name = db::get_username(pool).await?;
     let peers = peer_map(peer_manager);
-    let recipients = if conversation.kind == "group" {
-        db::get_conversation_members(pool, conversation_id)
-            .await?
-            .into_iter()
-            .map(|member| member.peer_id)
+    let (recipients, members) = if conversation.kind == "group" {
+        let members = db::get_conversation_members(pool, conversation_id).await?;
+        let recipients = members
+            .iter()
+            .map(|member| member.peer_id.clone())
             .filter(|id| id != &self_id)
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        (recipients, Some(members))
     } else {
-        vec![conversation
-            .peer_id
-            .clone()
-            .ok_or_else(|| "direct conversation has no peer".to_string())?]
+        (
+            vec![conversation
+                .peer_id
+                .clone()
+                .ok_or_else(|| "direct conversation has no peer".to_string())?],
+            None,
+        )
     };
+    let mention_ids = mention_ids.into_iter().collect::<BTreeSet<_>>();
+    if conversation.kind == "group" {
+        let recipient_ids = recipients.iter().collect::<BTreeSet<_>>();
+        if let Some(id) = mention_ids.iter().find(|id| !recipient_ids.contains(id)) {
+            return Err(format!("@ 目标必须是当前群成员且不能是自己: {id}"));
+        }
+    } else if !mention_ids.is_empty() {
+        return Err("单聊消息不能携带 @ 目标".to_string());
+    }
+    let mention_ids = mention_ids.into_iter().collect::<Vec<_>>();
+    let write_guard = MESSAGE_WRITE_LOCK.lock().await;
+    let is_new = db::get_message_by_client_id(pool, client_message_id)
+        .await?
+        .is_none();
     let online = recipients
         .iter()
         .filter_map(|id| peers.get(id))
@@ -656,10 +685,23 @@ pub async fn send_message(
     )
     .await?;
     db::ensure_message_recipients(pool, client_message_id, &recipients).await?;
+    if is_new {
+        db::mark_message_mentions(pool, client_message_id, &mention_ids).await?;
+    } else {
+        let stored_mentions = db::get_message_receipts(pool, client_message_id)
+            .await?
+            .into_iter()
+            .filter(|receipt| receipt.mentioned)
+            .map(|receipt| receipt.reader_id)
+            .collect::<BTreeSet<_>>();
+        if stored_mentions != mention_ids.iter().cloned().collect() {
+            return Err("client message id conflicts with another mention set".to_string());
+        }
+    }
+    drop(write_guard);
 
-    if conversation.kind == "group" {
-        let members = db::get_conversation_members(pool, conversation_id).await?;
-        let sync = group_sync_message(&conversation, &members);
+    if is_new && conversation.kind == "group" {
+        let sync = group_sync_message(&conversation, members.as_deref().unwrap_or_default());
         for peer in online {
             let addr = peer.addr;
             let sync = sync.clone();
@@ -670,6 +712,7 @@ pub async fn send_message(
                 from_name: self_name.clone(),
                 content: content.to_string(),
                 content_type: msg_type.to_string(),
+                mention_ids: mention_ids.clone(),
                 timestamp: message.timestamp as u64,
             };
             tokio::spawn(async move {
@@ -681,26 +724,28 @@ pub async fn send_message(
                 }
             });
         }
-    } else if let Some(peer) = online.into_iter().next() {
-        let conversation_id = conversation_id.to_string();
-        let client_message_id = client_message_id.to_string();
-        let content = content.to_string();
-        let sender_id = self_id.clone();
-        let sender_name = self_name.clone();
-        tokio::spawn(async move {
-            if let Err(error) = messaging::send_direct_message(
-                &peer.addr,
-                sender_id,
-                sender_name,
-                conversation_id,
-                client_message_id,
-                content,
-            )
-            .await
-            {
-                eprintln!("[Workspace] 单聊消息发送失败: {error}");
-            }
-        });
+    } else if is_new {
+        if let Some(peer) = online.into_iter().next() {
+            let conversation_id = conversation_id.to_string();
+            let client_message_id = client_message_id.to_string();
+            let content = content.to_string();
+            let sender_id = self_id.clone();
+            let sender_name = self_name.clone();
+            tokio::spawn(async move {
+                if let Err(error) = messaging::send_direct_message(
+                    &peer.addr,
+                    sender_id,
+                    sender_name,
+                    conversation_id,
+                    client_message_id,
+                    content,
+                )
+                .await
+                {
+                    eprintln!("[Workspace] 单聊消息发送失败: {error}");
+                }
+            });
+        }
     }
 
     let (names, addresses) = names_and_addresses(pool, peer_manager, &self_id, &self_name).await?;
@@ -878,6 +923,12 @@ pub async fn resend_for_peer(
             .await?
             .ok_or_else(|| "conversation not found".to_string())?;
         if conversation.kind == "group" {
+            let mention_ids = db::get_message_receipts(pool, &client_message_id)
+                .await?
+                .into_iter()
+                .filter(|receipt| receipt.mentioned)
+                .map(|receipt| receipt.reader_id)
+                .collect();
             let outgoing = ProtocolMessage::GroupMessage {
                 group_id: conversation_id,
                 client_message_id,
@@ -885,6 +936,7 @@ pub async fn resend_for_peer(
                 from_name: self_name.clone(),
                 content: message.content,
                 content_type: message.msg_type,
+                mention_ids,
                 timestamp: message.timestamp as u64,
             };
             crate::network::protocol::send_protocol_message(peer_addr, &outgoing).await?;
@@ -1256,6 +1308,77 @@ mod tests {
                 .unwrap_err(),
             "avatar is too long"
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_retries_keep_the_first_mention_set() {
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-send-test-{}", uuid::Uuid::new_v4()));
+        let pool = db::init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        let self_id = db::get_user_id(&pool).await.unwrap();
+        db::create_group_conversation(
+            &pool,
+            Some("group-send-test"),
+            "Test",
+            &self_id,
+            &[
+                NewConversationMember {
+                    peer_id: self_id.clone(),
+                    display_name: "Me".into(),
+                    role: "owner".into(),
+                },
+                NewConversationMember {
+                    peer_id: "peer-a".into(),
+                    display_name: "Peer A".into(),
+                    role: "member".into(),
+                },
+                NewConversationMember {
+                    peer_id: "peer-b".into(),
+                    display_name: "Peer B".into(),
+                    role: "member".into(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        let peers = PeerManager::new();
+
+        let first = send_message(
+            &pool,
+            &peers,
+            "group-send-test",
+            "same-client-id",
+            "hello",
+            "text",
+            vec!["peer-a".into()],
+        );
+        let second = send_message(
+            &pool,
+            &peers,
+            "group-send-test",
+            "same-client-id",
+            "hello",
+            "text",
+            vec!["peer-b".into()],
+        );
+        let (first, second) = tokio::join!(first, second);
+
+        assert_ne!(first.is_ok(), second.is_ok());
+        assert!(first
+            .err()
+            .or_else(|| second.err())
+            .unwrap()
+            .contains("mention"));
+        let mentioned = db::get_message_receipts(&pool, "same-client-id")
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|receipt| receipt.mentioned)
+            .count();
+        assert_eq!(mentioned, 1);
+
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
     }
 
     #[test]

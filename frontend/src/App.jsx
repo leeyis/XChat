@@ -10,13 +10,18 @@ import {
   EMOJI_SET,
   fileKind,
   fileStatus,
+  groupMentionCandidates,
   insertTextAtSelection,
   isAppActive,
   isPhysicalPointInsideRect,
   isImageFile,
   localFileAvailable,
   matchesShortcut,
+  mentionQueryAtCaret,
+  mentionToken,
+  nativeClipboardPaths,
   nativeDragDropTarget,
+  retainedMentionIds,
   shortcutLabelFromEvent,
 } from "./xchat.js";
 import CaptureEditor from "./CaptureEditor.jsx";
@@ -961,13 +966,24 @@ function SearchBox({ value, onChange, placeholder }) {
 }
 
 function ConversationRow({ conversation, labels, selected, onOpen }) {
+  const offline = Boolean(conversation.peer?.is_offline);
   return (
     <button
       className={`conversation-row ${selected ? "selected" : ""}`}
       onClick={onOpen}
       data-od-id={`conversation-${conversation.id}`}
     >
-      <Avatar entity={conversation.peer || conversation} labels={labels} />
+      <span className="conversation-avatar">
+        <Avatar entity={conversation.peer || conversation} labels={labels} />
+        {conversation.kind !== "group" && (
+          <span
+            className={`conversation-presence ${offline ? "offline" : "online"}`}
+            role="img"
+            aria-label={offline ? labels.offline : labels.online}
+            title={offline ? labels.offline : labels.online}
+          />
+        )}
+      </span>
       <span className="row-main">
         <span className="row-name-line">
           <b>{displayName(conversation, labels)}</b>
@@ -1488,6 +1504,9 @@ function DraftAttachment({ attachment, labels, onRemove }) {
 function Composer({ state, conversation, workspace, labels }) {
   const [text, setText] = useState(conversation?.draft || "");
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [mention, setMention] = useState(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [mentionTargets, setMentionTargets] = useState([]);
   const [dragActive, setDragActive] = useState(false);
   const [sending, setSending] = useState(false);
   const composer = useRef(null);
@@ -1496,10 +1515,33 @@ function Composer({ state, conversation, workspace, labels }) {
   const emojiPanel = useRef(null);
   const nativeDragInside = useRef(false);
   const attachments = state.draftAttachments?.[conversation.id] || [];
+  const mentionCandidates = useMemo(
+    () =>
+      groupMentionCandidates(
+        conversation,
+        state.devices,
+        state.self.id,
+      ),
+    [conversation, state.devices, state.self.id],
+  );
+  const mentionOptions = useMemo(
+    () =>
+      mention
+        ? groupMentionCandidates(
+            conversation,
+            state.devices,
+            state.self.id,
+            mention.query,
+          )
+        : [],
+    [conversation, mention, state.devices, state.self.id],
+  );
 
   useEffect(() => {
     setText(conversation?.draft || "");
     setEmojiOpen(false);
+    setMention(null);
+    setMentionIndex(0);
   }, [conversation?.id]);
 
   useEffect(() => {
@@ -1508,6 +1550,14 @@ function Composer({ state, conversation, workspace, labels }) {
     element.style.height = "auto";
     element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
   }, [text]);
+
+  useEffect(() => {
+    if (mentionOptions.length) {
+      document
+        .getElementById(`mention-option-${mentionIndex}`)
+        ?.scrollIntoView({ block: "nearest" });
+    }
+  }, [mentionIndex, mentionOptions.length]);
 
   useEffect(() => {
     if (!emojiOpen) return;
@@ -1578,18 +1628,44 @@ function Composer({ state, conversation, workspace, labels }) {
   }, [conversation.id, workspace]);
 
   const send = async () => {
+    const conversationId = conversation.id;
     const content = text.trim();
     if ((!content && !attachments.length) || sending) return;
     setSending(true);
     try {
       if (content) {
-        const result = await workspace.dispatch({ type: "message.sendText", content });
-        if (result.ok) {
-          setText("");
+        const result = await workspace.dispatch({
+          type: "message.sendText",
+          conversationId,
+          content,
+          mentionIds: retainedMentionIds(
+            content,
+            mentionTargets,
+            conversationId,
+          ),
+        });
+        if (!result.ok) return;
+
+        const latest = workspace.getSnapshot();
+        const currentDraft = latest.conversations.find(
+          (item) => item.id === conversationId,
+        )?.draft;
+        const activeSame = latest.activeConversationId === conversationId;
+        const unchanged = activeSame
+          ? textarea.current?.value.trim() === content
+          : !currentDraft || currentDraft.trim() === content;
+        if (unchanged) {
+          if (activeSame) {
+            setText("");
+            setMention(null);
+          }
+          setMentionTargets((current) =>
+            current.filter((target) => target.conversation_id !== conversationId),
+          );
           if (state.capabilities.conversationState) {
             workspace.dispatch({
               type: "conversation.saveDraft",
-              id: conversation.id,
+              id: conversationId,
               draft: "",
             });
           }
@@ -1598,12 +1674,13 @@ function Composer({ state, conversation, workspace, labels }) {
       for (const attachment of attachments) {
         const result = await workspace.dispatch({
           type: "message.sendFiles",
+          conversationId,
           files: [attachment],
         });
         if (result.ok) {
           await workspace.dispatch({
             type: "draft.sent",
-            conversationId: conversation.id,
+            conversationId,
             id: attachment.id,
           });
         }
@@ -1611,6 +1688,37 @@ function Composer({ state, conversation, workspace, labels }) {
     } finally {
       setSending(false);
     }
+  };
+
+  const selectMention = (candidate) => {
+    if (!mention) return;
+    const element = textarea.current;
+    const end = element?.selectionStart ?? text.length;
+    const token = mentionToken(
+      candidate,
+      mentionCandidates,
+      labels.unnamedDevice,
+    );
+    const next = `${text.slice(0, mention.start)}${token} ${text.slice(end)}`;
+    const caret = mention.start + token.length + 1;
+    setText(next);
+    setMention(null);
+    setMentionTargets((current) => [
+      ...current.filter(
+        (target) =>
+          target.conversation_id !== conversation.id ||
+          target.peer_id !== candidate.peer_id,
+      ),
+      {
+        conversation_id: conversation.id,
+        peer_id: candidate.peer_id,
+        token,
+      },
+    ]);
+    requestAnimationFrame(() => {
+      element?.focus();
+      element?.setSelectionRange(caret, caret);
+    });
   };
 
   const attach = () => {
@@ -1704,8 +1812,26 @@ function Composer({ state, conversation, workspace, labels }) {
         <textarea
           ref={textarea}
           value={text}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => {
+            const next = event.target.value;
+            setText(next);
+            setMentionTargets((current) =>
+              current.filter(
+                (target) =>
+                  target.conversation_id !== conversation.id ||
+                  next.includes(target.token),
+              ),
+            );
+            setMention(
+              conversation.kind === "group"
+                ? mentionQueryAtCaret(next, event.target.selectionStart)
+                : null,
+            );
+            setMentionIndex(0);
+            setEmojiOpen(false);
+          }}
           onBlur={() => {
+            setMention(null);
             if (
               state.capabilities.conversationState &&
               text !== (conversation.draft || "")
@@ -1718,6 +1844,29 @@ function Composer({ state, conversation, workspace, labels }) {
             }
           }}
           onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            if (mention && event.key === "Escape") {
+              event.preventDefault();
+              setMention(null);
+              return;
+            }
+            if (mentionOptions.length && event.key === "ArrowDown") {
+              event.preventDefault();
+              setMentionIndex((index) => (index + 1) % mentionOptions.length);
+              return;
+            }
+            if (mentionOptions.length && event.key === "ArrowUp") {
+              event.preventDefault();
+              setMentionIndex(
+                (index) => (index - 1 + mentionOptions.length) % mentionOptions.length,
+              );
+              return;
+            }
+            if (mentionOptions.length && event.key === "Enter") {
+              event.preventDefault();
+              selectMention(mentionOptions[mentionIndex]);
+              return;
+            }
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
               send();
@@ -1725,29 +1874,70 @@ function Composer({ state, conversation, workspace, labels }) {
           }}
           onPaste={(event) => {
             const files = [...event.clipboardData.files];
-            const paths = [];
-            const uriText = event.clipboardData.getData("text/uri-list") || event.clipboardData.getData("text/plain");
-            for (const value of uriText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)) {
-              if (value.startsWith("file://")) {
-                try { paths.push(decodeURIComponent(new URL(value).pathname)); } catch { /* ignore malformed clipboard URL */ }
-              } else if (/^(\/|[A-Za-z]:[\\/])/.test(value)) {
-                paths.push(value);
-              }
-            }
+            const paths = state.capabilities.nativeFilePicker
+              ? nativeClipboardPaths(
+                  event.clipboardData.getData("text/uri-list") ||
+                    event.clipboardData.getData("text/plain"),
+                )
+              : [];
             if (files.length || paths.length) {
               event.preventDefault();
-              workspace.dispatch({
-                type: "draft.addFiles",
-                conversationId: conversation.id,
-                files,
-              });
-              if (paths.length) workspace.dispatch({ type: "draft.addPaths", conversationId: conversation.id, paths });
+              if (
+                files.length &&
+                (!state.capabilities.nativeFilePicker || !paths.length)
+              ) {
+                workspace.dispatch({
+                  type: "draft.addFiles",
+                  conversationId: conversation.id,
+                  files,
+                  fromClipboard: state.capabilities.nativeFilePicker,
+                });
+              }
+              if (
+                paths.length &&
+                (state.capabilities.nativeFilePicker || !files.length)
+              ) {
+                workspace.dispatch({
+                  type: "draft.addPaths",
+                  conversationId: conversation.id,
+                  paths,
+                });
+              }
             }
           }}
           rows="2"
           placeholder={labels.messagePlaceholder}
           aria-label={labels.message}
+          aria-expanded={Boolean(mention && mentionOptions.length)}
+          aria-controls={mentionOptions.length ? "mention-options" : undefined}
+          aria-activedescendant={
+            mentionOptions.length ? `mention-option-${mentionIndex}` : undefined
+          }
         />
+        {mention && mentionOptions.length > 0 && (
+          <div
+            className="mention-panel"
+            id="mention-options"
+            role="listbox"
+            aria-label={labels.groupMembers(mentionOptions.length)}
+          >
+            {mentionOptions.map((candidate, index) => (
+              <button
+                type="button"
+                id={`mention-option-${index}`}
+                className={index === mentionIndex ? "active" : ""}
+                role="option"
+                aria-selected={index === mentionIndex}
+                key={candidate.peer_id}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => selectMention(candidate)}
+              >
+                <b>{candidate.display_name || labels.unnamedDevice}</b>
+                <small>{candidate.addr || labels.unknownAddress}</small>
+              </button>
+            ))}
+          </div>
+        )}
         <div className="compose-toolbar">
           <div className="compose-tools">
             <button
@@ -1755,7 +1945,10 @@ function Composer({ state, conversation, workspace, labels }) {
               type="button"
               data-emoji-toggle
               onMouseDown={(event) => event.preventDefault()}
-              onClick={() => setEmojiOpen((value) => !value)}
+              onClick={() => {
+                setMention(null);
+                setEmojiOpen((value) => !value);
+              }}
               aria-label={labels.emoji}
               title={labels.emoji}
               aria-expanded={emojiOpen}

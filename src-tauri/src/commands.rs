@@ -1,7 +1,8 @@
 // commands.rs - Tauri 命令（桌面端和移动端共享）
+use std::sync::atomic::AtomicU64;
 #[cfg(not(target_os = "android"))]
 use std::sync::atomic::Ordering;
-use std::sync::atomic::AtomicBool;
+use std::sync::Mutex;
 
 #[cfg(feature = "desktop")]
 use crate::db::DbState;
@@ -23,13 +24,15 @@ pub struct PeerState {
 
 /// 托盘闪烁状态（仅桌面端）
 pub struct TrayFlashState {
-    pub is_flashing: Arc<AtomicBool>,
+    pub generation: Arc<AtomicU64>,
+    pub icon_write: Arc<Mutex<()>>,
 }
 
 impl Default for TrayFlashState {
     fn default() -> Self {
         Self {
-            is_flashing: Arc::new(AtomicBool::new(false)),
+            generation: Arc::new(AtomicU64::new(0)),
+            icon_write: Arc::new(Mutex::new(())),
         }
     }
 }
@@ -1776,10 +1779,15 @@ fn get_notification_id(from_id: &str) -> i32 {
     (hasher.finish() & 0x7FFFFFFF) as i32
 }
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 #[tauri::command]
 pub fn show_notification(_app: tauri::AppHandle, title: String, body: String, #[allow(unused_variables)] from_id: String) {
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
+
         // Windows 使用 PowerShell（不依赖 Start Menu 注册）
         let safe_title = title.replace('\'', "''");
         let safe_body = body.replace('\'', "''");
@@ -1790,7 +1798,8 @@ pub fn show_notification(_app: tauri::AppHandle, title: String, body: String, #[
              $n.Visible = $true; \
              $n.ShowBalloonTip(5000, '{safe_title}', '{safe_body}', [System.Windows.Forms.ToolTipIcon]::None)"
         );
-        let _ = std::process::Command::new("powershell")
+        if let Err(error) = std::process::Command::new("powershell")
+            .creation_flags(CREATE_NO_WINDOW)
             .args([
                 "-NoProfile",
                 "-ExecutionPolicy",
@@ -1798,7 +1807,10 @@ pub fn show_notification(_app: tauri::AppHandle, title: String, body: String, #[
                 "-Command",
                 &script,
             ])
-            .spawn();
+            .spawn()
+        {
+            eprintln!("[Notification] 无法启动 PowerShell 通知: {error}");
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -1847,9 +1859,38 @@ pub fn clear_notification(_app: tauri::AppHandle, #[allow(unused_variables)] fro
 // ═══════════════════════════════════════════════════════════════
 
 #[cfg(not(target_os = "android"))]
-const ICON_EMPTY: &[u8] = include_bytes!("../icons/icon_empty.png");
+const ICON_ALERT: &[u8] = include_bytes!("../icons/32x32-alert.png");
 #[cfg(not(target_os = "android"))]
 const ICON_NORMAL: &[u8] = include_bytes!("../icons/32x32.png");
+
+#[cfg(not(target_os = "android"))]
+fn begin_attention_generation(generation: &AtomicU64) -> Option<u64> {
+    generation
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            (value % 2 == 0).then(|| value.wrapping_add(1))
+        })
+        .ok()
+        .map(|value| value.wrapping_add(1))
+}
+
+#[cfg(not(target_os = "android"))]
+fn end_attention_generation(generation: &AtomicU64) {
+    let _ = generation.fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+        (value % 2 == 1).then(|| value.wrapping_add(1))
+    });
+}
+
+#[cfg(not(target_os = "android"))]
+fn lock_active_generation<'a>(
+    generation: &AtomicU64,
+    active_generation: u64,
+    icon_write: &'a Mutex<()>,
+) -> Option<std::sync::MutexGuard<'a, ()>> {
+    let guard = icon_write
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    (generation.load(Ordering::Acquire) == active_generation).then_some(guard)
+}
 
 /// 开始托盘闪烁
 fn start_attention_with_state(app: &AppHandle, state: &TrayFlashState) {
@@ -1857,55 +1898,70 @@ fn start_attention_with_state(app: &AppHandle, state: &TrayFlashState) {
     {
         use tauri::image::Image;
 
-        if let Some(window) = app.get_webview_window("main") {
+        let window = app.get_webview_window("main");
+        if let Some(window) = window.as_ref() {
             if window.is_focused().unwrap_or(false) {
                 return;
             }
+        }
+        println!("[TrayFlash] start_tray_flash 被调用");
+        let normal_img = match Image::from_bytes(ICON_NORMAL) {
+            Ok(img) => img,
+            Err(error) => {
+                eprintln!("[TrayFlash] 无法加载正常图标: {error}");
+                return;
+            }
+        };
+        let alert_img = match Image::from_bytes(ICON_ALERT) {
+            Ok(img) => img,
+            Err(error) => {
+                eprintln!("[TrayFlash] 无法加载提醒图标: {error}");
+                return;
+            }
+        };
+        let start_guard = state
+            .icon_write
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(active_generation) = begin_attention_generation(&state.generation) else {
+            println!("[TrayFlash] 已在闪烁中，跳过");
+            return;
+        };
+        if let Some(window) = window {
             let _ =
                 window.request_user_attention(Some(tauri::UserAttentionType::Critical));
         }
-        println!("[TrayFlash] start_tray_flash 被调用");
-        if state.is_flashing.load(Ordering::Relaxed) {
-            println!("[TrayFlash] 已在闪烁中，跳过");
-            return;
-        }
-        state.is_flashing.store(true, Ordering::Relaxed);
+        drop(start_guard);
         println!("[TrayFlash] 开始闪烁");
 
-        let flashing = state.is_flashing.clone();
+        let generation = state.generation.clone();
+        let icon_write = state.icon_write.clone();
         let app = app.clone();
 
         std::thread::spawn(move || {
-            let normal_img = match Image::from_bytes(ICON_NORMAL) {
-                Ok(img) => img,
-                Err(e) => {
-                    eprintln!("[TrayFlash] 无法加载正常图标: {}", e);
-                    return;
-                }
-            };
-            let empty_img = match Image::from_bytes(ICON_EMPTY) {
-                Ok(img) => img,
-                Err(e) => {
-                    eprintln!("[TrayFlash] 无法加载空白图标: {}", e);
-                    return;
-                }
-            };
-
             let mut toggle = false;
-            while flashing.load(Ordering::Relaxed) {
-                if let Some(tray) = app.tray_by_id("main") {
-                    let icon = if toggle { &normal_img } else { &empty_img };
-                    let _ = tray.set_icon(Some(icon.clone() as tauri::image::Image));
-                } else {
-                    eprintln!("[TrayFlash] 找不到托盘 'main'");
+            while generation.load(Ordering::Acquire) == active_generation {
+                {
+                    let Some(_write_guard) = lock_active_generation(
+                        &generation,
+                        active_generation,
+                        &icon_write,
+                    ) else {
+                        break;
+                    };
+                    if let Some(tray) = app.tray_by_id("main") {
+                        let icon = if toggle { &normal_img } else { &alert_img };
+                        if let Err(error) =
+                            tray.set_icon(Some(icon.clone() as tauri::image::Image))
+                        {
+                            eprintln!("[TrayFlash] 无法更新托盘图标: {error}");
+                        }
+                    } else {
+                        eprintln!("[TrayFlash] 找不到托盘 'main'");
+                    }
                 }
                 toggle = !toggle;
                 std::thread::sleep(std::time::Duration::from_millis(500));
-            }
-            // 停止闪烁，恢复为正常图标
-            println!("[TrayFlash] 停止闪烁，恢复图标");
-            if let Some(tray) = app.tray_by_id("main") {
-                let _ = tray.set_icon(Some(normal_img as tauri::image::Image));
             }
         });
     }
@@ -1932,10 +1988,25 @@ pub fn start_tray_flash(
 fn stop_attention_with_state(app: &AppHandle, state: &TrayFlashState) {
     #[cfg(not(target_os = "android"))]
     {
+        use tauri::image::Image;
+
         println!("[TrayFlash] stop_tray_flash 被调用");
-        state.is_flashing.store(false, Ordering::Relaxed);
+        let _write_guard = state
+            .icon_write
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        end_attention_generation(&state.generation);
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.request_user_attention(None);
+        }
+        match (app.tray_by_id("main"), Image::from_bytes(ICON_NORMAL)) {
+            (Some(tray), Ok(image)) => {
+                if let Err(error) = tray.set_icon(Some(image)) {
+                    eprintln!("[TrayFlash] 无法恢复正常托盘图标: {error}");
+                }
+            }
+            (_, Err(error)) => eprintln!("[TrayFlash] 无法加载正常图标: {error}"),
+            (None, _) => eprintln!("[TrayFlash] 找不到托盘 'main'"),
         }
     }
     #[cfg(target_os = "android")]
@@ -2093,6 +2164,7 @@ pub async fn send_conversation_message(
     client_message_id: String,
     content: String,
     msg_type: String,
+    mention_ids: Vec<String>,
 ) -> Result<crate::workspace::WorkspaceMessage, String> {
     let message = crate::workspace::send_message(
         &state.pool,
@@ -2101,6 +2173,7 @@ pub async fn send_conversation_message(
         &client_message_id,
         &content,
         &msg_type,
+        mention_ids,
     )
     .await?;
     let _ = app.emit("message-changed", &message);
@@ -2323,5 +2396,55 @@ pub async fn reveal_workspace_file(
         app.opener()
             .reveal_item_in_dir(path)
             .map_err(|error| format!("打开文件位置失败: {error}"))
+    }
+}
+
+#[cfg(all(test, not(target_os = "android")))]
+mod desktop_attention_tests {
+    use super::{
+        begin_attention_generation, end_attention_generation, lock_active_generation, AtomicU64,
+        Mutex, Ordering, ICON_ALERT, ICON_NORMAL,
+    };
+    use tauri::image::Image;
+
+    #[test]
+    fn tray_attention_frames_are_visible_32_pixel_icons() {
+        let normal = Image::from_bytes(ICON_NORMAL).expect("normal tray icon must be a valid PNG");
+        let alert = Image::from_bytes(ICON_ALERT).expect("alert tray icon must be a valid PNG");
+
+        for image in [&normal, &alert] {
+            assert_eq!((image.width(), image.height()), (32, 32));
+            assert!(image.rgba().chunks_exact(4).any(|pixel| pixel[3] != 0));
+        }
+
+        for (index, (normal_pixel, alert_pixel)) in normal
+            .rgba()
+            .chunks_exact(4)
+            .zip(alert.rgba().chunks_exact(4))
+            .enumerate()
+        {
+            let x = (index % 32) as i32;
+            let y = (index / 32) as i32;
+            if (x - 26).pow(2) + (y - 6).pow(2) > 25 {
+                assert_eq!(alert_pixel, normal_pixel, "logo changed at ({x}, {y})");
+            }
+        }
+        assert!(alert.rgba().chunks_exact(4).any(|pixel| {
+            pixel[0] > 200 && pixel[1] < 100 && pixel[2] < 100 && pixel[3] == 255
+        }));
+    }
+
+    #[test]
+    fn tray_attention_has_one_active_generation() {
+        let generation = AtomicU64::new(0);
+        let icon_write = Mutex::new(());
+        let first = begin_attention_generation(&generation).expect("first start must run");
+        assert_eq!(begin_attention_generation(&generation), None);
+
+        end_attention_generation(&generation);
+        assert!(lock_active_generation(&generation, first, &icon_write).is_none());
+        let second = begin_attention_generation(&generation).expect("restart must run");
+        assert_ne!(first, second);
+        assert_eq!(generation.load(Ordering::Acquire), second);
     }
 }

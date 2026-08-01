@@ -28,6 +28,7 @@ pub enum ProtocolMessage {
         from_name: String,
         content: String,
         content_type: String,
+        mention_ids: Vec<String>,
         timestamp: u64,
     },
     DeliveryAck {
@@ -65,12 +66,17 @@ impl ProtocolMessage {
                 client_message_id,
                 from_id,
                 content_type,
+                mention_ids,
                 ..
             } => {
                 require_value(group_id, "group_id")?;
                 require_value(client_message_id, "client_message_id")?;
                 require_value(from_id, "from_id")?;
-                require_value(content_type, "content_type")
+                require_value(content_type, "content_type")?;
+                for mention_id in mention_ids {
+                    require_value(mention_id, "mention_ids")?;
+                }
+                Ok(())
             }
             Self::DeliveryAck {
                 conversation_id,
@@ -151,6 +157,7 @@ mod tests {
             from_name: "Alice".into(),
             content: "hello".into(),
             content_type: "text".into(),
+            mention_ids: vec![],
             timestamp: 42,
         };
 
@@ -161,6 +168,31 @@ mod tests {
             parse_protocol_message(r#"{"msg_type":"text","content":"legacy"}"#).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn group_message_round_trip_keeps_mention_targets() {
+        let raw = r#"{
+            "msg_type":"group_message",
+            "group_id":"group-1",
+            "client_message_id":"client-message-1",
+            "from_id":"peer-1",
+            "from_name":"Alice",
+            "content":"@Bob hello",
+            "content_type":"text",
+            "mention_ids":["peer-2"],
+            "timestamp":42
+        }"#;
+
+        let message = parse_protocol_message(raw).unwrap().unwrap();
+        let value = serde_json::to_value(message).unwrap();
+
+        assert_eq!(value["mention_ids"], serde_json::json!(["peer-2"]));
+        assert!(parse_protocol_message(&raw.replace(
+            r#""mention_ids":["peer-2"]"#,
+            r#""mention_ids":["peer-2","peer-2"]"#,
+        ))
+        .is_ok());
     }
 
     #[test]
