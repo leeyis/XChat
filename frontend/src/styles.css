@@ -340,6 +340,35 @@ time,
   font-size: 24px;
 }
 
+.conversation-avatar {
+  position: relative;
+  display: block;
+  width: 40px;
+  height: 40px;
+}
+
+.conversation-presence {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--surface);
+  border-radius: 50%;
+}
+
+.conversation-row.selected .conversation-presence {
+  border-color: var(--accent);
+}
+
+.conversation-presence.online {
+  background: var(--success);
+}
+
+.conversation-presence.offline {
+  background: var(--muted);
+}
+
 .row-main {
   display: block;
   min-width: 0;
@@ -1041,6 +1070,55 @@ time,
 .compose-tools {
   display: flex;
   gap: 3px;
+}
+
+.mention-panel {
+  position: absolute;
+  z-index: 35;
+  right: 6px;
+  bottom: calc(100% + 6px);
+  left: 6px;
+  display: grid;
+  max-height: 240px;
+  gap: 2px;
+  padding: 5px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+}
+
+.mention-panel button {
+  display: grid;
+  min-height: 40px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+}
+
+.mention-panel button.active,
+.mention-panel button:hover,
+.mention-panel button:focus-visible {
+  background: color-mix(in oklch, var(--accent) 12%, transparent);
+}
+
+.mention-panel b,
+.mention-panel small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mention-panel small {
+  color: var(--muted);
+  font: var(--text-micro)/1.4 var(--font-mono);
 }
 
 .emoji-panel {

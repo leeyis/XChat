@@ -51,3 +51,12 @@ test("capture pin window can commit edits through the pin command ACL", async ()
   );
   assert.ok(capability.permissions.includes("allow-pin-capture"));
 });
+
+test("conversation presence dots distinguish online and offline peers", async () => {
+  const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+  const online = css.match(/\.conversation-presence\.online\s*\{([^}]*)\}/)?.[1];
+  const offline = css.match(/\.conversation-presence\.offline\s*\{([^}]*)\}/)?.[1];
+
+  assert.match(online, /background:\s*var\(--success\)/);
+  assert.match(offline, /background:\s*var\(--muted\)/);
+});

@@ -66,6 +66,7 @@ pub type FileMessageRecord = MessageRecord;
 pub struct MessageReceiptRecord {
     pub message_client_id: String,
     pub reader_id: String,
+    pub mentioned: bool,
     pub delivered_at: Option<i64>,
     pub read_at: Option<i64>,
     pub updated_at: i64,
@@ -450,6 +451,7 @@ async fn init_db_with_path_and_machine_name(
         "CREATE TABLE IF NOT EXISTS message_receipts (
             message_client_id TEXT NOT NULL,
             reader_id TEXT NOT NULL,
+            mentioned INTEGER NOT NULL DEFAULT 0,
             delivered_at INTEGER,
             read_at INTEGER,
             updated_at INTEGER NOT NULL,
@@ -467,6 +469,11 @@ async fn init_db_with_path_and_machine_name(
     let _ = sqlx::query("ALTER TABLE message_receipts ADD COLUMN read_ack_sent_at INTEGER")
         .execute(&pool)
         .await;
+    let _ = sqlx::query(
+        "ALTER TABLE message_receipts ADD COLUMN mentioned INTEGER NOT NULL DEFAULT 0",
+    )
+    .execute(&pool)
+    .await;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS transfers (
@@ -2413,6 +2420,42 @@ pub async fn ensure_message_recipients(
         .map_err(|e| format!("提交消息目标事务失败: {}", e))
 }
 
+pub async fn mark_message_mentions(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    client_message_id: &str,
+    peer_ids: &[String],
+) -> Result<(), String> {
+    if client_message_id.trim().is_empty() {
+        return Err("client message id is required".to_string());
+    }
+
+    let now = unix_timestamp();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("开始消息 @ 目标事务失败: {}", e))?;
+    for peer_id in peer_ids {
+        let result = sqlx::query(
+            "UPDATE message_receipts
+             SET mentioned = 1, updated_at = MAX(updated_at, ?)
+             WHERE message_client_id = ? AND reader_id = ?",
+        )
+        .bind(now)
+        .bind(client_message_id)
+        .bind(peer_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("保存消息 @ 目标失败: {}", e))?;
+        if result.rows_affected() == 0 {
+            tx.rollback().await.ok();
+            return Err(format!("消息 @ 目标不是收件人: {peer_id}"));
+        }
+    }
+    tx.commit()
+        .await
+        .map_err(|e| format!("提交消息 @ 目标事务失败: {}", e))
+}
+
 pub async fn save_message_receipt(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     message_client_id: &str,
@@ -2461,7 +2504,7 @@ pub async fn save_message_receipt(
     .map_err(|e| format!("保存消息回执失败: {}", e))?;
 
     sqlx::query_as::<_, MessageReceiptRecord>(
-        "SELECT message_client_id, reader_id, delivered_at, read_at, updated_at,
+        "SELECT message_client_id, reader_id, mentioned, delivered_at, read_at, updated_at,
                 delivery_ack_sent_at, read_ack_sent_at
          FROM message_receipts
          WHERE message_client_id = ? AND reader_id = ?",
@@ -2478,7 +2521,7 @@ pub async fn get_message_receipts(
     message_client_id: &str,
 ) -> Result<Vec<MessageReceiptRecord>, String> {
     sqlx::query_as::<_, MessageReceiptRecord>(
-        "SELECT message_client_id, reader_id, delivered_at, read_at, updated_at,
+        "SELECT message_client_id, reader_id, mentioned, delivered_at, read_at, updated_at,
                 delivery_ack_sent_at, read_ack_sent_at
          FROM message_receipts
          WHERE message_client_id = ?

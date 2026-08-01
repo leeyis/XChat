@@ -201,6 +201,94 @@ export function directConversationId(selfId, peerId) {
   return ids.length === 2 ? `direct:${ids[0]}:${ids[1]}` : `direct:${peerId}`;
 }
 
+export function groupMentionCandidates(conversation, devices, selfId, query = "") {
+  if (conversation?.kind !== "group") return [];
+  const needle = query.trim().toLocaleLowerCase();
+  return (conversation.members ?? [])
+    .filter((member) => member.peer_id !== selfId)
+    .map((member) => {
+      const device = (devices ?? []).find((item) => item.id === member.peer_id);
+      return {
+        ...member,
+        display_name:
+          member.display_name || device?.remark || device?.name || device?.hostname || "",
+        addr: device?.addr || "",
+      };
+    })
+    .filter(
+      (member) =>
+        !needle ||
+        `${member.display_name} ${member.addr}`.toLocaleLowerCase().includes(needle),
+    );
+}
+
+export function mentionToken(candidate, candidates = [], fallback = "") {
+  const name = candidate?.display_name || fallback;
+  const duplicates = candidates.filter(
+    (item) => (item.display_name || fallback) === name,
+  );
+  if (duplicates.length < 2) return `@${name}`;
+  const address = String(candidate?.addr || "").trim();
+  if (address) return `@${name}(${address})`;
+  return `@${name}#${Math.max(0, duplicates.findIndex((item) => item.peer_id === candidate?.peer_id)) + 1}`;
+}
+
+export function mentionQueryAtCaret(value, caret = value.length) {
+  const before = value.slice(0, caret);
+  const match = before.match(/@([^\s@]*)$/u);
+  if (!match) return null;
+  const start = before.lastIndexOf("@");
+  return /[\p{L}\p{N}._%+-]/u.test(before[start - 1] || "")
+    ? null
+    : { start, query: match[1] };
+}
+
+export function retainedMentionIds(text, targets = [], conversationId = "") {
+  const counts = new Map();
+  const retained = [];
+  for (const target of targets) {
+    if (
+      !target.peer_id ||
+      !target.token ||
+      (conversationId && target.conversation_id !== conversationId)
+    ) {
+      continue;
+    }
+    if (!counts.has(target.token)) {
+      const escaped = target.token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      counts.set(
+        target.token,
+        [...text.matchAll(new RegExp(`(^|[^A-Za-z0-9._%+\\-])${escaped}(?=$|[^\\p{L}\\p{N}_])`, "gu"))].length,
+      );
+    }
+    if (counts.get(target.token) > 0) {
+      retained.push(target.peer_id);
+      counts.set(target.token, counts.get(target.token) - 1);
+    }
+  }
+  return [...new Set(retained)];
+}
+
+export function nativeClipboardPaths(value = "") {
+  const paths = [];
+  for (const item of value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)) {
+    if (item.startsWith("file://")) {
+      try {
+        const url = new URL(item);
+        let path = decodeURIComponent(url.pathname);
+        if (url.host && url.host !== "localhost") path = `//${url.host}${path}`;
+        else if (/^\/[A-Za-z]:[\\/]/.test(path)) path = path.slice(1);
+        if (path) paths.push(path);
+      } catch {
+        // Ignore malformed clipboard URLs and keep valid siblings.
+      }
+    } else if (/^(\/|[A-Za-z]:[\\/])/.test(item)) {
+      paths.push(item);
+    }
+  }
+  return paths;
+}
+
 export function matchesShortcut(event, label = "") {
   const value = label.toLocaleLowerCase().replaceAll(" ", "");
   const eitherPrimary =
@@ -312,6 +400,7 @@ export function normalizeMessage(raw = {}, selfId = "", conversationId = "") {
     sender_id: senderId,
     sender_name: raw.sender_name ?? raw.from_name ?? "",
     content: raw.content ?? "",
+    mention_ids: raw.mention_ids ?? raw.mentionIds ?? [],
     msg_type: msgType,
     timestamp: toSeconds(raw.timestamp ?? raw.created_at),
     status: raw.status || (own ? "sent" : "received"),
@@ -345,13 +434,20 @@ export function isMessageAlertControlType(messageType) {
   return MESSAGE_ALERT_CONTROL_TYPES.has(String(messageType).toLocaleLowerCase());
 }
 
-export function incomingMessageAlert(raw = {}, selfId = "") {
+export function incomingMessageAlert(raw = {}, selfId = "", conversationKind = "") {
   const senderId = raw.sender_id ?? raw.from_id ?? "";
   const messageType = String(raw.msg_type ?? raw.type ?? "text").toLocaleLowerCase();
+  const wireType = String(raw.wire_msg_type ?? "")
+    .toLocaleLowerCase()
+    .replace(/[.-]/g, "_");
+  const groupMessage =
+    conversationKind === "group" || Boolean(raw.group_id) || wireType === "group_message";
+  const mentionIds = raw.mention_ids ?? raw.mentionIds ?? [];
   if (
     !senderId ||
     senderId === selfId ||
-    isMessageAlertControlType(messageType)
+    isMessageAlertControlType(messageType) ||
+    (groupMessage && !mentionIds.includes(selfId))
   ) {
     return null;
   }
@@ -523,13 +619,14 @@ function normalizeDevice(raw = {}) {
   };
 }
 
-function normalizeConversation(raw = {}, devices = []) {
+export function normalizeConversation(raw = {}, devices = []) {
   const peer = devices.find((device) => device.id === raw.peer_id);
   return {
     ...raw,
     id: raw.id ?? "",
     kind: raw.kind ?? (raw.members?.length ? "group" : "direct"),
     peer_id: raw.peer_id ?? null,
+    peer: peer ?? raw.peer,
     title: raw.title ?? raw.name ?? peer?.remark ?? peer?.name ?? "",
     pinned: Boolean(raw.pinned),
     forced_unread: Boolean(raw.forced_unread),
@@ -713,13 +810,20 @@ export class TauriAdapter {
     return this.invoke("create_group", { title, memberIds });
   }
 
-  async sendMessage(conversation, clientMessageId, content, msgType = "text") {
+  async sendMessage(
+    conversation,
+    clientMessageId,
+    content,
+    msgType = "text",
+    mentionIds = [],
+  ) {
     try {
       return await this.invoke("send_conversation_message", {
         conversationId: conversation.id,
         clientMessageId,
         content,
         msgType,
+        mentionIds,
       });
     } catch (error) {
       if (!unavailable(error) || conversation.kind !== "direct") throw error;
@@ -733,26 +837,18 @@ export class TauriAdapter {
   }
 
   async sendFiles(conversation, files = []) {
-    let paths = files
+    const paths = files
       .map((file) =>
         typeof file === "string" ? file : file.path ?? file.file_path ?? "",
       )
       .filter(Boolean);
     if (!paths.length) {
-      if (!this.tauri.dialog?.open) {
-        throw new TransportError(
-          uiCopy("系统文件选择器不可用", "The system file picker is unavailable"),
-          "file_picker_unavailable",
-          0,
-          false,
-        );
-      }
-      const selected = await this.tauri.dialog?.open({
-        multiple: true,
-        title: uiCopy("选择要发送的文件", "Choose files to send"),
-      });
-      if (!selected) return [];
-      paths = Array.isArray(selected) ? selected : [selected];
+      throw new TransportError(
+        uiCopy("无法读取这个本地文件", "This local file is unavailable"),
+        "file_unavailable",
+        0,
+        false,
+      );
     }
     const results = [];
     for (const filePath of paths) {
@@ -781,6 +877,10 @@ export class TauriAdapter {
     });
     if (!selected) return [];
     return this.attachmentsFromPaths(Array.isArray(selected) ? selected : [selected]);
+  }
+
+  readClipboardFiles() {
+    return this.invoke("read_clipboard_files");
   }
 
   async attachmentsFromPaths(paths) {
@@ -1044,7 +1144,7 @@ export class TauriAdapter {
   }
 }
 
-class HttpWsAdapter {
+export class HttpWsAdapter {
   constructor() {
     this.runtime = "web";
     this.pendingUploads = new Map();
@@ -1137,12 +1237,23 @@ class HttpWsAdapter {
     return this.json("/api/groups", "POST", { title, member_ids: memberIds });
   }
 
-  async sendMessage(conversation, clientMessageId, content, msgType = "text") {
+  async sendMessage(
+    conversation,
+    clientMessageId,
+    content,
+    msgType = "text",
+    mentionIds = [],
+  ) {
     try {
       return await this.json(
         `/api/conversations/${encodeURIComponent(conversation.id)}/messages`,
         "POST",
-        { client_message_id: clientMessageId, content, msg_type: msgType },
+        {
+          client_message_id: clientMessageId,
+          content,
+          msg_type: msgType,
+          mention_ids: mentionIds,
+        },
       );
     } catch (error) {
       if (!unavailable(error) || conversation.kind !== "direct") throw error;
@@ -1599,17 +1710,10 @@ export function createXChatModule() {
       return next;
     });
 
-  const attachPeers = (conversations, devices) =>
-    conversations.map((conversation) => ({
-      ...conversation,
-      peer: devices.find((device) => device.id === conversation.peer_id),
-    }));
-
   const refreshWorkspace = async ({ quiet = false } = {}) => {
     try {
       const raw = await adapter.getSnapshot();
       const next = normalizeWorkspace(raw, snapshot, adapter.runtime);
-      next.conversations = attachPeers(next.conversations, next.devices);
       publish(next);
       return next;
     } catch (error) {
@@ -1701,7 +1805,13 @@ export function createXChatModule() {
       (eventType.includes("message") || payload?.from_id || payload?.conversation_id) &&
       (payload?.content !== undefined || payload?.file_name)
     ) {
-      const alert = incomingMessageAlert(payload, snapshot.self.id);
+      const conversationId =
+        payload.conversation_id ??
+        snapshot.conversations.find((conversation) => conversation.peer_id === payload.from_id)?.id;
+      const conversationKind = snapshot.conversations.find(
+        (conversation) => conversation.id === conversationId,
+      )?.kind;
+      const alert = incomingMessageAlert(payload, snapshot.self.id, conversationKind);
       const needsAttention = !isAppActive(
         document.visibilityState,
         document.hasFocus(),
@@ -1723,9 +1833,6 @@ export function createXChatModule() {
         }
         Promise.resolve(adapter.startAttention()).catch(() => {});
       }
-      const conversationId =
-        payload.conversation_id ??
-        snapshot.conversations.find((conversation) => conversation.peer_id === payload.from_id)?.id;
       if (conversationId) {
         const message = normalizeMessage(payload, snapshot.self.id, conversationId);
         patch({
@@ -1791,6 +1898,12 @@ export function createXChatModule() {
   const activeConversation = () =>
     snapshot.conversations.find(
       (conversation) => conversation.id === snapshot.activeConversationId,
+    );
+
+  const conversationForAction = (action) =>
+    snapshot.conversations.find(
+      (conversation) =>
+        conversation.id === (action.conversationId ?? snapshot.activeConversationId),
     );
 
   const run = async (action) => {
@@ -1878,9 +1991,12 @@ export function createXChatModule() {
         return;
       }
       case "message.sendText": {
-        const conversation = activeConversation();
+        const conversation = conversationForAction(action);
         const content = action.content.trim();
         if (!conversation || !content) return;
+        const mentionIds = conversation.kind === "group"
+          ? [...new Set(action.mentionIds ?? [])]
+          : [];
         const clientMessageId = globalThis.crypto.randomUUID();
         const optimistic = normalizeMessage(
           {
@@ -1889,6 +2005,7 @@ export function createXChatModule() {
             sender_id: snapshot.self.id,
             sender_name: snapshot.self.name,
             content,
+            mention_ids: mentionIds,
             timestamp: Math.floor(Date.now() / 1000),
             status: "pending",
             own: true,
@@ -1911,6 +2028,7 @@ export function createXChatModule() {
             clientMessageId,
             content,
             "text",
+            mentionIds,
           );
           const acknowledged = normalizeMessage(
             {
@@ -1946,7 +2064,7 @@ export function createXChatModule() {
         }
       }
       case "message.sendFiles": {
-        const conversation = activeConversation();
+        const conversation = conversationForAction(action);
         if (!conversation) return;
         scheduleRefresh();
         const result = await adapter.sendFiles(conversation, action.files ?? []);
@@ -1963,6 +2081,18 @@ export function createXChatModule() {
       case "draft.addFiles": {
         const conversationId = action.conversationId ?? snapshot.activeConversationId;
         if (!conversationId) return [];
+        const clipboardPaths = action.fromClipboard
+          ? await Promise.resolve()
+              .then(() => adapter.readClipboardFiles?.())
+              .catch(() => [])
+          : [];
+        if (clipboardPaths?.length) {
+          const checked = adapter.validateDroppedPaths
+            ? await adapter.validateDroppedPaths(clipboardPaths)
+            : { files: clipboardPaths, errors: [] };
+          if (checked.errors.length) addNotice(checked.errors.join(uiCopy("；", "; ")));
+          return addDraftAttachments(conversationId, checked.files);
+        }
         if (action.rejectedNames?.length) {
           addNotice(
             uiCopy(
