@@ -8,13 +8,20 @@ Xchat `0.1.0` 是一款基于 Tauri 2、React 和 Rust 的局域网聊天客户�
 - 单聊、群聊、离线补发、送达与已读状态
 - 分块文件传输、取消、重试和文件中心
 - 图片粘贴、拖放、输入区预览与消息内联显示
-- macOS 截图编辑：矩形、椭圆、箭头、画笔、马赛克、文本、回退和钉图
+- 桌面端截图编辑（macOS、Windows、Linux）：矩形、椭圆、箭头、画笔、马赛克、文本、回退和钉图
 - 中英文、主题、通知、下载目录和网络参数设置
 - 可选的 headless Web 运行模式
 
 ## 开发
 
 前置要求：Node.js、Rust、Tauri 2 的平台依赖，以及 `cargo-tauri`。
+
+Linux 上截图功能还需要以下系统包（Debian/Ubuntu 包名）：
+
+```bash
+sudo apt install pkg-config libclang-dev libxcb1-dev libxrandr-dev \
+  libdbus-1-dev libpipewire-0.3-dev libwayland-dev libegl-dev
+```
 
 ```bash
 npm install

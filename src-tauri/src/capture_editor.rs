@@ -280,11 +280,61 @@ fn display_number_for_geometry(
         .unwrap_or(1)
 }
 
+/// Windows/Linux：用 xcap 抓取指定显示器，编码为 PNG 写入 `path`。
+///
+/// macOS 走 `/usr/sbin/screencapture`，因为系统命令已经处理好 TCC 屏幕录制授权。
+#[cfg(all(not(target_os = "macos"), feature = "xcap"))]
+fn grab_monitor_png(
+    monitor_origin: (i32, i32),
+    monitor_size: (u32, u32),
+    path: &Path,
+) -> Result<(), String> {
+    // 用显示器原点定位，避免依赖各平台不一致的显示器排序。
+    let (origin_x, origin_y) = monitor_origin;
+    let (expected_width, expected_height) = monitor_size;
+    let monitor = xcap::Monitor::from_point(origin_x, origin_y)
+        .or_else(|_| {
+            // 原点像素有时不属于任何显示器（缩放取整、显示器间空隙），退回中心点。
+            xcap::Monitor::from_point(
+                origin_x.saturating_add(expected_width as i32 / 2),
+                origin_y.saturating_add(expected_height as i32 / 2),
+            )
+        })
+        .map_err(|error| format!("无法定位当前显示器: {error}"))?;
+    let image = monitor
+        .capture_image()
+        .map_err(|error| format!("无法读取屏幕: {error}"))?;
+    if image.width() == 0 || image.height() == 0 {
+        return Err("无法读取屏幕：抓取结果为空".to_string());
+    }
+    // xcap 与 Tauri 都启用了 image 的 PNG 编码器，直接落盘即可。
+    image
+        .save(path)
+        .map_err(|error| format!("写入截图失败: {error}"))
+}
+
 fn restore_main_window(app: &tauri::AppHandle) {
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.show();
         let _ = main.unminimize();
         let _ = main.set_focus();
+    }
+}
+
+/// 抓屏失败时给出平台对应的处置建议：三端的补救方式并不相同。
+#[cfg(any(target_os = "macos", feature = "xcap"))]
+fn capture_permission_error(detail: Option<String>) -> String {
+    #[cfg(target_os = "macos")]
+    let hint = "无法读取屏幕，请在系统设置中允许 Xchat 使用屏幕录制权限";
+    #[cfg(target_os = "windows")]
+    let hint = "无法读取屏幕，请确认没有其他程序正在独占显示输出";
+    #[cfg(target_os = "linux")]
+    let hint = "无法读取屏幕。Wayland 需要在弹出的门户对话框中允许屏幕共享";
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    let hint = "无法读取屏幕";
+    match detail {
+        Some(detail) if !detail.is_empty() => format!("{hint}（{detail}）"),
+        _ => hint.to_string(),
     }
 }
 
@@ -354,7 +404,7 @@ pub async fn start(
         return capture;
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", feature = "xcap"))]
     {
         let main = app
             .get_webview_window("main")
@@ -363,30 +413,38 @@ pub async fn start(
             .current_monitor()
             .map_err(|error| format!("无法读取当前显示器: {error}"))?
             .ok_or_else(|| "当前显示器不可用".to_string())?;
-        let monitors = main
-            .available_monitors()
-            .map_err(|error| format!("无法读取显示器列表: {error}"))?;
-        let current_geometry = (
-            monitor.position().x,
-            monitor.position().y,
-            monitor.size().width,
-            monitor.size().height,
+        #[cfg(target_os = "macos")]
+        let display_number = {
+            let monitors = main
+                .available_monitors()
+                .map_err(|error| format!("无法读取显示器列表: {error}"))?;
+            let current_geometry = (
+                monitor.position().x,
+                monitor.position().y,
+                monitor.size().width,
+                monitor.size().height,
+            );
+            let monitor_geometries = monitors
+                .iter()
+                .map(|item| {
+                    (
+                        item.position().x,
+                        item.position().y,
+                        item.size().width,
+                        item.size().height,
+                    )
+                })
+                .collect::<Vec<_>>();
+            display_number_for_geometry(current_geometry, &monitor_geometries).to_string()
+        };
+        #[cfg(not(target_os = "macos"))]
+        let monitor_geometry = (
+            (monitor.position().x, monitor.position().y),
+            (monitor.size().width, monitor.size().height),
         );
-        let monitor_geometries = monitors
-            .iter()
-            .map(|item| {
-                (
-                    item.position().x,
-                    item.position().y,
-                    item.size().width,
-                    item.size().height,
-                )
-            })
-            .collect::<Vec<_>>();
-        let display_number =
-            display_number_for_geometry(current_geometry, &monitor_geometries).to_string();
         main.hide()
             .map_err(|error| format!("隐藏主窗口失败: {error}"))?;
+        // 等窗口动画结束，否则会把正在淡出的主窗口拍进截图。
         tokio::time::sleep(std::time::Duration::from_millis(180)).await;
 
         let result = async {
@@ -397,23 +455,35 @@ pub async fn start(
             let session_id = uuid::Uuid::new_v4().to_string();
             let path = capture_dir.join(format!("{session_id}.png"));
             let mut temp_path = TempCapturePath::new(path.clone());
-            let command_path = path.clone();
-            let status = tokio::task::spawn_blocking(move || {
+            let grab_path = path.clone();
+            #[cfg(target_os = "macos")]
+            let grabbed = tokio::task::spawn_blocking(move || {
                 std::process::Command::new("/usr/sbin/screencapture")
                     .args(["-x", "-D"])
                     .arg(display_number)
-                    .arg(&command_path)
+                    .arg(&grab_path)
                     .status()
+                    .map_err(|error| format!("启动系统截图失败: {error}"))
+                    .and_then(|status| {
+                        if status.success() {
+                            Ok(())
+                        } else {
+                            Err("系统截图未完成".to_string())
+                        }
+                    })
             })
             .await
-            .map_err(|error| format!("启动系统截图失败: {error}"))?
             .map_err(|error| format!("启动系统截图失败: {error}"))?;
+            #[cfg(not(target_os = "macos"))]
+            let grabbed = tokio::task::spawn_blocking(move || {
+                grab_monitor_png(monitor_geometry.0, monitor_geometry.1, &grab_path)
+            })
+            .await
+            .map_err(|error| format!("启动屏幕抓取失败: {error}"))?;
             let bytes = tokio::fs::read(&path).await.unwrap_or_default();
-            if !status.success() || bytes.is_empty() {
+            if grabbed.is_err() || bytes.is_empty() {
                 remove_file(&path);
-                return Err(
-                    "无法读取屏幕，请在系统设置中允许 Xchat 使用屏幕录制权限".to_string(),
-                );
+                return Err(capture_permission_error(grabbed.err()));
             }
             let (width, height) = png_dimensions(&bytes)?;
             let capture = CaptureFile {
@@ -486,7 +556,7 @@ pub async fn start(
         result
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", feature = "xcap")))]
     {
         let _ = app;
         Err("capture_unsupported".to_string())

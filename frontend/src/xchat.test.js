@@ -195,6 +195,34 @@ test("web-only APIs are decided by the browser, not server platform flags", () =
   }
 });
 
+test("desktop capture is available on every desktop platform but not Android", () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const agents = {
+    macos: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+    windows: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    linux: "Mozilla/5.0 (X11; Linux x86_64)",
+    android: "Mozilla/5.0 (Linux; Android 14; Pixel 8)",
+  };
+  try {
+    for (const [platform, userAgent] of Object.entries(agents)) {
+      Object.defineProperty(globalThis, "navigator", {
+        configurable: true,
+        value: { userAgent },
+      });
+      const capabilities = runtimeCapabilities("tauri", {}, false);
+      const expected = platform !== "android";
+      assert.equal(capabilities.capture, expected, `capture on ${platform}`);
+      assert.equal(capabilities.captureShortcut, expected, `shortcut on ${platform}`);
+    }
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(globalThis, "navigator", descriptor);
+    } else {
+      delete globalThis.navigator;
+    }
+  }
+});
+
 test("file status prefers transfer state and keeps completed outgoing files usable", () => {
   assert.equal(fileStatus({ status: "received", file_status: "accepted" }), "accepted");
   assert.equal(fileStatus({ status: "completed", file_status: "" }), "completed");

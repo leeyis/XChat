@@ -8,13 +8,20 @@ Xchat `0.1.0` is a LAN chat client built with Tauri 2, React, and Rust. Install 
 - Direct and group chats, offline delivery, delivered/read receipts
 - Four-way parallel transfer for large files, with resume, cancellation, retry, and a file center
 - Pasted, selected, and dropped image drafts with inline message rendering
-- macOS capture editor with rectangle, ellipse, arrow, pen, mosaic, text, undo, and pin
+- Desktop capture editor (macOS, Windows, Linux) with rectangle, ellipse, arrow, pen, mosaic, text, undo, and pin
 - Chinese/English UI, themes, notifications, download, network, and local IP/MAC identity settings
 - Optional headless Web mode
 
 ## Development
 
 Install Node.js, Rust, the Tauri 2 platform prerequisites, and `cargo-tauri`.
+
+On Linux, screen capture also needs these packages (Debian/Ubuntu names):
+
+```bash
+sudo apt install pkg-config libclang-dev libxcb1-dev libxrandr-dev \
+  libdbus-1-dev libpipewire-0.3-dev libwayland-dev libegl-dev
+```
 
 ```bash
 npm install

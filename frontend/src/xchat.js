@@ -145,9 +145,11 @@ function humanPlatform() {
 export function runtimeCapabilities(runtime, supplied = {}, legacy = false) {
   const platform = humanPlatform();
   const webCapture = Boolean(globalThis.navigator?.mediaDevices?.getDisplayMedia);
+  // 桌面端三个平台都有原生抓屏后端；Android 仍然没有。
+  const desktopCapture = platform === "macos" || platform === "windows" || platform === "linux";
   const defaults = {
-    capture: runtime === "web" ? webCapture : platform === "macos",
-    captureShortcut: runtime === "web" ? webCapture : platform === "macos",
+    capture: runtime === "web" ? webCapture : desktopCapture,
+    captureShortcut: runtime === "web" ? webCapture : desktopCapture,
     revealFile: runtime === "tauri" && platform !== "android",
     openOutgoingFile: runtime === "tauri",
     notifications:

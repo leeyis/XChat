@@ -36,7 +36,11 @@ pub struct RuntimeCapabilities {
 
 impl RuntimeCapabilities {
     pub fn current() -> Self {
-        let capture = cfg!(all(feature = "desktop", target_os = "macos"));
+        // macOS 用系统 screencapture，Windows/Linux 用 xcap。
+        let capture = cfg!(all(
+            feature = "desktop",
+            any(target_os = "macos", target_os = "windows", target_os = "linux")
+        ));
         Self {
             capture,
             capture_shortcut: capture,
