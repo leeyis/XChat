@@ -835,8 +835,10 @@ function mediaResultUrl(payload) {
 function useMessageMedia(message, workspace, enabled = true) {
   const [media, setMedia] = useState({ url: "", failed: false });
   const messageId = message.message_id ?? message.id;
+  const available = localFileAvailable(message);
+  const status = fileStatus(message);
   useEffect(() => {
-    if (!enabled || messageId == null || !localFileAvailable(message)) {
+    if (!enabled || messageId == null || !available) {
       setMedia({ url: "", failed: false });
       return;
     }
@@ -858,7 +860,7 @@ function useMessageMedia(message, workspace, enabled = true) {
       disposed = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [enabled, messageId, workspace]);
+  }, [available, enabled, message.file_path, messageId, status, workspace]);
   return media;
 }
 
