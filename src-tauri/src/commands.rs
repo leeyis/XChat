@@ -2059,6 +2059,11 @@ pub async fn save_capture_editor(
 }
 
 #[tauri::command]
+pub fn copy_capture_editor(app: AppHandle, data_url: String) -> Result<(), String> {
+    crate::capture_editor::copy_editor(&app, data_url)
+}
+
+#[tauri::command]
 pub fn cancel_capture_editor(app: AppHandle) -> Result<(), String> {
     crate::capture_editor::cancel(&app)
 }

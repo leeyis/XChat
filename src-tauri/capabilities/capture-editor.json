@@ -10,6 +10,7 @@
     "allow-get-pending-capture",
     "allow-finish-capture-editor",
     "allow-save-capture-editor",
+    "allow-copy-capture-editor",
     "allow-cancel-capture-editor",
     "allow-pin-capture"
   ]

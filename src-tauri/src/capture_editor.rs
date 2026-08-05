@@ -354,6 +354,19 @@ fn clear_editor() {
     }
 }
 
+fn consume_editor_after(
+    state: &mut CaptureState,
+    action: impl FnOnce() -> Result<(), String>,
+) -> Result<CaptureFile, String> {
+    let capture = state
+        .editor
+        .clone()
+        .ok_or_else(|| "没有待处理的截图".to_string())?;
+    action()?;
+    state.editor = None;
+    Ok(capture)
+}
+
 fn clear_pin() {
     if let Ok(mut state) = lock_state() {
         if let Some(capture) = state.pin.take() {
@@ -704,11 +717,58 @@ pub async fn save(
     }))
 }
 
+#[cfg(not(target_os = "android"))]
+fn set_clipboard_image(
+    image: clipboard_rs::RustImageData,
+    failure_context: &str,
+) -> Result<(), String> {
+    use clipboard_rs::{Clipboard, ClipboardContext};
+
+    ClipboardContext::new()
+        .map_err(|error| format!("剪贴板不可用: {error}"))?
+        .set_image(image)
+        .map_err(|error| format!("{failure_context}: {error}"))
+}
+
+pub fn copy_editor(app: &tauri::AppHandle, data_url: String) -> Result<(), String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        use clipboard_rs::common::RustImage;
+        use clipboard_rs::RustImageData;
+
+        let (bytes, _, _) = png_from_data_url(&data_url)?;
+        let image = RustImageData::from_bytes(&bytes)
+            .map_err(|error| format!("读取截图失败: {error}"))?;
+        let window = app
+            .get_webview_window("capture-editor")
+            .ok_or_else(|| "截图编辑器窗口不可用".to_string())?;
+        let capture = {
+            let mut state = lock_state()?;
+            consume_editor_after(&mut state, || {
+                set_clipboard_image(image, "复制截图失败")?;
+                window
+                    .hide()
+                    .map_err(|error| format!("关闭截图编辑器失败: {error}"))
+            })?
+        };
+
+        remove_file(&capture.path);
+        let _ = window.close();
+        restore_main_window(app);
+        Ok(())
+    }
+    #[cfg(target_os = "android")]
+    {
+        let _ = (app, data_url);
+        Err("当前平台不支持复制截图".to_string())
+    }
+}
+
 pub fn copy_pin(scale: Option<f64>) -> Result<(), String> {
     #[cfg(not(target_os = "android"))]
     {
         use clipboard_rs::common::RustImage;
-        use clipboard_rs::{Clipboard, ClipboardContext, FilterType, RustImageData};
+        use clipboard_rs::{FilterType, RustImageData};
 
         let capture = lock_state()?
             .pin
@@ -736,10 +796,7 @@ pub fn copy_pin(scale: Option<f64>) -> Result<(), String> {
         } else {
             image
         };
-        ClipboardContext::new()
-            .map_err(|error| format!("剪贴板不可用: {error}"))?
-            .set_image(image)
-            .map_err(|error| format!("复制钉图失败: {error}"))
+        set_clipboard_image(image, "复制钉图失败")
     }
     #[cfg(target_os = "android")]
     {
@@ -1084,6 +1141,33 @@ mod tests {
         assert_eq!(old_pin.unwrap().session_id, "new-pin");
         assert!(editor.is_none());
         assert_eq!(state.pin.as_ref().unwrap().session_id, "updated-pin");
+    }
+
+    #[test]
+    fn editor_copy_consumes_state_only_after_the_action_succeeds() {
+        let capture = CaptureFile {
+            session_id: "editor".to_string(),
+            conversation_id: Some("conversation".to_string()),
+            path: PathBuf::from("editor.png"),
+            file_name: "capture.png".to_string(),
+            file_size: 24,
+            width: 1,
+            height: 1,
+        };
+        let mut state = CaptureState {
+            editor: Some(capture),
+            pin: None,
+        };
+
+        let error = consume_editor_after(&mut state, || Err("剪贴板失败".to_string()))
+            .err()
+            .unwrap();
+        assert_eq!(error, "剪贴板失败");
+        assert!(state.editor.is_some());
+
+        let copied = consume_editor_after(&mut state, || Ok(())).unwrap();
+        assert_eq!(copied.session_id, "editor");
+        assert!(state.editor.is_none());
     }
 
     #[test]

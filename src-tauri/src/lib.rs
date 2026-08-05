@@ -106,6 +106,7 @@ pub fn run() {
             commands::get_pending_capture,
             commands::finish_capture_editor,
             commands::save_capture_editor,
+            commands::copy_capture_editor,
             commands::cancel_capture_editor,
             commands::pin_capture,
             commands::copy_pinned_capture,

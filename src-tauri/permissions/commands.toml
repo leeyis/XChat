@@ -296,6 +296,11 @@ description = "Allows saving the edited screenshot to a user-selected PNG path"
 commands.allow = ["save_capture_editor"]
 
 [[permission]]
+identifier = "allow-copy-capture-editor"
+description = "Allows copying the edited screenshot to the system clipboard"
+commands.allow = ["copy_capture_editor"]
+
+[[permission]]
 identifier = "allow-cancel-capture-editor"
 description = "Allows cancelling and cleaning up the pending screenshot"
 commands.allow = ["cancel_capture_editor"]
