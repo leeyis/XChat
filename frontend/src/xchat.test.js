@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createXChatModule,
   directConversationId,
   EMOJI_SET,
   fileKind,
@@ -508,6 +509,78 @@ test("Tauri capture copy forwards the edited PNG to the native command", async (
   await adapter.copyCapture(dataUrl);
 
   assert.deepEqual(calls, [["copy_capture_editor", { dataUrl }]]);
+});
+
+async function withTauriCaptureWorkspace(capture, run) {
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const calls = [];
+  let workspace;
+  try {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        __TAURI__: {
+          core: {
+            invoke(command, payload) {
+              calls.push([command, payload]);
+              if (command === "get_workspace_snapshot") {
+                return Promise.resolve({
+                  self: { id: "self", name: "Me", hostname: "mac", addr: "" },
+                  devices: [],
+                  conversations: [],
+                  files: [],
+                  transfers: [],
+                  settings: { language: "zh-CN", capture_shortcut: "⌘ ⇧ A" },
+                  capabilities: { capture, captureShortcut: capture },
+                });
+              }
+              if (command === "start_capture_editor") {
+                return Promise.resolve({ session_id: "capture", conversation_id: null });
+              }
+              return Promise.resolve([]);
+            },
+          },
+          event: { listen: () => Promise.resolve(() => {}) },
+        },
+      },
+    });
+
+    workspace = createXChatModule();
+    assert.equal((await workspace.dispatch({ type: "bootstrap" })).ok, true);
+    await run({ workspace, calls });
+  } finally {
+    await workspace?.dispatch({ type: "shutdown" });
+    if (windowDescriptor) {
+      Object.defineProperty(globalThis, "window", windowDescriptor);
+    } else {
+      delete globalThis.window;
+    }
+  }
+}
+
+test("Tauri capture starts without a discovered conversation", async () => {
+  await withTauriCaptureWorkspace(true, async ({ workspace, calls }) => {
+    const result = await workspace.dispatch({ type: "capture.start" });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(
+      calls.find(([command]) => command === "start_capture_editor"),
+      ["start_capture_editor", { conversationId: null }],
+    );
+  });
+});
+
+test("unsupported desktop capture never invokes the backend", async () => {
+  await withTauriCaptureWorkspace(false, async ({ workspace, calls }) => {
+    const result = await workspace.dispatch({ type: "capture.start" });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "capture_unsupported");
+    assert.equal(
+      calls.some(([command]) => command === "start_capture_editor"),
+      false,
+    );
+  });
 });
 
 test("desktop and web message adapters send stable mention IDs", async () => {

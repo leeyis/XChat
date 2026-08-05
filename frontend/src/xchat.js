@@ -2173,7 +2173,7 @@ export function createXChatModule() {
         return;
       case "capture.start": {
         const conversation = activeConversation();
-        if (!conversation || !snapshot.capabilities.capture) {
+        if (!snapshot.capabilities.capture) {
           throw new TransportError(
             uiCopy("当前平台不支持截屏", "The current platform does not support screen capture"),
             "capture_unsupported",
@@ -2181,7 +2181,15 @@ export function createXChatModule() {
             false,
           );
         }
-        return adapter.startCapture(conversation.id);
+        if (!conversation && adapter.runtime !== "tauri") {
+          throw new TransportError(
+            uiCopy("请先选择一个会话", "Select a conversation first"),
+            "capture_conversation_required",
+            0,
+            false,
+          );
+        }
+        return adapter.startCapture(conversation?.id ?? null);
       }
       case "capture.pending":
         return adapter.pendingCapture();
