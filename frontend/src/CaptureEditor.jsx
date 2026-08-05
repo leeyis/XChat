@@ -654,7 +654,31 @@ function CaptureOverlay({
   };
 
   const copy = async () => {
-    if (pinEditing) return;
+    if (pinEditing) {
+      setBusy(true);
+      setError("");
+      setStatus("");
+      const updated = await workspace.dispatch({
+        type: "capture.pin",
+        dataUrl: exportPng(),
+      });
+      if (!updated.ok) {
+        setBusy(false);
+        setError(updated.error.message);
+        return;
+      }
+      const copied = await workspace.dispatch({
+        type: "capture.pin.copy",
+        scale: null,
+      });
+      setBusy(false);
+      if (!copied.ok) {
+        setError(copied.error.message);
+        return;
+      }
+      onExitPinEdit?.();
+      return;
+    }
     setBusy(true);
     setError("");
     setStatus("");

@@ -24,6 +24,7 @@ import {
   mentionToken,
   nativeClipboardPaths,
   nativeDragDropTarget,
+  nativeCaptureShortcutAvailable,
   normalizeConversation,
   normalizeDraftAttachment,
   normalizeMessage,
@@ -65,6 +66,11 @@ test("read receipts and attention clear only while the app is active", () => {
   assert.equal(isAppActive("visible", true), true);
   assert.equal(isAppActive("visible", false), false);
   assert.equal(isAppActive("hidden", true), false);
+});
+
+test("desktop capture shortcuts use the native global listener", () => {
+  assert.equal(nativeCaptureShortcutAvailable({ core: { invoke() {} } }), true);
+  assert.equal(nativeCaptureShortcutAvailable(undefined), false);
 });
 
 test("direct conversation IDs are stable on both peers", () => {
@@ -129,6 +135,7 @@ test("shortcut capture stores the actual modifier combination", () => {
     "⌘ ⇧ A",
   );
   assert.equal(shortcutLabelFromEvent({ key: "Shift", shiftKey: true }), "");
+  assert.equal(shortcutLabelFromEvent({ key: "a" }), "");
 });
 
 test("message merge replaces optimistic rows and never regresses receipts", () => {

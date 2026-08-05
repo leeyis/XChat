@@ -3,6 +3,8 @@
 pub mod commands;
 #[cfg(feature = "desktop")]
 pub mod capture_editor;
+#[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+pub mod capture_shortcut;
 
 #[cfg(feature = "desktop")]
 use std::sync::OnceLock;

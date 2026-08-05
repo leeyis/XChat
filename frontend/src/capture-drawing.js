@@ -56,7 +56,7 @@ export function captureEditorActionAvailability({
   pinEditing = false,
 } = {}) {
   return {
-    canCopy: Boolean(nativeCopy && !pinEditing),
+    canCopy: Boolean(nativeCopy),
     canFinish: Boolean(pinEditing || conversationId),
   };
 }

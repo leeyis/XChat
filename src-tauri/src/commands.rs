@@ -2141,10 +2141,28 @@ pub async fn get_workspace_snapshot(
 
 #[tauri::command]
 pub async fn update_workspace_preference(
+    app: AppHandle,
     state: State<'_, DbState>,
     key: String,
     value: String,
 ) -> Result<(), String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if key == "capture_shortcut" {
+        let previous = crate::db::get_setting(&state.pool, &key).await?;
+        crate::workspace::update_preference(&state.pool, &key, &value).await?;
+        if let Err(error) = crate::capture_shortcut::register(&app, &value) {
+            let previous = previous.unwrap_or_default();
+            return match crate::db::set_setting(&state.pool, &key, &previous).await {
+                Ok(()) => Err(error),
+                Err(restore_error) => Err(format!(
+                    "{error}；恢复原快捷键设置失败: {restore_error}"
+                )),
+            };
+        }
+        return Ok(());
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let _ = app;
     crate::workspace::update_preference(&state.pool, &key, &value).await
 }
 

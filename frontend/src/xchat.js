@@ -312,8 +312,13 @@ export function matchesShortcut(event, label = "") {
   );
 }
 
+export function nativeCaptureShortcutAvailable(tauri = globalThis.window?.__TAURI__) {
+  return Boolean(tauri?.core?.invoke);
+}
+
 export function shortcutLabelFromEvent(event) {
   if (!/^[a-z0-9]$/i.test(event.key || "")) return "";
+  if (!(event.metaKey || event.ctrlKey || event.altKey || event.shiftKey)) return "";
   return [
     event.metaKey && "⌘",
     event.ctrlKey && "⌃",

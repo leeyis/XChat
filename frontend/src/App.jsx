@@ -21,6 +21,7 @@ import {
   mentionQueryAtCaret,
   mentionToken,
   nativeClipboardPaths,
+  nativeCaptureShortcutAvailable,
   nativeDragDropTarget,
   retainedMentionIds,
   shortcutLabelFromEvent,
@@ -224,6 +225,7 @@ const copy = {
     captureShortcut: "截屏快捷键",
     captureShortcutHint: "点击输入框后按下字母或数字组合键",
     captureShortcutFocusedHint: "仅在 Xchat 窗口聚焦时生效",
+    captureShortcutGlobalHint: "启动 Xchat 后全局生效，包括隐藏到托盘时",
     groupMembers: (count) => `群成员 · ${count}`,
     editDeviceRemark: "修改设备备注",
     unpinConversation: "取消置顶",
@@ -472,6 +474,7 @@ const copy = {
     captureShortcut: "Capture shortcut",
     captureShortcutHint: "Focus this field, then press a letter or number shortcut",
     captureShortcutFocusedHint: "Works only while the Xchat window is focused",
+    captureShortcutGlobalHint: "Works globally while Xchat is running, including from the tray",
     groupMembers: (count) => `${count} group ${count === 1 ? "member" : "members"}`,
     editDeviceRemark: "Edit device remark",
     unpinConversation: "Unpin conversation",
@@ -3151,7 +3154,7 @@ function SettingsWorkspace({
             label={labels.captureShortcut}
             detail={
               state.capabilities.captureShortcut
-                ? `${labels.captureShortcutFocusedHint} · ${labels.captureShortcutHint}`
+                ? `${globalThis.window?.__TAURI__ ? labels.captureShortcutGlobalHint : labels.captureShortcutFocusedHint} · ${labels.captureShortcutHint}`
                 : labels.platformUnavailable
             }
           >
@@ -3687,7 +3690,12 @@ export default function App({ workspace }) {
   }, [workspace]);
 
   useEffect(() => {
-    if (!state.capabilities.captureShortcut) return;
+    if (
+      !state.capabilities.captureShortcut ||
+      nativeCaptureShortcutAvailable()
+    ) {
+      return;
+    }
     const onKeyDown = (event) => {
       if (
         event.target instanceof HTMLInputElement ||

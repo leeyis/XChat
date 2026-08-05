@@ -409,7 +409,7 @@ test("capture editor actions distinguish standalone, Web, and pin editing", () =
       nativeCopy: true,
       pinEditing: true,
     }),
-    { canCopy: false, canFinish: true },
+    { canCopy: true, canFinish: true },
   );
 });
 

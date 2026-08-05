@@ -49,7 +49,22 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_sql::Builder::default().build())
-        .plugin(tauri_plugin_opener::init());
+        .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state != tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        return;
+                    }
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) = lanchat::capture_editor::start(&app, None).await {
+                            eprintln!("[CaptureShortcut] {error}");
+                        }
+                    });
+                })
+                .build(),
+        );
 
     #[cfg(any(target_os = "macos", target_os = "android"))]
     let builder = builder.plugin(tauri_plugin_notification::init());
@@ -191,9 +206,23 @@ fn main() {
             let notif_enabled = tauri::async_runtime::block_on(async {
                 lanchat::db::get_notifications_enabled(&pool).await
             });
+            let capture_shortcut = tauri::async_runtime::block_on(async {
+                lanchat::db::get_setting(&pool, "capture_shortcut")
+                    .await
+                    .ok()
+                    .flatten()
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| "Ctrl/⌘ ⇧ A".to_string())
+            });
 
             handle.manage(db::DbState { pool: pool.clone() });
             handle.manage(lanchat::commands::TrayFlashState::default());
+            handle.manage(lanchat::capture_shortcut::CaptureShortcutState::default());
+            if let Err(error) =
+                lanchat::capture_shortcut::register(&handle, &capture_shortcut)
+            {
+                eprintln!("[CaptureShortcut] {error}");
+            }
             println!("[Main] 我的用户名: {}", my_name);
             println!("[Main] 我的 ID: {}", my_id);
             println!("[Main] 服务端口: {}", port);
