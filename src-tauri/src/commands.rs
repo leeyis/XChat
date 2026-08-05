@@ -2030,7 +2030,7 @@ pub fn stop_tray_flash(
 #[tauri::command]
 pub async fn start_capture_editor(
     app: AppHandle,
-    conversation_id: String,
+    conversation_id: Option<String>,
 ) -> Result<crate::capture_editor::CaptureSessionSummary, String> {
     crate::capture_editor::start(&app, conversation_id).await
 }

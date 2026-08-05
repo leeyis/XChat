@@ -392,13 +392,23 @@ async fn read_capture(capture: CaptureFile) -> Result<PendingCapture, String> {
     })
 }
 
-pub async fn start(
-    app: &tauri::AppHandle,
-    conversation_id: String,
-) -> Result<CaptureSessionSummary, String> {
-    if conversation_id.trim().is_empty() || conversation_id.len() > 256 {
+fn validate_capture_conversation_id(
+    conversation_id: Option<String>,
+) -> Result<Option<String>, String> {
+    if conversation_id
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty() || value.len() > 256)
+    {
         return Err("无效的会话 ID".to_string());
     }
+    Ok(conversation_id)
+}
+
+pub async fn start(
+    app: &tauri::AppHandle,
+    conversation_id: Option<String>,
+) -> Result<CaptureSessionSummary, String> {
+    let conversation_id = validate_capture_conversation_id(conversation_id)?;
     if let Some(window) = app.get_webview_window("capture-editor") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -501,7 +511,7 @@ pub async fn start(
             let (width, height) = png_dimensions(&bytes)?;
             let capture = CaptureFile {
                 session_id,
-                conversation_id: Some(conversation_id),
+                conversation_id,
                 path,
                 file_name: "capture.png".to_string(),
                 file_size: bytes.len() as u64,
@@ -1168,6 +1178,23 @@ mod tests {
         let copied = consume_editor_after(&mut state, || Ok(())).unwrap();
         assert_eq!(copied.session_id, "editor");
         assert!(state.editor.is_none());
+    }
+
+    #[test]
+    fn standalone_capture_accepts_no_conversation_but_rejects_invalid_ids() {
+        assert_eq!(validate_capture_conversation_id(None).unwrap(), None);
+        assert_eq!(
+            validate_capture_conversation_id(Some("conversation-1".to_string())).unwrap(),
+            Some("conversation-1".to_string())
+        );
+        assert_eq!(
+            validate_capture_conversation_id(Some("   ".to_string())).unwrap_err(),
+            "无效的会话 ID"
+        );
+        assert_eq!(
+            validate_capture_conversation_id(Some("x".repeat(257))).unwrap_err(),
+            "无效的会话 ID"
+        );
     }
 
     #[test]
