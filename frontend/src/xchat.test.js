@@ -493,6 +493,23 @@ test("Tauri clipboard file reads return native Finder paths", async () => {
   assert.deepEqual(calls, [["read_clipboard_files", undefined]]);
 });
 
+test("Tauri capture copy forwards the edited PNG to the native command", async () => {
+  const calls = [];
+  const adapter = new TauriAdapter({
+    core: {
+      invoke(command, payload) {
+        calls.push([command, payload]);
+        return Promise.resolve();
+      },
+    },
+  });
+  const dataUrl = "data:image/png;base64,capture";
+
+  await adapter.copyCapture(dataUrl);
+
+  assert.deepEqual(calls, [["copy_capture_editor", { dataUrl }]]);
+});
+
 test("desktop and web message adapters send stable mention IDs", async () => {
   const tauriCalls = [];
   const tauri = new TauriAdapter({

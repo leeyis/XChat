@@ -964,6 +964,10 @@ export class TauriAdapter {
     return this.invoke("pin_capture", { dataUrl });
   }
 
+  copyCapture(dataUrl) {
+    return this.invoke("copy_capture_editor", { dataUrl });
+  }
+
   saveCapture(dataUrl) {
     return this.invoke("save_capture_editor", { dataUrl });
   }
@@ -2187,6 +2191,8 @@ export function createXChatModule() {
         return adapter.cancelCapture();
       case "capture.pin":
         return adapter.pinCapture(action.dataUrl);
+      case "capture.copy":
+        return adapter.copyCapture(action.dataUrl);
       case "capture.save":
         return adapter.saveCapture(action.dataUrl);
       case "capture.pin.copy":
