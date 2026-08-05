@@ -155,6 +155,12 @@ function CaptureIcon({ name }) {
           <path {...common} d="M12 12v8" />
         </>
       )}
+      {name === "copy" && (
+        <>
+          <rect {...common} x="9" y="9" width="11" height="11" rx="1" />
+          <path {...common} d="M15 9V4H4v11h5" />
+        </>
+      )}
       {name === "save" && (
         <>
           <path {...common} d="M5 4h12l2 2v14H5V4Z" />
@@ -396,7 +402,7 @@ function CaptureOverlay({
   const [draft, setDraft] = useState(null);
   const [textInput, setTextInput] = useState(null);
   const [styleOpen, setStyleOpen] = useState(false);
-  const [toolbarSize, setToolbarSize] = useState({ width: 520, height: 52 });
+  const [toolbarSize, setToolbarSize] = useState({ width: 560, height: 52 });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
@@ -640,6 +646,23 @@ function CaptureOverlay({
     setBusy(false);
     if (result.ok) closeWindow();
     else setError(result.error.message);
+  };
+
+  const copy = async () => {
+    if (pinEditing) return;
+    setBusy(true);
+    setError("");
+    setStatus("");
+    const result = await workspace.dispatch({
+      type: "capture.copy",
+      dataUrl: exportPng(),
+    });
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.error.message);
+      return;
+    }
+    closeWindow();
   };
 
   const save = async () => {
@@ -1367,6 +1390,17 @@ function CaptureOverlay({
             >
               <CaptureIcon name="pin" />
             </button>
+            {!pinEditing && (
+              <button
+                type="button"
+                onClick={copy}
+                disabled={!canExport || busy}
+                title={english ? "Copy" : "复制"}
+                aria-label={english ? "Copy" : "复制"}
+              >
+                <CaptureIcon name="copy" />
+              </button>
+            )}
             <button
               type="button"
               onClick={save}
