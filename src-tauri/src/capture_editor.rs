@@ -50,8 +50,7 @@ fn replace_pin(
 ) -> Result<(Option<CaptureFile>, Option<CaptureFile>), String> {
     let editor = match origin {
         PinOrigin::Editor => {
-            if state.editor.as_ref().map(|item| item.session_id.as_str())
-                != Some(source_session_id)
+            if state.editor.as_ref().map(|item| item.session_id.as_str()) != Some(source_session_id)
             {
                 return Err("截图编辑会话已变化".to_string());
             }
@@ -313,11 +312,22 @@ fn grab_monitor_png(
         .map_err(|error| format!("写入截图失败: {error}"))
 }
 
+fn restore_main_window_checked(app: &tauri::AppHandle) -> Result<(), String> {
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| "主窗口不可用".to_string())?;
+    main.show()
+        .map_err(|error| format!("显示主窗口失败: {error}"))?;
+    main.unminimize()
+        .map_err(|error| format!("恢复主窗口失败: {error}"))?;
+    main.set_focus()
+        .map_err(|error| format!("聚焦主窗口失败: {error}"))?;
+    Ok(())
+}
+
 fn restore_main_window(app: &tauri::AppHandle) {
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.show();
-        let _ = main.unminimize();
-        let _ = main.set_focus();
+    if let Err(error) = restore_main_window_checked(app) {
+        eprintln!("[Capture] {error}");
     }
 }
 
@@ -354,17 +364,35 @@ fn clear_editor() {
     }
 }
 
-fn consume_editor_after(
-    state: &mut CaptureState,
-    action: impl FnOnce() -> Result<(), String>,
-) -> Result<CaptureFile, String> {
-    let capture = state
-        .editor
-        .clone()
-        .ok_or_else(|| "没有待处理的截图".to_string())?;
-    action()?;
-    state.editor = None;
-    Ok(capture)
+fn recover_editor_copy(
+    error: String,
+    recover_editor: &mut impl FnMut() -> Result<(), String>,
+) -> String {
+    match recover_editor() {
+        Ok(()) => error,
+        Err(recovery_error) => format!("{error}；{recovery_error}"),
+    }
+}
+
+fn finish_editor_copy_lifecycle(
+    copy_image: impl FnOnce() -> Result<(), String>,
+    hide_editor: impl FnOnce() -> Result<(), String>,
+    restore_main: impl FnOnce() -> Result<(), String>,
+    close_editor: impl FnOnce() -> Result<(), String>,
+    mut recover_editor: impl FnMut() -> Result<(), String>,
+    consume_editor: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    copy_image()?;
+    if let Err(error) = hide_editor() {
+        return Err(recover_editor_copy(error, &mut recover_editor));
+    }
+    if let Err(error) = restore_main() {
+        return Err(recover_editor_copy(error, &mut recover_editor));
+    }
+    if let Err(error) = close_editor() {
+        return Err(recover_editor_copy(error, &mut recover_editor));
+    }
+    consume_editor()
 }
 
 fn clear_pin() {
@@ -402,6 +430,13 @@ fn validate_capture_conversation_id(
         return Err("无效的会话 ID".to_string());
     }
     Ok(conversation_id)
+}
+
+fn finish_conversation_id(capture: &CaptureFile) -> Result<String, String> {
+    capture
+        .conversation_id
+        .clone()
+        .ok_or_else(|| "请先选择一个会话".to_string())
 }
 
 pub async fn start(
@@ -645,7 +680,8 @@ pub async fn finish(app: &tauri::AppHandle, data_url: String) -> Result<ManagedA
         .editor
         .clone()
         .ok_or_else(|| "没有待处理的截图".to_string())?;
-    let attachment = write_managed_png(app, &bytes, capture.conversation_id.clone()).await?;
+    let conversation_id = finish_conversation_id(&capture)?;
+    let attachment = write_managed_png(app, &bytes, Some(conversation_id)).await?;
     {
         let mut state = lock_state()?;
         if state.editor.as_ref().map(|item| &item.session_id) != Some(&capture.session_id) {
@@ -747,24 +783,54 @@ pub fn copy_editor(app: &tauri::AppHandle, data_url: String) -> Result<(), Strin
         use clipboard_rs::RustImageData;
 
         let (bytes, _, _) = png_from_data_url(&data_url)?;
-        let image = RustImageData::from_bytes(&bytes)
-            .map_err(|error| format!("读取截图失败: {error}"))?;
+        let image =
+            RustImageData::from_bytes(&bytes).map_err(|error| format!("读取截图失败: {error}"))?;
         let window = app
             .get_webview_window("capture-editor")
             .ok_or_else(|| "截图编辑器窗口不可用".to_string())?;
-        let capture = {
-            let mut state = lock_state()?;
-            consume_editor_after(&mut state, || {
-                set_clipboard_image(image, "复制截图失败")?;
+        let capture = lock_state()?
+            .editor
+            .clone()
+            .ok_or_else(|| "没有待处理的截图".to_string())?;
+        let session_id = capture.session_id.clone();
+
+        finish_editor_copy_lifecycle(
+            || set_clipboard_image(image, "复制截图失败"),
+            || {
                 window
                     .hide()
+                    .map_err(|error| format!("隐藏截图编辑器失败: {error}"))
+            },
+            || restore_main_window_checked(app),
+            || {
+                window
+                    .close()
                     .map_err(|error| format!("关闭截图编辑器失败: {error}"))
-            })?
-        };
+            },
+            || {
+                window
+                    .show()
+                    .map_err(|error| format!("重新显示截图编辑器失败: {error}"))?;
+                window
+                    .unminimize()
+                    .map_err(|error| format!("恢复截图编辑器失败: {error}"))?;
+                window
+                    .set_focus()
+                    .map_err(|error| format!("聚焦截图编辑器失败: {error}"))
+            },
+            || {
+                let mut state = lock_state()?;
+                if let Some(current) = state.editor.as_ref() {
+                    if current.session_id != session_id {
+                        return Err("截图会话已变化".to_string());
+                    }
+                    state.editor = None;
+                }
+                Ok(())
+            },
+        )?;
 
         remove_file(&capture.path);
-        let _ = window.close();
-        restore_main_window(app);
         Ok(())
     }
     #[cfg(target_os = "android")]
@@ -1146,38 +1212,102 @@ mod tests {
 
         let (source, origin) = pin_source(&state).unwrap();
         assert_eq!(origin, PinOrigin::ExistingPin);
-        let (old_pin, editor) =
-            replace_pin(&mut state, origin, &source.session_id, capture("updated-pin")).unwrap();
+        let (old_pin, editor) = replace_pin(
+            &mut state,
+            origin,
+            &source.session_id,
+            capture("updated-pin"),
+        )
+        .unwrap();
         assert_eq!(old_pin.unwrap().session_id, "new-pin");
         assert!(editor.is_none());
         assert_eq!(state.pin.as_ref().unwrap().session_id, "updated-pin");
     }
 
     #[test]
-    fn editor_copy_consumes_state_only_after_the_action_succeeds() {
-        let capture = CaptureFile {
-            session_id: "editor".to_string(),
-            conversation_id: Some("conversation".to_string()),
-            path: PathBuf::from("editor.png"),
-            file_name: "capture.png".to_string(),
-            file_size: 24,
-            width: 1,
-            height: 1,
-        };
-        let mut state = CaptureState {
-            editor: Some(capture),
-            pin: None,
-        };
+    fn editor_copy_consumes_state_only_after_the_lifecycle_succeeds() {
+        let consumed = std::cell::Cell::new(false);
 
-        let error = consume_editor_after(&mut state, || Err("剪贴板失败".to_string()))
-            .err()
-            .unwrap();
+        let error = finish_editor_copy_lifecycle(
+            || Err("剪贴板失败".to_string()),
+            || Ok(()),
+            || Ok(()),
+            || Ok(()),
+            || Ok(()),
+            || {
+                consumed.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
         assert_eq!(error, "剪贴板失败");
-        assert!(state.editor.is_some());
+        assert!(!consumed.get());
 
-        let copied = consume_editor_after(&mut state, || Ok(())).unwrap();
-        assert_eq!(copied.session_id, "editor");
-        assert!(state.editor.is_none());
+        finish_editor_copy_lifecycle(
+            || Ok(()),
+            || Ok(()),
+            || Ok(()),
+            || Ok(()),
+            || Ok(()),
+            || {
+                consumed.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(consumed.get());
+    }
+
+    #[test]
+    fn editor_copy_recovers_when_main_window_restore_fails() {
+        let recovered = std::cell::Cell::new(false);
+        let consumed = std::cell::Cell::new(false);
+
+        let error = finish_editor_copy_lifecycle(
+            || Ok(()),
+            || Ok(()),
+            || Err("恢复主窗口失败".to_string()),
+            || Ok(()),
+            || {
+                recovered.set(true);
+                Ok(())
+            },
+            || {
+                consumed.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "恢复主窗口失败");
+        assert!(recovered.get());
+        assert!(!consumed.get());
+    }
+
+    #[test]
+    fn editor_copy_recovers_when_editor_close_fails() {
+        let recovered = std::cell::Cell::new(false);
+        let consumed = std::cell::Cell::new(false);
+
+        let error = finish_editor_copy_lifecycle(
+            || Ok(()),
+            || Ok(()),
+            || Ok(()),
+            || Err("关闭截图编辑器失败".to_string()),
+            || {
+                recovered.set(true);
+                Ok(())
+            },
+            || {
+                consumed.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "关闭截图编辑器失败");
+        assert!(recovered.get());
+        assert!(!consumed.get());
     }
 
     #[test]
@@ -1194,6 +1324,28 @@ mod tests {
         assert_eq!(
             validate_capture_conversation_id(Some("x".repeat(257))).unwrap_err(),
             "无效的会话 ID"
+        );
+    }
+
+    #[test]
+    fn standalone_capture_cannot_be_finished_without_a_conversation() {
+        let capture = |conversation_id| CaptureFile {
+            session_id: "editor".to_string(),
+            conversation_id,
+            path: PathBuf::from("editor.png"),
+            file_name: "capture.png".to_string(),
+            file_size: 24,
+            width: 1,
+            height: 1,
+        };
+
+        assert_eq!(
+            finish_conversation_id(&capture(None)).unwrap_err(),
+            "请先选择一个会话"
+        );
+        assert_eq!(
+            finish_conversation_id(&capture(Some("conversation".to_string()))).unwrap(),
+            "conversation"
         );
     }
 
