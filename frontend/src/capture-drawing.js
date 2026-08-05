@@ -50,6 +50,17 @@ function browserCanvas() {
   return document.createElement("canvas");
 }
 
+export function captureEditorActionAvailability({
+  conversationId,
+  nativeCopy,
+  pinEditing = false,
+} = {}) {
+  return {
+    canCopy: Boolean(nativeCopy && !pinEditing),
+    canFinish: Boolean(pinEditing || conversationId),
+  };
+}
+
 export function createCaptureHistory() {
   return { operations: [], undo: [], redo: [] };
 }

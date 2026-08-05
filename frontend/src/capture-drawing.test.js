@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   addCaptureOperation,
   CAPTURE_PIN_TOOLBAR_AREA,
+  captureEditorActionAvailability,
   createTextOperation,
   createCaptureHistory,
   drawCaptureOperation,
@@ -375,6 +376,41 @@ test("pinned capture wheel zoom is bounded and its context menu stays onscreen",
 test("pinned capture toolbar visibility toggles predictably", () => {
   assert.equal(togglePinnedCaptureToolbar(false), true);
   assert.equal(togglePinnedCaptureToolbar(true), false);
+});
+
+test("capture editor actions distinguish standalone, Web, and pin editing", () => {
+  assert.deepEqual(
+    captureEditorActionAvailability({
+      conversationId: null,
+      nativeCopy: true,
+      pinEditing: false,
+    }),
+    { canCopy: true, canFinish: false },
+  );
+  assert.deepEqual(
+    captureEditorActionAvailability({
+      conversationId: "conversation-1",
+      nativeCopy: true,
+      pinEditing: false,
+    }),
+    { canCopy: true, canFinish: true },
+  );
+  assert.deepEqual(
+    captureEditorActionAvailability({
+      conversationId: "conversation-1",
+      nativeCopy: false,
+      pinEditing: false,
+    }),
+    { canCopy: false, canFinish: true },
+  );
+  assert.deepEqual(
+    captureEditorActionAvailability({
+      conversationId: null,
+      nativeCopy: true,
+      pinEditing: true,
+    }),
+    { canCopy: false, canFinish: true },
+  );
 });
 
 test("pin editing expands a physical window without changing the image viewport", () => {

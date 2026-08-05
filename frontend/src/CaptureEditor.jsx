@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   addCaptureOperation,
   CAPTURE_PIN_TOOLBAR_AREA,
+  captureEditorActionAvailability,
   createCaptureHistory,
   createTextOperation,
   drawCaptureOperation,
@@ -612,6 +613,10 @@ function CaptureOverlay({
       await updatePinnedCapture();
       return;
     }
+    if (!pending?.conversation_id) {
+      setError(english ? "Select a conversation first." : "请先选择一个会话。");
+      return;
+    }
     setBusy(true);
     setError("");
     const dataUrl = exportPng();
@@ -1172,6 +1177,18 @@ function CaptureOverlay({
   const scaleX = image ? image.naturalWidth / viewport.width : 1;
   const scaleY = image ? image.naturalHeight / viewport.height : 1;
   const canExport = Boolean(image && selectionReady && selection);
+  const actionAvailability = captureEditorActionAvailability({
+    conversationId: pending?.conversation_id,
+    nativeCopy: Boolean(globalThis.__TAURI__?.core?.invoke),
+    pinEditing,
+  });
+  const finishLabel = actionAvailability.canFinish
+    ? english
+      ? "Done"
+      : "完成"
+    : english
+      ? "Select a conversation first"
+      : "请先选择一个会话";
 
   return (
     <main
@@ -1390,7 +1407,7 @@ function CaptureOverlay({
             >
               <CaptureIcon name="pin" />
             </button>
-            {!pinEditing && (
+            {actionAvailability.canCopy && (
               <button
                 type="button"
                 onClick={copy}
@@ -1414,9 +1431,9 @@ function CaptureOverlay({
               type="button"
               className="primary"
               onClick={finish}
-              disabled={!canExport || busy}
-              title={english ? "Done" : "完成"}
-              aria-label={english ? "Done" : "完成"}
+              disabled={!canExport || busy || !actionAvailability.canFinish}
+              title={finishLabel}
+              aria-label={finishLabel}
             >
               <CaptureIcon name="done" />
             </button>
