@@ -159,6 +159,26 @@ struct CreateGroupRequest {
 }
 
 #[derive(Deserialize)]
+struct UpdateGroupRequest {
+    operation: String,
+    value: Option<String>,
+    #[serde(default)]
+    member_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct RecallMessageRequest {
+    client_message_id: String,
+}
+
+#[derive(Deserialize)]
+struct ForwardMessageRequest {
+    source_message_id: i64,
+    conversation_ids: Vec<String>,
+    note: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct ConversationMessageRequest {
     client_message_id: String,
     content: String,
@@ -254,6 +274,7 @@ pub async fn start_server(
             post(update_workspace_preference_http),
         )
         .route("/api/groups", post(create_group_http))
+        .route("/api/groups/:id", post(update_group_http))
         .route(
             "/api/conversations/:id/messages",
             get(get_conversation_messages_http).post(send_conversation_message_http),
@@ -264,6 +285,11 @@ pub async fn start_server(
         )
         .route("/api/receipts/read", post(mark_messages_read_http))
         .route("/api/messages/search", get(search_workspace_messages_http))
+        .route(
+            "/api/conversations/:id/recall",
+            post(recall_conversation_message_http),
+        )
+        .route("/api/messages/forward", post(forward_message_http))
         .route(
             "/api/conversations/:id/state",
             post(update_conversation_state_http),
@@ -376,6 +402,62 @@ async fn create_group_http(
     .await
     {
         Ok(conversation) => (StatusCode::CREATED, Json(conversation)).into_response(),
+        Err(error) => backend_error(error),
+    }
+}
+
+async fn update_group_http(
+    State(state): State<Arc<AppState>>,
+    Path(conversation_id): Path<String>,
+    Json(payload): Json<UpdateGroupRequest>,
+) -> ApiResponse {
+    match crate::workspace::update_group(
+        &state.pool,
+        &state.peer_manager,
+        &conversation_id,
+        &payload.operation,
+        payload.value,
+        payload.member_ids,
+    )
+    .await
+    {
+        Ok(conversation) => Json(conversation).into_response(),
+        Err(error) => backend_error(error),
+    }
+}
+
+async fn recall_conversation_message_http(
+    State(state): State<Arc<AppState>>,
+    Path(conversation_id): Path<String>,
+    Json(payload): Json<RecallMessageRequest>,
+) -> ApiResponse {
+    match crate::workspace::recall_message(
+        &state.pool,
+        &state.peer_manager,
+        &conversation_id,
+        &payload.client_message_id,
+    )
+    .await
+    {
+        Ok(()) => Json(serde_json::json!({ "success": true })).into_response(),
+        Err(error) => backend_error(error),
+    }
+}
+
+async fn forward_message_http(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<ForwardMessageRequest>,
+) -> ApiResponse {
+    match crate::workspace::forward_message(
+        &state.pool,
+        &state.peer_manager,
+        payload.source_message_id,
+        payload.conversation_ids,
+        payload.note,
+    )
+    .await
+    {
+        Ok(()) => Json(serde_json::json!({ "success": true })).into_response(),
         Err(error) => backend_error(error),
     }
 }
@@ -1696,6 +1778,19 @@ async fn handle_protocol_message(
                 .collect::<Vec<_>>();
             let my_id = crate::db::get_user_id(&state.pool).await?;
             if !members.iter().any(|member| member.peer_id == my_id) {
+                let existing = crate::db::get_conversation(&state.pool, &group_id).await?;
+                if existing.as_ref().is_some_and(|conversation| {
+                    conversation.kind == "group"
+                        && conversation.created_by.as_deref() == Some(created_by.as_str())
+                        && conversation.version < wire_i64(version)
+                }) {
+                    crate::db::delete_conversation(&state.pool, &group_id).await?;
+                    broadcast_incoming_event(
+                        state,
+                        serde_json::json!({ "msg_type": "group_removed", "group_id": group_id }),
+                    );
+                    return Ok(());
+                }
                 return Err("忽略未包含本机的群同步".to_string());
             }
             let conversation = crate::db::apply_group_sync(
@@ -1731,7 +1826,7 @@ async fn handle_protocol_message(
             mention_ids,
             timestamp,
         } => {
-            if !matches!(content_type.as_str(), "text" | "file") {
+            if !matches!(content_type.as_str(), "text" | "file" | "quote" | "announcement") {
                 return Err(format!("不支持的群消息类型: {}", content_type));
             }
             let members = crate::db::get_conversation_members(&state.pool, &group_id).await?;
@@ -1833,6 +1928,30 @@ async fn handle_protocol_message(
                 );
             }
         }
+        ProtocolMessage::MessageRecall {
+            conversation_id,
+            client_message_id,
+            from_id,
+            ..
+        } => {
+            let message = crate::db::get_message_by_client_id(&state.pool, &client_message_id)
+                .await?
+                .ok_or_else(|| "撤回的消息不存在".to_string())?;
+            if message.conversation_id.as_deref() != Some(conversation_id.as_str())
+                || message.sender_id != from_id
+            {
+                return Err("撤回消息身份不匹配".to_string());
+            }
+            crate::db::delete_message_by_client_id(&state.pool, &client_message_id).await?;
+            broadcast_incoming_event(
+                state,
+                serde_json::json!({
+                    "msg_type": "message_recall",
+                    "conversation_id": conversation_id,
+                    "client_message_id": client_message_id,
+                }),
+            );
+        }
         ProtocolMessage::DeliveryAck {
             conversation_id,
             from_id,
@@ -1899,7 +2018,7 @@ async fn handle_stable_direct_message(
     ) else {
         return Ok(false);
     };
-    if message.msg_type != "text"
+    if !matches!(message.msg_type.as_str(), "text" | "quote" | "announcement")
         || message.from_id.trim().is_empty()
         || conversation_id.trim().is_empty()
         || client_message_id.trim().is_empty()

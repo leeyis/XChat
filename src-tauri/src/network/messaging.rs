@@ -170,6 +170,7 @@ pub async fn send_direct_message(
     conversation_id: String,
     client_message_id: String,
     content: String,
+    msg_type: String,
 ) -> Result<(), String> {
     if conversation_id.trim().is_empty() {
         return Err("conversation_id must not be empty".to_string());
@@ -179,7 +180,7 @@ pub async fn send_direct_message(
     }
 
     let message = TextMessage {
-        msg_type: "text".to_string(),
+        msg_type,
         from_id,
         from_name,
         content,

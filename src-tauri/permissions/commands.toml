@@ -201,6 +201,36 @@ description = "Allows creating a group conversation"
 commands.allow = ["create_group"]
 
 [[permission]]
+identifier = "allow-update-group"
+description = "Allows authorized group management actions"
+commands.allow = ["update_group"]
+
+[[permission]]
+identifier = "allow-recall-conversation-message"
+description = "Allows recalling an owned conversation message"
+commands.allow = ["recall_conversation_message"]
+
+[[permission]]
+identifier = "allow-forward-conversation-message"
+description = "Allows forwarding a local conversation message"
+commands.allow = ["forward_conversation_message"]
+
+[[permission]]
+identifier = "allow-save-conversation-file-as"
+description = "Allows saving a local conversation file to a user-selected path"
+commands.allow = ["save_conversation_file_as"]
+
+[[permission]]
+identifier = "allow-pick-workspace-directory"
+description = "Allows choosing a workspace download or database directory"
+commands.allow = ["pick_workspace_directory"]
+
+[[permission]]
+identifier = "allow-copy-file-message-content"
+description = "Allows copying local text or image file message content"
+commands.allow = ["copy_file_message_content"]
+
+[[permission]]
 identifier = "allow-send-conversation-message"
 description = "Allows sending a message to a conversation"
 commands.allow = ["send_conversation_message"]

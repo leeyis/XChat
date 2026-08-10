@@ -31,6 +31,12 @@ pub enum ProtocolMessage {
         mention_ids: Vec<String>,
         timestamp: u64,
     },
+    MessageRecall {
+        conversation_id: String,
+        client_message_id: String,
+        from_id: String,
+        timestamp: u64,
+    },
     DeliveryAck {
         conversation_id: String,
         from_id: String,
@@ -78,6 +84,16 @@ impl ProtocolMessage {
                 }
                 Ok(())
             }
+            Self::MessageRecall {
+                conversation_id,
+                client_message_id,
+                from_id,
+                ..
+            } => {
+                require_value(conversation_id, "conversation_id")?;
+                require_value(client_message_id, "client_message_id")?;
+                require_value(from_id, "from_id")
+            }
             Self::DeliveryAck {
                 conversation_id,
                 from_id,
@@ -123,6 +139,7 @@ pub fn parse_protocol_value(value: Value) -> Result<Option<ProtocolMessage>, Str
     let message_type = match value.get("msg_type").and_then(Value::as_str) {
         Some("group_sync") => "group_sync",
         Some("group_message") => "group_message",
+        Some("message_recall") => "message_recall",
         Some("delivery_ack") => "delivery_ack",
         Some("read_ack") => "read_ack",
         _ => return Ok(None),
@@ -207,5 +224,18 @@ mod tests {
         };
 
         assert!(message.validate().is_err());
+    }
+
+    #[test]
+    fn recall_round_trip_keeps_sender_and_message_identity() {
+        let message = ProtocolMessage::MessageRecall {
+            conversation_id: "group-1".into(),
+            client_message_id: "message-1".into(),
+            from_id: "peer-1".into(),
+            timestamp: 42,
+        };
+
+        let json = serde_json::to_string(&message).unwrap();
+        assert_eq!(parse_protocol_message(&json).unwrap(), Some(message));
     }
 }

@@ -15,6 +15,8 @@ use std::sync::Arc;
 
 #[cfg(feature = "desktop")]
 use tauri::{AppHandle, Emitter, Manager, State};
+#[cfg(all(feature = "desktop", not(target_os = "android")))]
+use tauri_plugin_dialog::DialogExt;
 
 // 用于管理 PeerManager 的状态
 #[cfg(feature = "desktop")]
@@ -2158,6 +2160,192 @@ pub async fn create_group(
         crate::workspace::create_group(&state.pool, &peer_state.manager, &title, member_ids).await?;
     let _ = app.emit("workspace-changed", &conversation);
     Ok(conversation)
+}
+
+#[tauri::command]
+pub async fn pick_workspace_directory(
+    app: AppHandle,
+    title: String,
+) -> Result<Option<String>, String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let title = if title.trim().is_empty() {
+            "选择文件夹".to_string()
+        } else {
+            title
+        };
+        app.dialog()
+            .file()
+            .set_title(title)
+            .pick_folder(move |selection| {
+                let _ = sender.send(selection);
+            });
+        let selection = receiver
+            .await
+            .map_err(|_| "文件夹选择器意外关闭".to_string())?;
+        selection
+            .map(|path| {
+                path.into_path()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .map_err(|_| "选择的文件夹路径不可用".to_string())
+            })
+            .transpose()
+    }
+    #[cfg(target_os = "android")]
+    {
+        let _ = (app, title);
+        Err("当前平台不支持选择应用数据文件夹".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn copy_file_message_content(
+    state: State<'_, DbState>,
+    message_id: i64,
+    kind: String,
+) -> Result<(), String> {
+    if kind != "text" && kind != "image" {
+        return Err("仅支持复制文本或图片文件内容".to_string());
+    }
+    let path = crate::workspace::trusted_file_path(&state.pool, message_id).await?;
+    #[cfg(all(not(target_os = "android"), feature = "clipboard-rs"))]
+    {
+        use clipboard_rs::common::RustImage;
+        use clipboard_rs::{Clipboard, ClipboardContext, RustImageData};
+
+        if kind == "text" {
+            let content = tokio::fs::read_to_string(path)
+                .await
+                .map_err(|error| format!("读取文本文件失败: {error}"))?;
+            ClipboardContext::new()
+                .map_err(|error| format!("剪贴板不可用: {error}"))?
+                .set_text(content)
+                .map_err(|error| format!("复制文本文件失败: {error}"))
+        } else {
+            let path = path
+                .to_str()
+                .ok_or_else(|| "图片路径不可用".to_string())?;
+            let image = RustImageData::from_path(path)
+                .map_err(|error| format!("读取图片文件失败: {error}"))?;
+            ClipboardContext::new()
+                .map_err(|error| format!("剪贴板不可用: {error}"))?
+                .set_image(image)
+                .map_err(|error| format!("复制图片文件失败: {error}"))
+        }
+    }
+    #[cfg(not(all(not(target_os = "android"), feature = "clipboard-rs")))]
+    {
+        let _ = path;
+        Err("当前平台不支持复制文件内容".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn update_group(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    peer_state: State<'_, PeerState>,
+    conversation_id: String,
+    operation: String,
+    value: Option<String>,
+    member_ids: Vec<String>,
+) -> Result<Option<crate::db::ConversationRecord>, String> {
+    let conversation = crate::workspace::update_group(
+        &state.pool,
+        &peer_state.manager,
+        &conversation_id,
+        &operation,
+        value,
+        member_ids,
+    )
+    .await?;
+    let _ = app.emit("workspace-changed", &conversation);
+    Ok(conversation)
+}
+
+#[tauri::command]
+pub async fn recall_conversation_message(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    peer_state: State<'_, PeerState>,
+    conversation_id: String,
+    client_message_id: String,
+) -> Result<(), String> {
+    crate::workspace::recall_message(
+        &state.pool,
+        &peer_state.manager,
+        &conversation_id,
+        &client_message_id,
+    )
+    .await?;
+    let _ = app.emit("workspace-changed", serde_json::json!({ "conversation_id": conversation_id }));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn forward_conversation_message(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    peer_state: State<'_, PeerState>,
+    source_message_id: i64,
+    conversation_ids: Vec<String>,
+    note: Option<String>,
+) -> Result<(), String> {
+    crate::workspace::forward_message(
+        &state.pool,
+        &peer_state.manager,
+        source_message_id,
+        conversation_ids,
+        note,
+    )
+    .await?;
+    let _ = app.emit("workspace-changed", serde_json::json!({ "forwarded": true }));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn save_conversation_file_as(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    message_id: i64,
+) -> Result<Option<String>, String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = (app, state, message_id);
+        return Err("当前平台不支持另存为".to_string());
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let message = crate::db::get_message_by_id(&state.pool, message_id)
+            .await?
+            .filter(|message| message.msg_type == "file")
+            .ok_or_else(|| "文件消息不存在".to_string())?;
+        let source = message
+            .file_path
+            .as_deref()
+            .ok_or_else(|| "本地文件已不存在".to_string())?;
+        let file_name = std::path::Path::new(source)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("attachment");
+        let Some(selected) = app
+            .dialog()
+            .file()
+            .set_title("文件另存为")
+            .set_file_name(file_name)
+            .blocking_save_file()
+        else {
+            return Ok(None);
+        };
+        let destination = selected
+            .into_path()
+            .map_err(|_| "保存路径不可用".to_string())?;
+        tokio::fs::copy(source, &destination)
+            .await
+            .map_err(|error| format!("保存文件失败: {error}"))?;
+        Ok(Some(destination.to_string_lossy().into_owned()))
+    }
 }
 
 #[tauri::command]

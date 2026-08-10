@@ -13,8 +13,9 @@ import {
   groupMentionCandidates,
   insertTextAtSelection,
   isAppActive,
-  isPhysicalPointInsideRect,
+  isCopyableMessage,
   isImageFile,
+  isPhysicalPointInsideRect,
   localFileAvailable,
   matchesShortcut,
   mentionQueryAtCaret,
@@ -212,6 +213,7 @@ const copy = {
     platformUnavailable: "当前平台不可用",
     downloadsAndTransfers: "下载与传输",
     downloadPath: "下载路径",
+    chooseFolder: "选择文件夹",
     autoReceiveFiles: "自动接收文件",
     autoReceiveFilesHint: "关闭后文件停在待接收状态",
     network: "网络",
@@ -459,6 +461,7 @@ const copy = {
     platformUnavailable: "Unavailable on this platform",
     downloadsAndTransfers: "Downloads & transfers",
     downloadPath: "Download path",
+    chooseFolder: "Choose folder",
     autoReceiveFiles: "Automatically receive files",
     autoReceiveFilesHint: "When off, files wait for manual acceptance",
     network: "Network",
@@ -630,6 +633,18 @@ function Icon({ name, size = 20 }) {
     case "download":
       body = <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" />;
       break;
+    case "copy":
+      body = <><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" /></>;
+      break;
+    case "forward":
+      body = <><path d="m14 6 6 6-6 6" /><path d="M20 12H9a5 5 0 0 0-5 5v1" /></>;
+      break;
+    case "quote":
+      body = <><path d="M4 5h16v12H8l-4 3Z" /><path d="M8 9h8M8 13h5" /></>;
+      break;
+    case "recall":
+      body = <><path d="m9 7-5 5 5 5" /><path d="M5 12h8a6 6 0 0 1 6 6" /></>;
+      break;
     case "refresh":
       body = (
         <>
@@ -728,6 +743,29 @@ function displayName(entity = {}, labels = copy["zh-CN"]) {
   return entity.remark || entity.title || entity.name || entity.hostname || labels.unnamedDevice;
 }
 
+function groupPermissions(conversation, selfId) {
+  const selfMember = (conversation?.members || []).find(
+    (member) => member.peer_id === selfId,
+  );
+  const owner = selfMember?.role === "owner" || conversation?.created_by === selfId;
+  return {
+    selfMember,
+    owner,
+    manager: owner || selfMember?.role === "admin",
+  };
+}
+
+function quoteReferenceText(source = {}, labels = copy["zh-CN"]) {
+  const author = String(source.sender_name || source.sender_id || labels.unnamedDevice).trim();
+  const fallback = isImageFile(source)
+    ? labels.locale === "en" ? "[Image]" : "[图片]"
+    : labels.attachment;
+  const content = String(source.content || source.file_name || fallback)
+    .replace(/\s+/g, " ")
+    .trim();
+  return `${author}: ${content || fallback}`;
+}
+
 function Avatar({ entity = {}, labels, large = false, self = false }) {
   const label =
     entity.avatar ||
@@ -758,7 +796,7 @@ function formatTime(timestamp, locale) {
 function appVersion() {
   return typeof globalThis.__XCHAT_VERSION__ === "string" && globalThis.__XCHAT_VERSION__
     ? globalThis.__XCHAT_VERSION__
-    : "0.1.0";
+    : "0.1.1";
 }
 
 function formatSize(bytes) {
@@ -1501,7 +1539,7 @@ function DraftAttachment({ attachment, labels, onRemove }) {
   );
 }
 
-function Composer({ state, conversation, workspace, labels }) {
+function Composer({ state, conversation, workspace, labels, quote, onClearQuote }) {
   const [text, setText] = useState(conversation?.draft || "");
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [mention, setMention] = useState(null);
@@ -1543,6 +1581,10 @@ function Composer({ state, conversation, workspace, labels }) {
     setMention(null);
     setMentionIndex(0);
   }, [conversation?.id]);
+
+  useEffect(() => {
+    if (quote) requestAnimationFrame(() => textarea.current?.focus());
+  }, [quote?.client_message_id, quote?.id]);
 
   useEffect(() => {
     const element = textarea.current;
@@ -1638,6 +1680,8 @@ function Composer({ state, conversation, workspace, labels }) {
           type: "message.sendText",
           conversationId,
           content,
+          msgType: quote ? "quote" : "text",
+          quote,
           mentionIds: retainedMentionIds(
             content,
             mentionTargets,
@@ -1645,6 +1689,7 @@ function Composer({ state, conversation, workspace, labels }) {
           ),
         });
         if (!result.ok) return;
+        if (quote) onClearQuote();
 
         const latest = workspace.getSnapshot();
         const currentDraft = latest.conversations.find(
@@ -1938,6 +1983,22 @@ function Composer({ state, conversation, workspace, labels }) {
             ))}
           </div>
         )}
+        {quote && (
+          <div className="quote-preview" role="note">
+            <span className="quote-preview-text" title={quoteReferenceText(quote, labels)}>
+              {quoteReferenceText(quote, labels)}
+            </span>
+            <button
+              className="quote-preview-close"
+              type="button"
+              onClick={onClearQuote}
+              aria-label={labels.close}
+              title={labels.close}
+            >
+              <Icon name="close" size={12} />
+            </button>
+          </div>
+        )}
         <div className="compose-toolbar">
           <div className="compose-tools">
             <button
@@ -2025,12 +2086,164 @@ function Composer({ state, conversation, workspace, labels }) {
   );
 }
 
+function messageSummary(message, labels) {
+  if (message.msg_type === "file") return message.file_name || message.content || labels.attachment;
+  if (message.msg_type === "announcement") return message.content;
+  return message.content || labels.message;
+}
+
+function ForwardModal({ message, state, workspace, labels, onClose }) {
+  const [query, setQuery] = useState("");
+  const [kind, setKind] = useState("all");
+  const [selected, setSelected] = useState([]);
+  const [note, setNote] = useState("");
+  const [sending, setSending] = useState(false);
+  const targets = state.conversations.filter((conversation) => {
+    if (kind !== "all" && (kind === "group") !== (conversation.kind === "group")) return false;
+    return displayName(conversation, labels).toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
+  });
+  const chosen = selected
+    .map((id) => state.conversations.find((conversation) => conversation.id === id))
+    .filter(Boolean);
+  const toggle = (id) => setSelected((current) => current.includes(id)
+    ? current.filter((item) => item !== id)
+    : [...current, id]);
+  const submit = async () => {
+    if (!selected.length || sending) return;
+    setSending(true);
+    try {
+      const result = await workspace.dispatch({
+        type: "message.forward",
+        messageId: message.message_id ?? message.id,
+        conversationIds: selected,
+        note,
+      });
+      if (result.ok) onClose();
+    } finally {
+      setSending(false);
+    }
+  };
+  return (
+    <Modal title={labels.locale === "en" ? "Forward message" : "转发消息"} closeLabel={labels.close} onClose={onClose} wide>
+      <div className="forward-shell">
+        <section className="forward-main">
+          <div className="forward-search-head">
+            <label className="modal-search">
+              <Icon name="search" size={16} />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={labels.locale === "en" ? "Search contacts and groups" : "搜索联系人和群聊"} autoFocus />
+            </label>
+            <div className="forward-tabs">
+              {[["all", "全部"], ["direct", "联系人"], ["group", "群聊"]].map(([value, text]) => (
+                <button key={value} className={kind === value ? "active" : ""} onClick={() => setKind(value)}>{labels.locale === "en" ? ({ all: "All", direct: "Contacts", group: "Groups" })[value] : text}</button>
+              ))}
+            </div>
+          </div>
+          <div className="forward-list">
+            {targets.map((target) => (
+              <button key={target.id} className={`forward-row ${selected.includes(target.id) ? "selected" : ""}`} onClick={() => toggle(target.id)}>
+                <span className="forward-check">✓</span>
+                <Avatar entity={target.peer || target} labels={labels} />
+                <span><b>{displayName(target, labels)}</b><small>{target.kind === "group" ? labels.memberCount(target.members?.length || 0) : target.peer?.hostname || target.peer?.addr}</small></span>
+              </button>
+            ))}
+          </div>
+        </section>
+        <aside className="forward-side">
+          <h3>{labels.locale === "en" ? "Send to" : "发送给"}</h3>
+          <div className="selected-chips">
+            {chosen.length ? chosen.map((target) => (
+              <span className="selected-chip" key={target.id}>
+                <Avatar entity={target.peer || target} labels={labels} />
+                <span>{displayName(target, labels)}</span>
+                <button onClick={() => toggle(target.id)}>×</button>
+              </span>
+            )) : <span className="helper">{labels.locale === "en" ? "Select contacts or groups on the left" : "从左侧选择联系人或群聊"}</span>}
+          </div>
+          <div className="forward-compose">
+            <div className="forward-preview-card">
+              <span className="forward-preview-icon"><Icon name={message.msg_type === "file" ? "file" : "chat"} /></span>
+              <span className="forward-preview-copy"><b>{message.msg_type === "file" ? (labels.locale === "en" ? "File" : "文件") : (labels.locale === "en" ? "Message" : "消息内容")}</b><span>{messageSummary(message, labels)}</span></span>
+            </div>
+            <textarea className="forward-note" value={note} maxLength={1000} onChange={(event) => setNote(event.target.value)} placeholder={labels.locale === "en" ? "Add a message (optional)" : "给朋友留言（可选）"} />
+            <div className="forward-foot">
+              <button onClick={onClose}>{labels.cancel}</button>
+              <button className="primary" disabled={!selected.length || sending} onClick={submit}>{sending ? (labels.locale === "en" ? "Sending…" : "发送中…") : labels.send}</button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </Modal>
+  );
+}
+
+function HistoryModal({ conversation, messages, state, workspace, labels, onJump, onClose }) {
+  const [query, setQuery] = useState("");
+  const [kind, setKind] = useState("all");
+  useEffect(() => {
+    const timer = setTimeout(() => workspace.dispatch({ type: "message.search", query }), 180);
+    return () => clearTimeout(timer);
+  }, [query, workspace]);
+  const source = query.trim()
+    ? state.searchResults.filter((message) => message.conversation_id === conversation.id)
+    : messages;
+  const results = source.filter((message) => {
+    const type = message.msg_type === "file" ? "file" : "text";
+    return (kind === "all" || kind === type) && messageSummary(message, labels).toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
+  });
+  return (
+    <Modal title={labels.locale === "en" ? "Search chat history" : "查找聊天记录"} closeLabel={labels.close} onClose={onClose} wide>
+      <div className="history-shell">
+        <section className="history-side">
+          <div className="history-search-head">
+            <label className="modal-search"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={labels.locale === "en" ? "Search this conversation" : `在“${displayName(conversation, labels)}”中查找`} autoFocus /></label>
+            <div className="history-filters">
+              {[["all", "全部"], ["text", "文本"], ["file", "文件"]].map(([value, text]) => <button key={value} className={kind === value ? "active" : ""} onClick={() => setKind(value)}>{labels.locale === "en" ? ({ all: "All", text: "Text", file: "Files" })[value] : text}</button>)}
+            </div>
+          </div>
+          <div className="history-results">
+            {results.map((message) => <button className="history-result" key={message.client_message_id || message.id} onClick={() => { onClose(); onJump(message.client_message_id || message.message_id || message.id); }}><span className="history-result-top"><span>{message.sender_name || message.sender_id}</span><span>{formatTime(message.timestamp, labels.locale)}</span></span><p>{messageSummary(message, labels)}</p></button>)}
+            {!results.length && <div className="history-empty">{labels.locale === "en" ? "No matching messages" : "没有找到相关记录"}</div>}
+          </div>
+        </section>
+        <div className="history-preview"><Icon name="search" size={52} /><b>{labels.locale === "en" ? "Select a result to jump to it" : "点击搜索结果即可定位到原消息"}</b></div>
+      </div>
+    </Modal>
+  );
+}
+
 function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpen, onConfirm }) {
   const conversation = state.conversations.find(
     (item) => item.id === state.activeConversationId,
   );
   const messages = state.messagesByConversation[state.activeConversationId] || [];
   const scroll = useRef(null);
+  const [menu, setMenu] = useState(null);
+  const [quote, setQuote] = useState(null);
+  const [forward, setForward] = useState(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [announcementOpen, setAnnouncementOpen] = useState(false);
+  const [dismissedAnnouncement, setDismissedAnnouncement] = useState("");
+
+  useEffect(() => {
+    setQuote(null);
+    setMenu(null);
+  }, [conversation?.id]);
+
+  useEffect(() => {
+    const close = () => setMenu(null);
+    addEventListener("pointerdown", close);
+    addEventListener("resize", close);
+    return () => {
+      removeEventListener("pointerdown", close);
+      removeEventListener("resize", close);
+    };
+  }, []);
+
+  useEffect(() => {
+    const openHistory = () => setHistoryOpen(true);
+    addEventListener("xchat:open-history", openHistory);
+    return () => removeEventListener("xchat:open-history", openHistory);
+  }, []);
 
   useEffect(() => {
     scroll.current?.scrollTo({ top: scroll.current.scrollHeight });
@@ -2096,6 +2309,11 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
     );
   }
   const peer = conversation.peer;
+  const announcement = [...messages].reverse().find((message) => message.msg_type === "announcement");
+  const announcementKey = announcement && `${conversation.id}:${announcement.client_message_id || announcement.id}`;
+  const announcementHidden = !announcement || dismissedAnnouncement === announcementKey || globalThis.localStorage?.getItem(`xchat:announcement:${announcementKey}`) === "dismissed";
+  const visibleMessages = messages.filter((message) => message.msg_type !== "announcement");
+  const jumpToMessage = (messageId) => workspace.dispatch({ type: "conversation.open", id: conversation.id, messageId });
   const subtitle =
     conversation.kind === "group"
       ? labels.memberCount(conversation.members?.length || 0)
@@ -2129,25 +2347,17 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
             aria-label={labels.conversationInfo}
             title={labels.conversationInfo}
           >
-            <Icon name="info" />
-          </button>
-          <button
-            className="icon-button"
-            onClick={() =>
-              onConfirm({
-                title: labels.clearHistoryTitle,
-                detail: labels.clearHistoryDetail,
-                action: labels.clearHistoryAction,
-                run: () => workspace.dispatch({ type: "message.clearConversation" }),
-              })
-            }
-            aria-label={labels.clearHistory}
-            title={labels.clearHistory}
-          >
             <Icon name="more" />
           </button>
         </div>
       </header>
+      {!announcementHidden && (
+        <button className="announcement-banner" onClick={() => setAnnouncementOpen(true)}>
+          <span className="announcement-mark">📢</span>
+          <span className="announcement-copy"><b>{labels.locale === "en" ? "Group announcement" : "群公告"}</b><small>{announcement.content}</small></span>
+          <span className="announcement-arrow">›</span>
+        </button>
+      )}
       <div
         className={`message-scroll ${!messages.length ? "has-empty-state" : ""}`}
         ref={scroll}
@@ -2163,7 +2373,7 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
         {!messages.length && (
           <EmptyState title={labels.noMessages} detail={labels.noMessagesHint} />
         )}
-        {messages.map((message) => (
+        {visibleMessages.map((message) => (
           <article
             className={`message ${message.own ? "sent" : "received"}`}
             key={message.client_message_id || message.id}
@@ -2173,6 +2383,15 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
             }
             data-message-id={message.message_id ?? message.id}
             data-client-message-id={message.client_message_id || undefined}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setMenu({
+                x: Math.min(event.clientX, globalThis.innerWidth - 202),
+                y: Math.min(event.clientY, globalThis.innerHeight - 250),
+                message,
+              });
+            }}
           >
             <Avatar
               entity={
@@ -2188,8 +2407,23 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
                   {message.sender_name || message.sender_id}
                 </span>
               )}
-              {message.msg_type === "text" ? (
-                <div className="bubble">{message.content}</div>
+              {message.msg_type === "text" || message.msg_type === "quote" ? (
+                <>
+                  <div className="bubble">
+                    <span>{message.content}</span>
+                  </div>
+                  {message.quote && (
+                    <button
+                      type="button"
+                      className="quoted-block"
+                      onClick={() => jumpToMessage(message.quote.client_message_id || message.quote.message_id)}
+                      title={labels.locale === "en" ? "Jump to original message" : "点击定位到原消息"}
+                      aria-label={labels.locale === "en" ? "Jump to original message" : "点击定位到原消息"}
+                    >
+                      {quoteReferenceText(message.quote, labels)}
+                    </button>
+                  )}
+                </>
               ) : (
                 <MessageFile
                   message={message}
@@ -2203,26 +2437,6 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
                 {statusLabel(message, conversation.kind === "group", labels) && (
                   <i>{statusLabel(message, conversation.kind === "group", labels)}</i>
                 )}
-                {message.id !== undefined && message.status !== "pending" && (
-                  <button
-                    className="message-delete"
-                    onClick={() =>
-                      onConfirm({
-                        title: labels.deleteMessageTitle,
-                        detail: labels.deleteMessageDetail,
-                        action: labels.deleteMessageAction,
-                        run: () =>
-                          workspace.dispatch({
-                            type: "message.deleteLocal",
-                            ids: [message.id],
-                          }),
-                      })
-                    }
-                    aria-label={labels.deleteLocalMessage}
-                  >
-                    {labels.delete}
-                  </button>
-                )}
               </span>
             </div>
           </article>
@@ -2233,7 +2447,61 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
         conversation={conversation}
         workspace={workspace}
         labels={labels}
+        quote={quote}
+        onClearQuote={() => setQuote(null)}
       />
+      {menu && (
+        <div
+          className="message-context-menu"
+          style={{ left: menu.x, top: menu.y }}
+          role="menu"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          {isCopyableMessage(menu.message) && (
+            <button onClick={async () => {
+              if (!["text", "quote"].includes(menu.message.msg_type)) {
+                await workspace.dispatch({ type: "message.copyFile", file: menu.message });
+              } else {
+                await navigator.clipboard?.writeText(messageSummary(menu.message, labels));
+              }
+              setMenu(null);
+            }}>
+              <Icon name="copy" size={16} />{labels.locale === "en" ? "Copy" : "复制"}
+            </button>
+          )}
+          <button onClick={() => { setForward(menu.message); setMenu(null); }}>
+            <Icon name="forward" size={16} />{labels.locale === "en" ? "Forward" : "转发"}
+          </button>
+          <button onClick={() => { setQuote(menu.message); setMenu(null); }}>
+            <Icon name="quote" size={16} />{labels.locale === "en" ? "Quote" : "引用"}
+          </button>
+          {menu.message.msg_type === "file" && localFileAvailable(menu.message) && (
+            <button onClick={() => { workspace.dispatch({ type: "file.saveAs", file: menu.message }); setMenu(null); }}>
+              <Icon name="download" size={16} />{labels.locale === "en" ? "Save As…" : "另存为"}
+            </button>
+          )}
+          <i className="context-separator" />
+          {menu.message.own && menu.message.client_message_id && (
+            <button onClick={() => { workspace.dispatch({ type: "message.recall", clientMessageId: menu.message.client_message_id }); setMenu(null); }}>
+              <Icon name="recall" size={16} />{labels.locale === "en" ? "Recall" : "撤回"}
+            </button>
+          )}
+          {menu.message.id !== undefined && (
+            <button className="danger-text" onClick={() => { const messageId = menu.message.id; setMenu(null); onConfirm({ title: labels.deleteMessageTitle, detail: labels.deleteMessageDetail, action: labels.deleteMessageAction, run: () => workspace.dispatch({ type: "message.deleteLocal", ids: [messageId] }) }); }}>
+              <Icon name="trash" size={16} />{labels.locale === "en" ? "Delete locally" : "删除"}
+            </button>
+          )}
+        </div>
+      )}
+      {forward && (
+        <ForwardModal message={forward} state={state} workspace={workspace} labels={labels} onClose={() => setForward(null)} />
+      )}
+      {historyOpen && <HistoryModal conversation={conversation} messages={visibleMessages} state={state} workspace={workspace} labels={labels} onJump={jumpToMessage} onClose={() => setHistoryOpen(false)} />}
+      {announcementOpen && announcement && (
+        <Modal title={labels.locale === "en" ? "Group announcement" : "群公告"} closeLabel={labels.close} onClose={() => setAnnouncementOpen(false)} actions={<button className="primary" onClick={() => { globalThis.localStorage?.setItem(`xchat:announcement:${announcementKey}`, "dismissed"); setDismissedAnnouncement(announcementKey); setAnnouncementOpen(false); }}>{labels.locale === "en" ? "Got it" : "我知道了"}</button>}>
+          <div className="announcement-detail"><div className="announcement-detail-head"><span className="announcement-detail-icon">📢</span><span><b>{labels.locale === "en" ? "Group announcement" : "群公告"}</b><small>{announcement.sender_name || announcement.sender_id} · {formatTime(announcement.timestamp, labels.locale)}</small></span></div><div className="announcement-content">{announcement.content}</div></div>
+        </Modal>
+      )}
     </main>
   );
 }
@@ -2720,6 +2988,13 @@ function SettingsWorkspace({
     setDirty(true);
     setForm((current) => ({ ...current, [key]: value }));
   };
+  const choosePath = async (key) => {
+    const result = await workspace.dispatch({
+      type: "settings.pickPath",
+      title: labels.chooseFolder,
+    });
+    if (result.ok && result.data) change(key, Array.isArray(result.data) ? result.data[0] : result.data);
+  };
   const avatars = ["🐼", "🦊", "🐧", "🐰", "🐯", "🐸", "🐨", "🦁"];
   return (
     <main className="workspace settings-workspace" data-od-id="settings-workspace">
@@ -2846,7 +3121,10 @@ function SettingsWorkspace({
         <section className="settings-section" id="settings-download">
           <h2>{labels.downloadsAndTransfers}</h2>
           <SettingRow label={labels.downloadPath}>
-            <input value={form.download_path} onChange={(event) => change("download_path", event.target.value)} />
+            <div className="path-picker-field">
+              <input value={form.download_path} onChange={(event) => change("download_path", event.target.value)} />
+              <button type="button" className="path-picker-button" onClick={() => choosePath("download_path")} aria-label={labels.chooseFolder} title={labels.chooseFolder}><Icon name="folder" size={17} /></button>
+            </div>
           </SettingRow>
           <SettingRow
             label={labels.autoReceiveFiles}
@@ -2861,7 +3139,10 @@ function SettingsWorkspace({
             <input className="numeric" inputMode="numeric" value={form.port} onChange={(event) => change("port", event.target.value)} />
           </SettingRow>
           <SettingRow label={labels.databasePath} detail={labels.restartRequired}>
-            <input className="numeric" value={form.db_path} onChange={(event) => change("db_path", event.target.value)} />
+            <div className="path-picker-field">
+              <input value={form.db_path} onChange={(event) => change("db_path", event.target.value)} />
+              <button type="button" className="path-picker-button" onClick={() => choosePath("db_path")} aria-label={labels.chooseFolder} title={labels.chooseFolder}><Icon name="folder" size={17} /></button>
+            </div>
           </SettingRow>
         </section>
         <section className="settings-section" id="settings-shortcut">
@@ -2891,7 +3172,7 @@ function SettingsWorkspace({
         <section className="settings-section settings-about" id="settings-about">
           <h2>{labels.aboutTitle}</h2>
           <div className="about-card">
-            <div className="about-mark"><Icon name="info" size={28} /></div>
+            <img className="about-logo" src="/app-icon.png" alt="Xchat" />
             <div>
               <b>Xchat</b>
               <p>{labels.aboutDescription}</p>
@@ -2904,10 +3185,17 @@ function SettingsWorkspace({
   );
 }
 
-function InfoPanel({ state, conversation, workspace, labels, onRemark, onConfirm }) {
+function LegacyInfoPanel({ state, conversation, workspace, labels, onRemark, onConfirm }) {
+  const [newMember, setNewMember] = useState("");
   if (!conversation) return null;
   const peer = conversation.peer;
   const group = conversation.kind === "group";
+  const { owner, manager } = groupPermissions(conversation, state.self.id);
+  const runGroupAction = (operation, value = null, memberIds = []) =>
+    workspace.dispatch({ type: "conversation.updateGroup", operation, value, memberIds });
+  const availableMembers = state.devices.filter(
+    (device) => !(conversation.members || []).some((member) => member.peer_id === device.id),
+  );
   return (
     <aside className="info-panel" data-od-id="conversation-information">
       <div className="info-identity">
@@ -2933,9 +3221,33 @@ function InfoPanel({ state, conversation, workspace, labels, onRemark, onConfirm
                 }}
                 labels={labels}
               />
-              <span><b>{member.display_name || member.name}</b><small>{member.peer_id || member.id}</small></span>
+              <span>
+                <b>{member.display_name || member.name}</b>
+                <small>{member.role === "owner" ? (labels.locale === "en" ? "Owner" : "群主") : member.role === "admin" ? (labels.locale === "en" ? "Admin" : "管理员") : member.peer_id || member.id}</small>
+              </span>
+              {owner && member.role !== "owner" && (
+                <button onClick={() => runGroupAction(member.role === "admin" ? "remove_admin" : "set_admin", null, [member.peer_id])}>
+                  {member.role === "admin" ? (labels.locale === "en" ? "Remove admin" : "取消管理员") : (labels.locale === "en" ? "Make admin" : "设为管理员")}
+                </button>
+              )}
+              {manager && member.role === "member" && member.peer_id !== state.self.id && (
+                <button className="danger-text" onClick={() => runGroupAction("remove_members", null, [member.peer_id])}>
+                  {labels.locale === "en" ? "Remove" : "移出"}
+                </button>
+              )}
             </div>
           ))}
+          {manager && availableMembers.length > 0 && (
+            <div className="group-member-add">
+              <select value={newMember} onChange={(event) => setNewMember(event.target.value)}>
+                <option value="">{labels.locale === "en" ? "Select a device" : "选择要添加的成员"}</option>
+                {availableMembers.map((device) => <option key={device.id} value={device.id}>{displayName(device, labels)}</option>)}
+              </select>
+              <button disabled={!newMember} onClick={async () => { const result = await runGroupAction("add_members", null, [newMember]); if (result.ok) setNewMember(""); }}>
+                {labels.locale === "en" ? "Add" : "添加"}
+              </button>
+            </div>
+          )}
         </section>
       ) : (
         <>
@@ -2978,6 +3290,31 @@ function InfoPanel({ state, conversation, workspace, labels, onRemark, onConfirm
         </>
       )}
       <div className="info-actions">
+        {group && owner && (
+          <button onClick={() => { const value = prompt(labels.locale === "en" ? "New group name" : "新的群名称", conversation.title); if (value) runGroupAction("rename", value); }}>
+            {labels.locale === "en" ? "Rename group" : "修改群名称"}
+          </button>
+        )}
+        {group && manager && (
+          <button onClick={() => { const value = prompt(labels.locale === "en" ? "Group announcement" : "群公告"); if (value) runGroupAction("announcement", value); }}>
+            {labels.locale === "en" ? "Post announcement" : "发布群公告"}
+          </button>
+        )}
+        {group && (
+          <button onClick={() => document.querySelector(".search-box input")?.focus()}>
+            {labels.locale === "en" ? "Search messages" : "查找聊天记录"}
+          </button>
+        )}
+        {group && (
+          <button className="danger-text" onClick={() => onConfirm({ title: labels.clearHistoryTitle, detail: labels.clearHistoryDetail, action: labels.clearHistoryAction, run: () => workspace.dispatch({ type: "message.clearConversation" }) })}>
+            {labels.clearHistory}
+          </button>
+        )}
+        {group && owner && (
+          <button className="danger-text" onClick={() => onConfirm({ title: labels.locale === "en" ? "Disband this group?" : "解散这个群聊？", detail: labels.locale === "en" ? "All members will lose this conversation." : "所有成员都将移除此群聊。", action: labels.locale === "en" ? "Disband" : "解散群聊", run: () => runGroupAction("disband") })}>
+            {labels.locale === "en" ? "Disband group" : "解散群聊"}
+          </button>
+        )}
         <button
           disabled={!state.capabilities.conversationState}
           onClick={() =>
@@ -3007,6 +3344,88 @@ function InfoPanel({ state, conversation, workspace, labels, onRemark, onConfirm
             : labels.markUnread}
         </button>
       </div>
+    </aside>
+  );
+}
+
+function GroupManageModal({ state, conversation, workspace, labels, initialView, onClose, onConfirm }) {
+  const [view, setView] = useState(initialView || "members");
+  const [query, setQuery] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [selected, setSelected] = useState([]);
+  const [announcement, setAnnouncement] = useState("");
+  const [name, setName] = useState(conversation.title || "");
+  const members = conversation.members || [];
+  const { owner, manager } = groupPermissions(conversation, state.self.id);
+  const run = (operation, value = null, memberIds = []) => workspace.dispatch({ type: "conversation.updateGroup", operation, value, memberIds });
+  useEffect(() => setName(conversation.title || ""), [conversation.id, conversation.title]);
+  const memberRows = members.filter((member) => `${member.display_name || member.name} ${member.peer_id}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  const candidates = state.devices.filter((device) => !members.some((member) => member.peer_id === device.id) && `${displayName(device, labels)} ${device.hostname || ""} ${device.mac_address || ""}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  const toggle = (id) => setSelected((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  return (
+    <Modal title={labels.locale === "en" ? "Group management" : "群聊管理"} closeLabel={labels.close} onClose={onClose} wide>
+      <div className="group-manage-layout">
+        <nav className="group-manage-nav">
+          <button className={view === "members" ? "active" : ""} onClick={() => { setView("members"); setAdding(false); setQuery(""); }}><Icon name="user" />{labels.locale === "en" ? "Members" : "群成员"}</button>
+          <button className={view === "announcement" ? "active" : ""} onClick={() => { setView("announcement"); setQuery(""); }}><Icon name="chat" />{labels.locale === "en" ? "Announcement" : "群公告"}</button>
+          <button className={view === "settings" ? "active" : ""} onClick={() => { setView("settings"); setQuery(""); }}><Icon name="settings" />{labels.locale === "en" ? "Settings" : "群聊设置"}</button>
+        </nav>
+        <section className="group-manage-main">
+          {view === "members" && (
+            <>
+              <div className="section-head"><span><h3>{adding ? (labels.locale === "en" ? "Add members" : "添加群成员") : `${labels.locale === "en" ? "Members" : "群成员"} · ${members.length}`}</h3><small>{manager ? (labels.locale === "en" ? "Owners and admins can manage members" : "群主和管理员可以增减群成员") : (labels.locale === "en" ? "Only owners and admins can manage members" : "仅群主和管理员可管理成员")}</small></span>{manager && <button className="primary" onClick={() => { setAdding((value) => !value); setSelected([]); setQuery(""); }}>{adding ? labels.cancel : (labels.locale === "en" ? "Add members" : "添加成员")}</button>}</div>
+              <label className="modal-search"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={adding ? (labels.locale === "en" ? "Search available contacts" : "搜索可添加的联系人") : (labels.locale === "en" ? "Search members" : "搜索群成员")} /></label>
+              <div className="member-manage-list">
+                {(adding ? candidates : memberRows).map((member) => {
+                  const id = adding ? member.id : member.peer_id;
+                  const role = adding ? "member" : member.role;
+                  const entity = adding ? member : { id, name: member.display_name || member.name };
+                  return adding ? (
+                    <button className={`candidate-row ${selected.includes(id) ? "selected" : ""}`} key={id} onClick={() => toggle(id)}><span className="forward-check">✓</span><Avatar entity={entity} labels={labels} /><span><b>{displayName(entity, labels)}</b><small>{entity.hostname || entity.addr || id}</small></span></button>
+                  ) : (
+                    <div className="manage-member-row" key={id}><Avatar entity={entity} labels={labels} /><span><b>{displayName(entity, labels)}</b>{role === "owner" && <i className="role-tag owner">{labels.locale === "en" ? "Owner" : "群主"}</i>}{role === "admin" && <i className="role-tag">{labels.locale === "en" ? "Admin" : "管理员"}</i>}<small>{id === state.self.id ? (labels.locale === "en" ? "This device" : "本机设备") : id}</small></span><span className="member-actions">{owner && role !== "owner" && <button onClick={() => run(role === "admin" ? "remove_admin" : "set_admin", null, [id])}>{role === "admin" ? (labels.locale === "en" ? "Remove admin" : "取消管理员") : (labels.locale === "en" ? "Make admin" : "设为管理员")}</button>}{manager && role === "member" && id !== state.self.id && <button className="danger-text" onClick={() => onConfirm({ title: labels.locale === "en" ? "Remove this member?" : "移出群成员？", detail: labels.locale === "en" ? "They will no longer receive messages from this group." : `确定将“${displayName(entity, labels)}”移出群聊吗？`, action: labels.locale === "en" ? "Remove" : "移出群聊", run: () => run("remove_members", null, [id]) })}>{labels.locale === "en" ? "Remove" : "移出"}</button>}</span></div>
+                  );
+                })}
+                {!(adding ? candidates : memberRows).length && <div className="history-empty">{labels.locale === "en" ? "No matching members" : "没有符合条件的成员"}</div>}
+              </div>
+              {adding && <div className="manage-footer"><span>{labels.locale === "en" ? `${selected.length} selected` : `已选择 ${selected.length} 人`}</span><button className="primary" disabled={!selected.length} onClick={async () => { const result = await run("add_members", null, selected); if (result.ok) { setAdding(false); setSelected([]); setQuery(""); } }}>{labels.locale === "en" ? "Add" : "添加"}</button></div>}
+            </>
+          )}
+          {view === "announcement" && (
+            <><div className="section-head"><span><h3>{labels.locale === "en" ? "Group announcement" : "群公告"}</h3><small>{labels.locale === "en" ? "Published announcements stay pinned above the conversation" : "发布后会固定显示在群聊顶部"}</small></span></div><textarea className="announcement-editor" value={announcement} maxLength={2000} disabled={!manager} onChange={(event) => setAnnouncement(event.target.value)} placeholder={labels.locale === "en" ? "Write an announcement…" : "输入群公告内容…"} /><div className="announcement-note"><span>{manager ? (labels.locale === "en" ? "All members will see this banner" : "所有成员都会看到公告横幅") : (labels.locale === "en" ? "Only owners and admins can publish" : "仅群主和管理员可发布")}</span><span>{announcement.length} / 2000</span></div>{manager && <div className="manage-footer"><span /><button className="primary" disabled={!announcement.trim()} onClick={async () => { const result = await run("announcement", announcement); if (result.ok) onClose(); }}>{labels.locale === "en" ? "Publish" : "发布公告"}</button></div>}</>
+          )}
+          {view === "settings" && (
+            <><div className="section-head"><span><h3>{labels.locale === "en" ? "Group settings" : "群聊设置"}</h3><small>{labels.locale === "en" ? "Only the owner can rename or disband the group" : "仅群主可以修改群名称和解散群聊"}</small></span></div><div className="group-setting-row"><span><b>{labels.locale === "en" ? "Group name" : "群聊名称"}</b><small>{conversation.title}</small></span><input value={name} maxLength={80} disabled={!owner} onChange={(event) => setName(event.target.value)} /><button disabled={!owner || !name.trim() || name.trim() === conversation.title} onClick={async () => { const nextName = name.trim(); const result = await run("rename", nextName); if (result.ok) setName(nextName); }}>{labels.locale === "en" ? "Save" : "保存"}</button></div><div className="group-setting-row"><span><b>{labels.clearHistory}</b><small>{labels.locale === "en" ? "Only removes records on this device" : "仅删除本机记录，不影响其他成员"}</small></span><button className="danger-text" onClick={() => onConfirm({ title: labels.clearHistoryTitle, detail: labels.clearHistoryDetail, action: labels.clearHistoryAction, run: () => workspace.dispatch({ type: "message.clearConversation" }) })}>{labels.locale === "en" ? "Clear" : "清空"}</button></div>{owner && <div className="group-setting-row danger-zone"><span><b>{labels.locale === "en" ? "Disband group" : "解散群聊"}</b><small>{labels.locale === "en" ? "All members will be removed permanently" : "所有成员都将退出且无法恢复"}</small></span><button className="danger" onClick={() => onConfirm({ title: labels.locale === "en" ? "Disband this group?" : "解散这个群聊？", detail: labels.locale === "en" ? "This cannot be undone." : "解散后无法恢复。", action: labels.locale === "en" ? "Disband" : "解散群聊", run: async () => { await run("disband"); onClose(); } })}>{labels.locale === "en" ? "Disband" : "解散"}</button></div>}</>
+          )}
+        </section>
+      </div>
+    </Modal>
+  );
+}
+
+function InfoPanel({ state, conversation, workspace, labels, onRemark, onConfirm }) {
+  const [manageView, setManageView] = useState("");
+  if (!conversation) return null;
+  const group = conversation.kind === "group";
+  const members = conversation.members || [];
+  const { manager } = groupPermissions(conversation, state.self.id);
+  if (!group) return <LegacyInfoPanel state={state} conversation={conversation} workspace={workspace} labels={labels} onRemark={onRemark} onConfirm={onConfirm} />;
+  const open = (view) => setManageView(view);
+  return (
+    <aside className="info-panel group-drawer" data-od-id="conversation-information">
+      <section className="group-info-card"><Avatar entity={conversation} labels={labels} large /><h3>{displayName(conversation, labels)}</h3><p>{labels.memberCount(members.length)}</p></section>
+      <div className="group-member-peek">
+        {members.slice(0, 7).map((member) => <button className="member-tile" key={member.peer_id} onClick={() => open("members")}><Avatar entity={{ id: member.peer_id, name: member.display_name || member.name }} labels={labels} /><span>{member.display_name || member.name}</span></button>)}
+        {manager && <button className="member-tile" onClick={() => open("members")}><span className="member-add-tile"><Icon name="plus" /></span><span>{labels.locale === "en" ? "Add" : "添加"}</span></button>}
+      </div>
+      <div className="group-quick-actions">
+        <button onClick={() => open("members")}><Icon name="user" />{labels.locale === "en" ? "View members" : "查看群成员"}</button>
+        <button onClick={() => dispatchEvent(new Event("xchat:open-history"))}><Icon name="search" />{labels.locale === "en" ? "Search history" : "查找聊天记录"}</button>
+        {manager && <button onClick={() => open("announcement")}><Icon name="chat" />{labels.locale === "en" ? "Announcement" : "发布群公告"}</button>}
+        <button onClick={() => open("settings")}><Icon name="settings" />{labels.locale === "en" ? "Group settings" : "群聊设置"}</button>
+      </div>
+      <div className="info-actions"><button disabled={!state.capabilities.conversationState} onClick={() => workspace.dispatch({ type: "conversation.pin", id: conversation.id, value: !conversation.pinned })}>{conversation.pinned ? labels.unpinConversation : labels.pinConversation}</button><button disabled={!state.capabilities.conversationState} onClick={() => workspace.dispatch({ type: "conversation.markUnread", id: conversation.id, value: !conversation.forced_unread })}>{conversation.forced_unread ? labels.unmarkUnread : labels.markUnread}</button></div>
+      {manageView && <GroupManageModal state={state} conversation={conversation} workspace={workspace} labels={labels} initialView={manageView} onClose={() => setManageView("")} onConfirm={onConfirm} />}
     </aside>
   );
 }

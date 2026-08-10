@@ -51,6 +51,7 @@ const DOCUMENT_EXTENSIONS = new Set([
 ]);
 const AUDIO_EXTENSIONS = new Set(["aac", "flac", "m4a", "mp3", "ogg", "wav"]);
 const VIDEO_EXTENSIONS = new Set(["avi", "mkv", "mov", "mp4", "webm"]);
+const TEXT_EXTENSIONS = new Set(["csv", "json", "md", "rtf", "txt", "log", "yaml", "yml", "xml"]);
 
 export const EMOJI_SET = [
   "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊",
@@ -392,6 +393,19 @@ export function normalizeMessage(raw = {}, selfId = "", conversationId = "") {
     raw.client_message_id ?? raw.clientMessageId ?? raw.sender_msg_id ?? null;
   const id = raw.id ?? clientMessageId ?? `${senderId}:${raw.timestamp ?? 0}:${raw.content ?? ""}`;
   const msgType = raw.msg_type ?? raw.type ?? "text";
+  let quote = null;
+  let displayContent = raw.content ?? "";
+  if (msgType === "quote") {
+    try {
+      const payload = JSON.parse(displayContent);
+      if (payload && typeof payload.text === "string" && payload.reply) {
+        displayContent = payload.text;
+        quote = payload.reply;
+      }
+    } catch {
+      // Keep legacy/malformed quote payload readable as plain text.
+    }
+  }
   return {
     ...raw,
     id,
@@ -399,7 +413,9 @@ export function normalizeMessage(raw = {}, selfId = "", conversationId = "") {
     conversation_id: raw.conversation_id ?? conversationId,
     sender_id: senderId,
     sender_name: raw.sender_name ?? raw.from_name ?? "",
-    content: raw.content ?? "",
+    content: displayContent,
+    raw_content: raw.content ?? "",
+    quote,
     mention_ids: raw.mention_ids ?? raw.mentionIds ?? [],
     msg_type: msgType,
     timestamp: toSeconds(raw.timestamp ?? raw.created_at),
@@ -416,6 +432,20 @@ export function normalizeMessage(raw = {}, selfId = "", conversationId = "") {
     read_count: Number(raw.read_count ?? 0),
     recipient_count: Number(raw.recipient_count ?? 0),
   };
+}
+
+export function encodeQuoteMessage(text, source = {}) {
+  return JSON.stringify({
+    text: String(text ?? "").trim(),
+    reply: {
+      client_message_id: source.client_message_id ?? null,
+      message_id: source.message_id ?? source.id ?? null,
+      sender_id: source.sender_id ?? "",
+      sender_name: source.sender_name ?? "",
+      content: String(source.content ?? source.file_name ?? "").slice(0, 500),
+      msg_type: source.msg_type ?? "text",
+    },
+  });
 }
 
 const MESSAGE_ALERT_CONTROL_TYPES = new Set([
@@ -492,6 +522,17 @@ export function fileKind(file = {}) {
 
 export function isImageFile(file = {}) {
   return fileKind(file) === "image";
+}
+
+export function isTextFile(file = {}) {
+  const mime = String(file.mime_type ?? file.type ?? "").toLocaleLowerCase();
+  return mime.startsWith("text/") || TEXT_EXTENSIONS.has(fileExtension(file));
+}
+
+export function isCopyableMessage(message = {}) {
+  const messageType = String(message.msg_type ?? message.type ?? "text").toLocaleLowerCase();
+  if (messageType === "text" || messageType === "quote") return true;
+  return isImageFile(message) || isTextFile(message);
 }
 
 export function localFileAvailable(file = {}) {
@@ -810,6 +851,26 @@ export class TauriAdapter {
     return this.invoke("create_group", { title, memberIds });
   }
 
+  updateGroup(conversationId, operation, value = null, memberIds = []) {
+    return this.invoke("update_group", { conversationId, operation, value, memberIds });
+  }
+
+  recallMessage(conversationId, clientMessageId) {
+    return this.invoke("recall_conversation_message", { conversationId, clientMessageId });
+  }
+
+  forwardMessage(sourceMessageId, conversationIds, note = null) {
+    return this.invoke("forward_conversation_message", {
+      sourceMessageId,
+      conversationIds,
+      note,
+    });
+  }
+
+  saveFileAs(messageId) {
+    return this.invoke("save_conversation_file_as", { messageId });
+  }
+
   async sendMessage(
     conversation,
     clientMessageId,
@@ -1006,6 +1067,17 @@ export class TauriAdapter {
 
   readMessageMedia(messageId) {
     return this.invoke("read_workspace_media", { messageId });
+  }
+
+  pickDirectory(title = "选择文件夹") {
+    return this.invoke("pick_workspace_directory", { title });
+  }
+
+  copyFileMessage(file) {
+    return this.invoke("copy_file_message_content", {
+      messageId: file.message_id ?? file.id,
+      kind: isTextFile(file) ? "text" : "image",
+    });
   }
 
   discardStagedAttachment(filePath) {
@@ -1239,6 +1311,37 @@ export class HttpWsAdapter {
 
   createGroup(title, memberIds) {
     return this.json("/api/groups", "POST", { title, member_ids: memberIds });
+  }
+
+  updateGroup(conversationId, operation, value = null, memberIds = []) {
+    return this.json(`/api/groups/${encodeURIComponent(conversationId)}`, "POST", {
+      operation,
+      value,
+      member_ids: memberIds,
+    });
+  }
+
+  recallMessage(conversationId, clientMessageId) {
+    return this.json(`/api/conversations/${encodeURIComponent(conversationId)}/recall`, "POST", {
+      client_message_id: clientMessageId,
+    });
+  }
+
+  forwardMessage(sourceMessageId, conversationIds, note = null) {
+    return this.json("/api/messages/forward", "POST", {
+      source_message_id: sourceMessageId,
+      conversation_ids: conversationIds,
+      note,
+    });
+  }
+
+  saveFileAs() {
+    throw new TransportError(
+      uiCopy("Web 端暂不支持另存为", "Save As is unavailable in the web client"),
+      "unsupported",
+      0,
+      false,
+    );
   }
 
   async sendMessage(
@@ -1521,6 +1624,41 @@ export class HttpWsAdapter {
     };
   }
 
+  async pickDirectory() {
+    throw new TransportError(uiCopy("Web 端不能选择本地文件夹", "The web client cannot choose local folders"), "unsupported", 0, false);
+  }
+
+  async copyFileMessage(file) {
+    const response = await fetch(`/api/download/${encodeURIComponent(file.message_id ?? file.id)}`);
+    if (!response.ok) throw new TransportError(uiCopy("文件不可用", "File unavailable"));
+    if (isTextFile(file)) {
+      const content = await response.text();
+      if (!globalThis.navigator?.clipboard?.writeText) {
+        throw new TransportError(
+          uiCopy("浏览器不支持复制文本内容", "The browser cannot copy text content"),
+          "clipboard_unsupported",
+          0,
+          false,
+        );
+      }
+      await globalThis.navigator.clipboard.writeText(content);
+      return content;
+    }
+    const blob = await response.blob();
+    if (!globalThis.navigator?.clipboard?.write || !globalThis.ClipboardItem) {
+      throw new TransportError(
+        uiCopy("浏览器不支持复制图片内容", "The browser cannot copy image content"),
+        "clipboard_unsupported",
+        0,
+        false,
+      );
+    }
+    await globalThis.navigator.clipboard.write([
+      new globalThis.ClipboardItem({ [blob.type || "image/png"]: blob }),
+    ]);
+    return true;
+  }
+
   discardStagedAttachment() {}
 
   async patchSettings(patch, current) {
@@ -1776,6 +1914,24 @@ export function createXChatModule() {
     }
     const payload = event.payload?.payload ?? event.payload;
     const eventType = String(event.type || "").replaceAll("_", ".").replaceAll("-", ".");
+    if (eventType.includes("message.recall")) {
+      const conversationId = payload?.conversation_id;
+      if (conversationId) {
+        patch({
+          messagesByConversation: {
+            ...snapshot.messagesByConversation,
+            [conversationId]: (snapshot.messagesByConversation[conversationId] ?? []).filter(
+              (message) => message.client_message_id !== payload.client_message_id,
+            ),
+          },
+        });
+      }
+      return;
+    }
+    if (eventType.includes("group.removed")) {
+      scheduleRefresh();
+      return;
+    }
     if (eventType === "peer.online") {
       const name = payload?.name || payload?.hostname || uiCopy("局域网主机", "LAN host");
       addNotice(
@@ -1969,6 +2125,22 @@ export function createXChatModule() {
         if (created?.id) patch({ activeConversationId: created.id, activeSection: "chat" });
         return created;
       }
+      case "conversation.updateGroup": {
+        const conversation = conversationForAction(action);
+        if (!conversation) return;
+        const result = await adapter.updateGroup(
+          conversation.id,
+          action.operation,
+          action.value ?? null,
+          action.memberIds ?? [],
+        );
+        await refreshWorkspace();
+        if (action.operation === "announcement") {
+          const current = activeConversation();
+          if (current?.id === conversation.id) await loadMessages(current, 40, 0);
+        }
+        return result;
+      }
       case "conversation.loadOlder": {
         const conversation = activeConversation();
         if (!conversation) return;
@@ -1996,7 +2168,11 @@ export function createXChatModule() {
       }
       case "message.sendText": {
         const conversation = conversationForAction(action);
-        const content = action.content.trim();
+        const text = action.content.trim();
+        const msgType = action.msgType ?? "text";
+        const content = msgType === "quote"
+          ? encodeQuoteMessage(text, action.quote)
+          : text;
         if (!conversation || !content) return;
         const mentionIds = conversation.kind === "group"
           ? [...new Set(action.mentionIds ?? [])]
@@ -2009,6 +2185,7 @@ export function createXChatModule() {
             sender_id: snapshot.self.id,
             sender_name: snapshot.self.name,
             content,
+            msg_type: msgType,
             mention_ids: mentionIds,
             timestamp: Math.floor(Date.now() / 1000),
             status: "pending",
@@ -2031,7 +2208,7 @@ export function createXChatModule() {
             conversation,
             clientMessageId,
             content,
-            "text",
+            msgType,
             mentionIds,
           );
           const acknowledged = normalizeMessage(
@@ -2227,6 +2404,30 @@ export function createXChatModule() {
       case "message.deleteLocal":
         await adapter.deleteMessages(action.ids);
         return loadMessages(activeConversation(), 40, 0);
+      case "message.recall": {
+        const conversation = activeConversation();
+        if (!conversation || !action.clientMessageId) return;
+        await adapter.recallMessage(conversation.id, action.clientMessageId);
+        return loadMessages(conversation, 40, 0);
+      }
+      case "message.forward": {
+        const sourceMessageId = Number(action.messageId);
+        if (!Number.isInteger(sourceMessageId)) {
+          throw new TransportError(
+            uiCopy("这条消息尚未保存，暂时无法转发", "This message is not ready to forward"),
+            "message_not_ready",
+            0,
+            false,
+          );
+        }
+        const result = await adapter.forwardMessage(
+          sourceMessageId,
+          action.conversationIds ?? [],
+          action.note?.trim() || null,
+        );
+        scheduleRefresh();
+        return result;
+      }
       case "message.clearConversation": {
         const conversation = activeConversation();
         if (!conversation) return;
@@ -2265,6 +2466,8 @@ export function createXChatModule() {
         return adapter.openFile(action.file);
       case "file.reveal":
         return adapter.revealFile(action.file);
+      case "file.saveAs":
+        return adapter.saveFileAs(action.file.message_id ?? action.file.id);
       case "file.deleteLocalCopy":
         await adapter.deleteLocalFile(action.file.message_id ?? action.file.id);
         return refreshWorkspace();
@@ -2302,6 +2505,12 @@ export function createXChatModule() {
         }
         patch({ settings: { ...snapshot.settings, ...action.patch } });
         return;
+      case "settings.pickPath": {
+        const selected = await adapter.pickDirectory(action.title);
+        return selected || null;
+      }
+      case "message.copyFile":
+        return adapter.copyFileMessage(action.file);
       case "notice.dismiss":
         patch({ notices: snapshot.notices.filter((notice) => notice.id !== action.id) });
         return;

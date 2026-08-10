@@ -60,3 +60,104 @@ test("conversation presence dots distinguish online and offline peers", async ()
   assert.match(online, /background:\s*var\(--success\)/);
   assert.match(offline, /background:\s*var\(--muted\)/);
 });
+
+test("group quick actions use a relaxed vertical layout", async () => {
+  const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+  const layouts = [...css.matchAll(/\.group-quick-actions\s*\{([^}]*)\}/g)];
+  const finalLayout = layouts.at(-1)?.[1];
+
+  assert.ok(finalLayout, "group quick-action layout rule is missing");
+  assert.match(finalLayout, /grid-template-columns:\s*1fr/);
+  assert.match(
+    css,
+    /\.group-quick-actions button,[\s\S]*?min-height:\s*52px;[\s\S]*?border-right:\s*0;/,
+  );
+});
+
+test("conversation list scrollbar is narrow and hidden until hover", async () => {
+  const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+  const listRules = [...css.matchAll(/\.list-scroll\s*\{([^}]*)\}/g)];
+  const finalListRule = listRules.at(-1)?.[1];
+
+  assert.match(finalListRule, /scrollbar-color:\s*transparent transparent/);
+  assert.match(css, /\.list-scroll:hover\s*\{[^}]*scrollbar-color:\s*color-mix/);
+  assert.match(css, /\.list-scroll:hover::?-webkit-scrollbar\s*\{\s*width:\s*3px/);
+  assert.match(css, /\.list-scroll::?-webkit-scrollbar-thumb\s*\{[^}]*background:\s*transparent/);
+});
+
+test("quote action icon keeps the exact prototype geometry", async () => {
+  const [app, prototype] = await Promise.all([
+    readFile(new URL("./App.jsx", import.meta.url), "utf8"),
+    readFile(new URL("../../ui-ref/xchat-desktop-prototype.html", import.meta.url), "utf8"),
+  ]);
+  const outline = 'd="M4 5h16v12H8l-4 3Z"';
+  const lines = 'd="M8 9h8M8 13h5"';
+
+  assert.ok(app.includes(outline) && app.includes(lines));
+  assert.ok(prototype.includes(outline) && prototype.includes(lines));
+});
+
+test("quote preview and sent messages follow the WeChat reference layout", async () => {
+  const [app, css] = await Promise.all([
+    readFile(new URL("./App.jsx", import.meta.url), "utf8"),
+    readFile(new URL("./styles.css", import.meta.url), "utf8"),
+  ]);
+  const composer = app.slice(app.indexOf("function Composer"), app.indexOf("function ForwardModal"));
+  const messageLayout = app.slice(app.indexOf("visibleMessages.map"), app.indexOf("<Composer"));
+  const preview = css.match(/\.quote-preview\s*\{([^}]*)\}/)?.[1];
+  const quoted = css.match(/\.quoted-block\s*\{([^}]*)\}/)?.[1];
+  const sent = css.match(/\.message\.sent \.quoted-block\s*\{([^}]*)\}/)?.[1];
+
+  assert.ok(composer.indexOf("<textarea") < composer.indexOf('className="quote-preview"'));
+  assert.ok(composer.indexOf('className="quote-preview"') < composer.indexOf('className="compose-toolbar"'));
+  assert.ok(messageLayout.indexOf('className="bubble"') < messageLayout.indexOf('className="quoted-block"'));
+  assert.match(preview, /background:\s*transparent/);
+  assert.match(preview, /border-left:\s*2px/);
+  assert.match(quoted, /background:\s*transparent/);
+  assert.match(quoted, /-webkit-line-clamp:\s*2/);
+  assert.match(sent, /border-right:\s*2px/);
+  assert.match(sent, /border-left:\s*0/);
+  assert.match(css, /\.quote-preview-close\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;[^}]*border-radius:\s*50%/s);
+});
+
+test("all checkbox-like controls use the shared polished square style", async () => {
+  const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+  const checkbox = css.match(/input\[type="checkbox"\]\s*\{([^}]*)\}/)?.[1];
+  const selected = css.match(/input\[type="checkbox"\]:checked\s*\{([^}]*)\}/)?.[1];
+  const forward = css.match(/\.forward-check\s*\{([^}]*)\}/)?.[1];
+
+  assert.match(checkbox, /appearance:\s*none/);
+  assert.match(checkbox, /width:\s*22px/);
+  assert.match(checkbox, /border-radius:\s*6px/);
+  assert.match(selected, /background:\s*var\(--accent\)/);
+  assert.match(forward, /border-radius:\s*6px/);
+});
+
+test("about card uses the application logo and the group snapshot exposes its creator", async () => {
+  const [app, css, workspace] = await Promise.all([
+    readFile(new URL("./App.jsx", import.meta.url), "utf8"),
+    readFile(new URL("./styles.css", import.meta.url), "utf8"),
+    readFile(new URL("../../src-tauri/src/workspace.rs", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(app, /<img className="about-logo" src="\/app-icon\.png" alt="Xchat" \/>/);
+  assert.match(css, /\.about-logo\s*\{[^}]*object-fit:\s*cover/s);
+  assert.match(workspace, /pub created_by:\s*Option<String>/);
+  assert.match(workspace, /created_by:\s*record\.created_by/);
+});
+
+test("user-visible version sources stay synchronized at 0.1.1", async () => {
+  const [packageJson, tauriConfig, cargoToml, app, android] = await Promise.all([
+    readFile(new URL("../../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
+    readFile(new URL("../../src-tauri/Cargo.toml", import.meta.url), "utf8"),
+    readFile(new URL("./App.jsx", import.meta.url), "utf8"),
+    readFile(new URL("../../src-tauri/gen/android/app/build.gradle.kts", import.meta.url), "utf8"),
+  ]);
+
+  assert.equal(JSON.parse(packageJson).version, "0.1.1");
+  assert.equal(JSON.parse(tauriConfig).version, "0.1.1");
+  assert.match(cargoToml, /^version = "0\.1\.1"$/m);
+  assert.match(app, /:\s*"0\.1\.1";/);
+  assert.match(android, /versionName[^\n]*"0\.1\.1"/);
+});

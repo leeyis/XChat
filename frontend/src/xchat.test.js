@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   createXChatModule,
   directConversationId,
+  encodeQuoteMessage,
   EMOJI_SET,
   fileKind,
   fileStatus,
@@ -10,7 +11,9 @@ import {
   HttpWsAdapter,
   insertTextAtSelection,
   isAppActive,
+  isCopyableMessage,
   isPhysicalPointInsideRect,
+  isTextFile,
   incomingMessageAlert,
   isMessageAlertControlType,
   localFileAvailable,
@@ -30,6 +33,34 @@ import {
   TauriAdapter,
 } from "./xchat.js";
 
+test("copyable message classification only allows text and image content", () => {
+  assert.equal(isTextFile({ file_name: "notes.md" }), true);
+  assert.equal(isTextFile({ mime_type: "text/plain", file_name: "notes" }), true);
+  assert.equal(isTextFile({ file_name: "archive.zip", mime_type: "application/zip" }), false);
+  assert.equal(isCopyableMessage({ msg_type: "text", content: "hello" }), true);
+  assert.equal(isCopyableMessage({ msg_type: "quote", content: "hello" }), true);
+  assert.equal(isCopyableMessage({ msg_type: "file", file_name: "notes.md" }), true);
+  assert.equal(isCopyableMessage({ msg_type: "file", file_name: "photo.png" }), true);
+  assert.equal(isCopyableMessage({ msg_type: "file", file_name: "manual.pdf" }), false);
+  assert.equal(isCopyableMessage({ msg_type: "file", file_name: "archive.zip" }), false);
+});
+
+test("quote messages keep a structured jump target", () => {
+  const content = encodeQuoteMessage("收到", {
+    id: 42,
+    client_message_id: "original-42",
+    sender_id: "peer-a",
+    sender_name: "Alice",
+    content: "原消息",
+    msg_type: "text",
+  });
+  const message = normalizeMessage({ msg_type: "quote", content }, "me", "group-1");
+  assert.equal(message.content, "收到");
+  assert.equal(message.quote.client_message_id, "original-42");
+  assert.equal(message.quote.message_id, 42);
+  assert.equal(message.quote.content, "原消息");
+});
+
 test("read receipts and attention clear only while the app is active", () => {
   assert.equal(isAppActive("visible", true), true);
   assert.equal(isAppActive("visible", false), false);
@@ -45,12 +76,18 @@ test("direct conversation IDs are stable on both peers", () => {
 
 test("conversation normalization attaches the matching peer presence", () => {
   const conversation = normalizeConversation(
-    { id: "direct:peer-1:self", kind: "direct", peer_id: "peer-1" },
+    {
+      id: "direct:peer-1:self",
+      kind: "direct",
+      peer_id: "peer-1",
+      created_by: "self",
+    },
     [{ id: "peer-1", name: "Alice", is_offline: true }],
   );
 
   assert.equal(conversation.peer?.id, "peer-1");
   assert.equal(conversation.peer?.is_offline, true);
+  assert.equal(conversation.created_by, "self");
   assert.equal(
     normalizeConversation({ peer_id: "peer-2", peer: { id: "peer-2" } }).peer?.id,
     "peer-2",
@@ -492,6 +529,67 @@ test("Tauri clipboard file reads return native Finder paths", async () => {
     "/Users/eason/Desktop/report.pdf",
   ]);
   assert.deepEqual(calls, [["read_clipboard_files", undefined]]);
+});
+
+test("Tauri path selection and file-content copy use native commands", async () => {
+  const calls = [];
+  const adapter = new TauriAdapter({
+    core: {
+      invoke(command, payload) {
+        calls.push([command, payload]);
+        return command === "pick_workspace_directory" ? "C:\\XChat" : undefined;
+      },
+    },
+  });
+
+  assert.equal(await adapter.pickDirectory("选择文件夹"), "C:\\XChat");
+  await adapter.copyFileMessage({ message_id: 7, file_name: "notes.md" });
+  await adapter.copyFileMessage({ id: 8, file_name: "photo.png" });
+
+  assert.deepEqual(calls, [
+    ["pick_workspace_directory", { title: "选择文件夹" }],
+    ["copy_file_message_content", { messageId: 7, kind: "text" }],
+    ["copy_file_message_content", { messageId: 8, kind: "image" }],
+  ]);
+});
+
+test("desktop and web adapters send the same group rename operation", async () => {
+  const tauriCalls = [];
+  const tauri = new TauriAdapter({
+    core: {
+      invoke(command, payload) {
+        tauriCalls.push([command, payload]);
+        return undefined;
+      },
+    },
+  });
+  await tauri.updateGroup("group-1", "rename", "产品设计组", []);
+  assert.deepEqual(tauriCalls, [[
+    "update_group",
+    {
+      conversationId: "group-1",
+      operation: "rename",
+      value: "产品设计组",
+      memberIds: [],
+    },
+  ]]);
+
+  const webCalls = [];
+  const web = new HttpWsAdapter();
+  web.json = (...args) => {
+    webCalls.push(args);
+    return undefined;
+  };
+  await web.updateGroup("group-1", "rename", "产品设计组", []);
+  assert.deepEqual(webCalls, [[
+    "/api/groups/group-1",
+    "POST",
+    {
+      operation: "rename",
+      value: "产品设计组",
+      member_ids: [],
+    },
+  ]]);
 });
 
 test("Tauri capture copy forwards the edited PNG to the native command", async () => {
