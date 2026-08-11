@@ -2544,75 +2544,79 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
                   {message.sender_name || message.sender_id}
                 </span>
               )}
-              {message.msg_type === "text" || message.msg_type === "quote" ? (
-                <>
-                  <div className="bubble">
-                    <span>{message.content}</span>
-                  </div>
-                  {message.quote && (
-                    <button
-                      type="button"
-                      className="quoted-block"
-                      onClick={() => jumpToMessage(message.quote.client_message_id || message.quote.message_id)}
-                      title={labels.locale === "en" ? "Jump to original message" : "点击定位到原消息"}
-                      aria-label={labels.locale === "en" ? "Jump to original message" : "点击定位到原消息"}
-                    >
-                      {quoteReferenceText(message.quote, labels)}
-                    </button>
+              <div className="message-body-line">
+                <div className="message-body-content">
+                  {message.msg_type === "text" || message.msg_type === "quote" ? (
+                    <>
+                      <div className="bubble">
+                        <span>{message.content}</span>
+                      </div>
+                      {message.quote && (
+                        <button
+                          type="button"
+                          className="quoted-block"
+                          onClick={() => jumpToMessage(message.quote.client_message_id || message.quote.message_id)}
+                          title={labels.locale === "en" ? "Jump to original message" : "点击定位到原消息"}
+                          aria-label={labels.locale === "en" ? "Jump to original message" : "点击定位到原消息"}
+                        >
+                          {quoteReferenceText(message.quote, labels)}
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <MessageFile
+                      message={message}
+                      state={state}
+                      workspace={workspace}
+                      labels={labels}
+                    />
                   )}
-                </>
-              ) : (
-                <MessageFile
-                  message={message}
-                  state={state}
-                  workspace={workspace}
-                  labels={labels}
-                />
-              )}
+                </div>
+                <div className="message-quick-actions" aria-label={labels.locale === "en" ? "Message actions" : "消息操作"}>
+                  <button
+                    type="button"
+                    aria-label={labels.emoji}
+                    title={labels.emoji}
+                    disabled={!message.client_message_id}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      setMenu(null);
+                      setReactionPicker({
+                        message,
+                        x: Math.max(10, Math.min(rect.left - 130, globalThis.innerWidth - 326)),
+                        y: Math.max(10, Math.min(rect.bottom + 7, globalThis.innerHeight - 356)),
+                      });
+                    }}
+                  ><Icon name="emoji" size={16} /></button>
+                  <button
+                    type="button"
+                    aria-label={labels.locale === "en" ? "Quote" : "引用"}
+                    title={labels.locale === "en" ? "Quote" : "引用"}
+                    onClick={() => { setQuote(message); setMenu(null); setReactionPicker(null); }}
+                  ><Icon name="quote" size={16} /></button>
+                  <button
+                    type="button"
+                    aria-label={labels.locale === "en" ? "More" : "更多"}
+                    title={labels.locale === "en" ? "More" : "更多"}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      setReactionPicker(null);
+                      setMenu({
+                        x: Math.max(10, Math.min(rect.right - 188, globalThis.innerWidth - 198)),
+                        y: Math.max(10, Math.min(rect.bottom + 7, globalThis.innerHeight - 250)),
+                        message,
+                      });
+                    }}
+                  ><Icon name="more" size={16} /></button>
+                </div>
+              </div>
               {statusLabel(message, conversation.kind === "group", labels) && (
                 <span className={`message-meta ${message.status === "failed" ? "danger-text" : ""}`}>
                   <i>{statusLabel(message, conversation.kind === "group", labels)}</i>
                 </span>
               )}
-            </div>
-            <div className="message-quick-actions" aria-label={labels.locale === "en" ? "Message actions" : "消息操作"}>
-              <button
-                type="button"
-                aria-label={labels.emoji}
-                title={labels.emoji}
-                disabled={!message.client_message_id}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  const rect = event.currentTarget.getBoundingClientRect();
-                  setMenu(null);
-                  setReactionPicker({
-                    message,
-                    x: Math.max(10, Math.min(rect.left - 130, globalThis.innerWidth - 326)),
-                    y: Math.max(10, Math.min(rect.bottom + 7, globalThis.innerHeight - 356)),
-                  });
-                }}
-              ><Icon name="emoji" size={18} /></button>
-              <button
-                type="button"
-                aria-label={labels.locale === "en" ? "Quote" : "引用"}
-                title={labels.locale === "en" ? "Quote" : "引用"}
-                onClick={() => { setQuote(message); setMenu(null); setReactionPicker(null); }}
-              ><Icon name="quote" size={18} /></button>
-              <button
-                type="button"
-                aria-label={labels.locale === "en" ? "More" : "更多"}
-                title={labels.locale === "en" ? "More" : "更多"}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  const rect = event.currentTarget.getBoundingClientRect();
-                  setReactionPicker(null);
-                  setMenu({
-                    x: Math.max(10, Math.min(rect.right - 188, globalThis.innerWidth - 198)),
-                    y: Math.max(10, Math.min(rect.bottom + 7, globalThis.innerHeight - 250)),
-                    message,
-                  });
-                }}
-              ><Icon name="more" size={18} /></button>
             </div>
             </article>
             {groupedReactions(message.reactions).length > 0 && (

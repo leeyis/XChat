@@ -85,6 +85,28 @@ test("chat feedback colors and focused controls match the approved palette", asy
   assert.match(css, /\.forward-list::-webkit-scrollbar-thumb\s*\{[^}]*background:\s*transparent/s);
 });
 
+test("message actions stay compact and anchored to the message body", async () => {
+  const [app, css] = await Promise.all([
+    readFile(new URL("./App.jsx", import.meta.url), "utf8"),
+    readFile(new URL("./styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(
+    app,
+    /message-body-line[\s\S]*message-body-content[\s\S]*message-quick-actions/,
+  );
+  assert.match(
+    css,
+    /\.message-body-line\s*\{[^}]*align-items:\s*flex-end;[^}]*gap:\s*8px;/s,
+  );
+  assert.match(
+    css,
+    /\.message-quick-actions button\s*\{[^}]*width:\s*31px;[^}]*height:\s*30px;/s,
+  );
+  assert.match(css, /\.message-body-content:has\(\.message-image\)\s*\{[^}]*width:\s*320px;/s);
+  assert.match(css, /\.message-body-content:has\(\.message-file\)\s*\{[^}]*width:\s*300px;/s);
+});
+
 test("direct conversation actions use full-width icon rows and centered state actions", async () => {
   const [app, css] = await Promise.all([
     readFile(new URL("./App.jsx", import.meta.url), "utf8"),

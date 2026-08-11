@@ -804,21 +804,50 @@ time,
   flex-direction: row-reverse;
 }
 
+.message-body-line {
+  display: flex;
+  width: max-content;
+  max-width: 100%;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.message.sent .message-body-line {
+  flex-direction: row-reverse;
+}
+
+.message-body-content {
+  display: flex;
+  width: max-content;
+  max-width: calc(100% - 103px);
+  flex: 0 1 auto;
+  flex-direction: column;
+}
+
+.message-body-content:has(.message-image) {
+  width: 320px;
+}
+
+.message-body-content:has(.message-file) {
+  width: 300px;
+}
+
 .message-quick-actions {
   display: flex;
-  align-self: center;
+  align-self: flex-end;
+  flex: 0 0 auto;
   overflow: hidden;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in oklch, var(--fg) 8%, var(--border));
   border-radius: 8px;
   background: var(--surface);
-  box-shadow: 0 3px 10px color-mix(in oklch, var(--fg) 8%, transparent);
+  box-shadow: 0 2px 8px color-mix(in oklch, var(--fg) 7%, transparent);
   opacity: 0;
   transform: translateY(2px);
   transition: opacity 120ms var(--ease-out), transform 120ms var(--ease-out);
   pointer-events: none;
 }
 
-.message:hover .message-quick-actions,
+.message-body-line:hover .message-quick-actions,
 .message:focus-within .message-quick-actions {
   opacity: 1;
   transform: translateY(0);
@@ -827,12 +856,12 @@ time,
 
 .message-quick-actions button {
   display: grid;
-  width: 36px;
-  height: 36px;
+  width: 31px;
+  height: 30px;
   place-items: center;
   padding: 0;
   border: 0;
-  border-right: 1px solid var(--border);
+  border-right: 1px solid color-mix(in oklch, var(--border) 68%, transparent);
   background: transparent;
   color: var(--muted);
 }
@@ -840,7 +869,7 @@ time,
 .message-quick-actions button:last-child { border-right: 0; }
 .message-quick-actions button:hover { background: color-mix(in oklch, var(--fg) 7%, transparent); color: var(--fg); }
 .message-quick-actions button:disabled { opacity: .4; }
-.message-quick-actions .icon { stroke-width: 1.8; }
+.message-quick-actions .icon { stroke-width: 1.75; }
 
 .message .avatar {
   width: 30px;
@@ -851,7 +880,7 @@ time,
 
 .message-stack {
   display: flex;
-  max-width: 65%;
+  max-width: calc(65% + 103px);
   flex-direction: column;
 }
 
