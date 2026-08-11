@@ -196,6 +196,32 @@ pub async fn send_direct_message(
     send_json_via_ws(peer_addr, &json).await
 }
 
+pub async fn send_direct_control(
+    peer_addr: &str,
+    from_id: String,
+    from_name: String,
+    conversation_id: String,
+    client_message_id: String,
+    content: String,
+    msg_type: String,
+) -> Result<(), String> {
+    let message = TextMessage {
+        msg_type,
+        from_id,
+        from_name,
+        content,
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| format!("system clock error: {error}"))?
+            .as_secs(),
+        conversation_id: Some(conversation_id),
+        client_message_id: Some(client_message_id),
+    };
+    let json =
+        serde_json::to_string(&message).map_err(|error| format!("serialize message: {error}"))?;
+    send_json_via_ws(peer_addr, &json).await
+}
+
 // 通过 TCP 发送(回退方案)
 async fn send_via_tcp(peer_addr: &str, message: TextMessage) -> Result<(), String> {
     use tokio::net::TcpStream;

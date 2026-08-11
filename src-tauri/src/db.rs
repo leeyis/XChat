@@ -77,6 +77,14 @@ pub struct MessageReceiptRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::FromRow)]
+pub struct MessageReactionRecord {
+    pub message_client_id: String,
+    pub reactor_id: String,
+    pub emoji: String,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::FromRow)]
 pub struct PendingReceiptRecord {
     pub message_client_id: String,
     pub conversation_id: String,
@@ -471,6 +479,18 @@ async fn init_db_with_path_and_machine_name(
             recall_requested_at INTEGER,
             recall_sent_at INTEGER,
             PRIMARY KEY (message_client_id, reader_id)
+        )",
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS message_reactions (
+            message_client_id TEXT NOT NULL,
+            reactor_id TEXT NOT NULL,
+            emoji TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (message_client_id, reactor_id)
         )",
     )
     .execute(&pool)
@@ -2631,6 +2651,44 @@ pub async fn get_message_receipts(
     .fetch_all(pool)
     .await
     .map_err(|e| format!("查询消息回执失败: {}", e))
+}
+
+pub async fn save_message_reaction(
+    pool: &Pool<Sqlite>,
+    message_client_id: &str,
+    reactor_id: &str,
+    emoji: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT INTO message_reactions (message_client_id, reactor_id, emoji, updated_at)
+         VALUES (?, ?, ?, strftime('%s', 'now'))
+         ON CONFLICT(message_client_id, reactor_id) DO UPDATE SET
+            emoji = excluded.emoji,
+            updated_at = excluded.updated_at",
+    )
+    .bind(message_client_id)
+    .bind(reactor_id)
+    .bind(emoji)
+    .execute(pool)
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub async fn get_message_reactions(
+    pool: &Pool<Sqlite>,
+    message_client_id: &str,
+) -> Result<Vec<MessageReactionRecord>, String> {
+    sqlx::query_as::<_, MessageReactionRecord>(
+        "SELECT message_client_id, reactor_id, emoji, updated_at
+         FROM message_reactions
+         WHERE message_client_id = ?
+         ORDER BY updated_at ASC, reactor_id ASC",
+    )
+    .bind(message_client_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| error.to_string())
 }
 
 pub async fn recall_message_for_recipients(

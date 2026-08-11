@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   avatarText,
   createXChatModule,
+  conversationPreview,
   directConversationId,
   encodeQuoteMessage,
   EMOJI_SET,
@@ -33,6 +34,7 @@ import {
   normalizeConversation,
   normalizeDraftAttachment,
   normalizeMessage,
+  numericMessageId,
   retainedMentionIds,
   runtimeCapabilities,
   shortcutLabelFromEvent,
@@ -599,6 +601,35 @@ test("Tauri path selection and file-content copy use native commands", async () 
     ["copy_file_message_content", { messageId: 7, kind: "text" }],
     ["copy_file_message_content", { messageId: 8, kind: "image" }],
   ]);
+});
+
+test("manual file acceptance converts persisted string IDs at the Tauri boundary", async () => {
+  const calls = [];
+  const adapter = new TauriAdapter({
+    core: {
+      invoke(command, payload) {
+        calls.push([command, payload]);
+      },
+    },
+  });
+
+  await adapter.acceptFile({ id: 17, sender_msg_id: "17" });
+
+  assert.deepEqual(calls, [["request_file", { messageId: 17, senderMsgId: 17 }]]);
+  assert.equal(numericMessageId("17"), 17);
+  assert.equal(numericMessageId("not-an-id"), null);
+});
+
+test("conversation previews decode quote payloads without exposing transport JSON", () => {
+  const encoded = encodeQuoteMessage("是的", {
+    client_message_id: "source-1",
+    sender_name: "chenwei",
+    content: "就一个文件吗",
+  });
+
+  assert.equal(conversationPreview(encoded), "是的");
+  assert.equal(normalizeConversation({ id: "group-1", last_message: encoded }).last_message, "是的");
+  assert.equal(conversationPreview("普通消息"), "普通消息");
 });
 
 test("desktop and web adapters send the same group rename operation", async () => {

@@ -10,6 +10,9 @@ const EVENT_NAMES = [
   "new-peer",
   "peer-online",
   "new-message",
+  "message-reaction",
+  "strong-reminder",
+  "strong-reminder-open",
   "messages-resent",
   "upload_progress",
   "file_status_update",
@@ -516,6 +519,25 @@ export function normalizeMessage(raw = {}, selfId = "", conversationId = "") {
   };
 }
 
+export function numericMessageId(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+export function conversationPreview(value) {
+  const text = String(value ?? "");
+  if (!text.trimStart().startsWith("{")) return text;
+  try {
+    const payload = JSON.parse(text);
+    return typeof payload?.text === "string" && payload?.reply
+      ? payload.text
+      : text;
+  } catch {
+    return text;
+  }
+}
+
 export function encodeQuoteMessage(text, source = {}) {
   return JSON.stringify({
     text: String(text ?? "").trim(),
@@ -755,7 +777,7 @@ export function normalizeConversation(raw = {}, devices = []) {
     forced_unread: Boolean(raw.forced_unread),
     draft: raw.draft ?? "",
     unread_count: Number(raw.unread_count ?? 0),
-    last_message: raw.last_message ?? raw.preview ?? "",
+    last_message: conversationPreview(raw.last_message ?? raw.preview ?? ""),
     last_message_at: Number(raw.last_message_at ?? raw.updated_at ?? 0),
     members: raw.members ?? [],
   };
@@ -977,6 +999,30 @@ export class TauriAdapter {
         content,
       });
     }
+  }
+
+  reactToMessage(conversationId, clientMessageId, emoji) {
+    return this.invoke("react_to_conversation_message", {
+      conversationId,
+      clientMessageId,
+      emoji,
+    });
+  }
+
+  sendStrongReminder(conversationId, clientMessageId) {
+    return this.invoke("send_strong_reminder", {
+      conversationId,
+      clientMessageId,
+    });
+  }
+
+  showStrongReminder(payload) {
+    return this.invoke("show_strong_reminder", {
+      conversationId: payload.conversation_id,
+      clientMessageId: payload.client_message_id,
+      fromName: payload.from_name || payload.from_id || "Xchat",
+      summary: payload.summary || "",
+    });
   }
 
   async sendFiles(conversation, files = []) {
@@ -1208,9 +1254,18 @@ export class TauriAdapter {
   }
 
   acceptFile(file) {
+    const senderMsgId = numericMessageId(file.sender_msg_id);
+    if (senderMsgId === null) {
+      throw new TransportError(
+        uiCopy("文件请求标识无效，请刷新会话后重试", "The file request ID is invalid; refresh and try again"),
+        "invalid_file_request",
+        0,
+        false,
+      );
+    }
     return this.invoke("request_file", {
-      messageId: file.message_id ?? file.id,
-      senderMsgId: file.sender_msg_id,
+      messageId: numericMessageId(file.message_id ?? file.id),
+      senderMsgId,
     });
   }
 
@@ -1537,9 +1592,18 @@ export class HttpWsAdapter {
   }
 
   acceptFile(file) {
+    const senderMsgId = numericMessageId(file.sender_msg_id);
+    if (senderMsgId === null) {
+      throw new TransportError(
+        uiCopy("文件请求标识无效，请刷新会话后重试", "The file request ID is invalid; refresh and try again"),
+        "invalid_file_request",
+        0,
+        false,
+      );
+    }
     return this.json("/api/request_file", "POST", {
-      message_id: file.message_id ?? file.id,
-      sender_msg_id: file.sender_msg_id,
+      message_id: numericMessageId(file.message_id ?? file.id),
+      sender_msg_id: senderMsgId,
     });
   }
 
@@ -1560,6 +1624,25 @@ export class HttpWsAdapter {
     return this.request(`/api/files/${encodeURIComponent(messageId)}/delete`, {
       method: "POST",
     });
+  }
+
+  reactToMessage(conversationId, clientMessageId, emoji) {
+    return this.json("/api/message/reaction", "POST", {
+      conversation_id: conversationId,
+      client_message_id: clientMessageId,
+      emoji,
+    });
+  }
+
+  sendStrongReminder(conversationId, clientMessageId) {
+    return this.json("/api/message/strong-reminder", "POST", {
+      conversation_id: conversationId,
+      client_message_id: clientMessageId,
+    });
+  }
+
+  showStrongReminder() {
+    return Promise.resolve();
   }
 
   openFile(file) {
@@ -1984,6 +2067,27 @@ export function createXChatModule() {
     }, 100);
   };
 
+  const applyReaction = (payload = {}) => {
+    const conversationId = payload.conversation_id;
+    const clientMessageId = payload.client_message_id;
+    const emoji = String(payload.emoji || "").trim();
+    const fromId = payload.from_id || "unknown";
+    if (!conversationId || !clientMessageId || !emoji) return;
+    patch({
+      messagesByConversation: {
+        ...snapshot.messagesByConversation,
+        [conversationId]: (snapshot.messagesByConversation[conversationId] ?? []).map((message) => {
+          if (message.client_message_id !== clientMessageId) return message;
+          const reactions = (message.reactions ?? []).filter(
+            (reaction) => reaction.from_id !== fromId,
+          );
+          reactions.push({ from_id: fromId, emoji });
+          return { ...message, reactions };
+        }),
+      },
+    });
+  };
+
   const handleEvent = (event) => {
     if (event.type === "transport.connected") {
       if (snapshot.phase === "offline") patch({ phase: "ready" });
@@ -1996,6 +2100,30 @@ export function createXChatModule() {
     }
     const payload = event.payload?.payload ?? event.payload;
     const eventType = String(event.type || "").replaceAll("_", ".").replaceAll("-", ".");
+    if (eventType.includes("message.reaction")) {
+      applyReaction(payload);
+      return;
+    }
+    if (eventType.includes("strong.reminder.open")) {
+      const conversation = snapshot.conversations.find(
+        (item) => item.id === payload?.conversation_id,
+      );
+      if (conversation) {
+        patch({
+          activeConversationId: conversation.id,
+          activeSection: "chat",
+          focusedMessageId: payload?.client_message_id ?? null,
+          strongReminder: null,
+        });
+        loadMessages(conversation, 80, 0, true).catch(() => {});
+      }
+      return;
+    }
+    if (eventType.includes("strong.reminder")) {
+      patch({ strongReminder: payload });
+      Promise.resolve(adapter.showStrongReminder(payload)).catch(() => {});
+      return;
+    }
     if (eventType.includes("message.recall")) {
       const conversationId = payload?.conversation_id;
       if (conversationId) {
@@ -2478,6 +2606,22 @@ export function createXChatModule() {
         return adapter.closePinnedCapture(action.destroy);
       case "attention.clear":
         return adapter.stopAttention();
+      case "strongReminder.dismiss":
+        patch({ strongReminder: null });
+        return;
+      case "strongReminder.open": {
+        const conversation = snapshot.conversations.find(
+          (item) => item.id === action.conversationId,
+        );
+        if (!conversation) return;
+        patch({
+          strongReminder: null,
+          activeConversationId: conversation.id,
+          activeSection: "chat",
+          focusedMessageId: action.clientMessageId ?? null,
+        });
+        return loadMessages(conversation, 80, 0, true);
+      }
       case "media.readMessage":
         return adapter.readMessageMedia(action.messageId);
       case "message.markRead":
@@ -2495,6 +2639,29 @@ export function createXChatModule() {
         if (!conversation || !action.clientMessageId) return;
         await adapter.recallMessage(conversation.id, action.clientMessageId);
         return loadMessages(conversation, 40, 0);
+      }
+      case "message.react": {
+        const conversation = conversationForAction(action);
+        if (!conversation || !action.clientMessageId || !action.emoji) return;
+        await adapter.reactToMessage(
+          conversation.id,
+          action.clientMessageId,
+          action.emoji,
+        );
+        applyReaction({
+          conversation_id: conversation.id,
+          client_message_id: action.clientMessageId,
+          from_id: snapshot.self.id,
+          emoji: action.emoji,
+        });
+        return;
+      }
+      case "message.strongReminder": {
+        const conversation = conversationForAction(action);
+        if (!conversation || !action.clientMessageId) return;
+        await adapter.sendStrongReminder(conversation.id, action.clientMessageId);
+        addNotice(uiCopy("已发送提醒", "Reminder sent"), "success");
+        return;
       }
       case "message.forward": {
         const sourceMessageId = Number(action.messageId);

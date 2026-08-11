@@ -146,6 +146,13 @@ pub struct WorkspaceMessage {
     pub read_count: usize,
     pub recipient_count: usize,
     pub mention_ids: Vec<String>,
+    pub reactions: Vec<WorkspaceReaction>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceReaction {
+    pub from_id: String,
+    pub emoji: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -307,6 +314,17 @@ async fn message_view(
         .filter(|receipt| receipt.mentioned)
         .map(|receipt| receipt.reader_id.clone())
         .collect();
+    let reactions = match message.client_message_id.as_deref() {
+        Some(id) => db::get_message_reactions(pool, id)
+            .await?
+            .into_iter()
+            .map(|reaction| WorkspaceReaction {
+                from_id: reaction.reactor_id,
+                emoji: reaction.emoji,
+            })
+            .collect(),
+        None => Vec::new(),
+    };
     let own = message.sender_id == self_id || message.sender_id == "me";
     let peer_id = if own {
         message.receiver_id.clone()
@@ -357,6 +375,7 @@ async fn message_view(
         read_count,
         recipient_count,
         mention_ids,
+        reactions,
     })
 }
 
@@ -833,6 +852,147 @@ pub async fn recall_message(
                 db::mark_recall_sent(pool, client_message_id, &recipient).await?;
             }
         }
+    }
+    Ok(())
+}
+
+pub async fn react_to_message(
+    pool: &Pool<Sqlite>,
+    peer_manager: &PeerManager,
+    conversation_id: &str,
+    client_message_id: &str,
+    emoji: &str,
+) -> Result<(), String> {
+    let emoji = emoji.trim();
+    if emoji.is_empty() || emoji.chars().count() > 8 {
+        return Err("invalid reaction emoji".to_string());
+    }
+    send_message_control(
+        pool,
+        peer_manager,
+        conversation_id,
+        client_message_id,
+        Some(emoji),
+    )
+    .await
+}
+
+pub async fn send_strong_reminder(
+    pool: &Pool<Sqlite>,
+    peer_manager: &PeerManager,
+    conversation_id: &str,
+    client_message_id: &str,
+) -> Result<(), String> {
+    send_message_control(
+        pool,
+        peer_manager,
+        conversation_id,
+        client_message_id,
+        None,
+    )
+    .await
+}
+
+async fn send_message_control(
+    pool: &Pool<Sqlite>,
+    peer_manager: &PeerManager,
+    conversation_id: &str,
+    client_message_id: &str,
+    reaction: Option<&str>,
+) -> Result<(), String> {
+    let message = db::get_message_by_client_id(pool, client_message_id)
+        .await?
+        .ok_or_else(|| "message not found".to_string())?;
+    let self_id = db::get_user_id(pool).await?;
+    if message.conversation_id.as_deref() != Some(conversation_id) {
+        return Err("message does not belong to this conversation".to_string());
+    }
+    if reaction.is_none() && message.sender_id != self_id {
+        return Err("only the sender can issue a strong reminder".to_string());
+    }
+    let self_name = db::get_username(pool).await?;
+    let conversation = db::get_conversation(pool, conversation_id)
+        .await?
+        .ok_or_else(|| "conversation not found".to_string())?;
+    let recipients = if conversation.kind == "group" {
+        db::get_conversation_members(pool, conversation_id)
+            .await?
+            .into_iter()
+            .map(|member| member.peer_id)
+            .filter(|peer_id| peer_id != &self_id)
+            .collect::<Vec<_>>()
+    } else {
+        vec![conversation
+            .peer_id
+            .ok_or_else(|| "direct conversation has no peer".to_string())?]
+    };
+    let peers = peer_map(peer_manager);
+    let summary_source = if message.msg_type == "quote" {
+        serde_json::from_str::<serde_json::Value>(&message.content)
+            .ok()
+            .and_then(|value| value.get("text").and_then(|text| text.as_str()).map(str::to_owned))
+            .unwrap_or_else(|| message.content.clone())
+    } else {
+        message.content.clone()
+    };
+    let summary = summary_source.chars().take(240).collect::<String>();
+    let mut delivered = 0usize;
+    for recipient in recipients {
+        let Some(peer) = peers.get(&recipient).filter(|peer| !peer.is_offline) else {
+            continue;
+        };
+        let result = if conversation.kind == "group" {
+            let control = if let Some(emoji) = reaction {
+                ProtocolMessage::MessageReaction {
+                    conversation_id: conversation_id.to_string(),
+                    client_message_id: client_message_id.to_string(),
+                    from_id: self_id.clone(),
+                    emoji: emoji.to_string(),
+                    timestamp: now() as u64,
+                }
+            } else {
+                ProtocolMessage::StrongReminder {
+                    conversation_id: conversation_id.to_string(),
+                    client_message_id: client_message_id.to_string(),
+                    from_id: self_id.clone(),
+                    from_name: self_name.clone(),
+                    summary: summary.clone(),
+                    timestamp: now() as u64,
+                }
+            };
+            crate::network::protocol::send_protocol_message(&peer.addr, &control).await
+        } else {
+            let (msg_type, content) = if let Some(emoji) = reaction {
+                (
+                    "message_reaction",
+                    serde_json::json!({ "emoji": emoji }).to_string(),
+                )
+            } else {
+                (
+                    "strong_reminder",
+                    serde_json::json!({ "summary": summary.clone() }).to_string(),
+                )
+            };
+            messaging::send_direct_control(
+                &peer.addr,
+                self_id.clone(),
+                self_name.clone(),
+                conversation_id.to_string(),
+                client_message_id.to_string(),
+                content,
+                msg_type.to_string(),
+            )
+            .await
+        };
+        if result.is_ok() {
+            delivered += 1;
+        }
+    }
+    if delivered == 0 {
+        return Err("no recipient is currently online".to_string());
+    }
+    if let Some(emoji) = reaction {
+        db::save_message_reaction(pool, client_message_id, &self_id, emoji).await?;
     }
     Ok(())
 }

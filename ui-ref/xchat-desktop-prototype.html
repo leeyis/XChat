@@ -81,7 +81,7 @@
     .announcement-banner{display:flex;align-items:center;gap:10px;min-height:42px;padding:7px 18px;border-bottom:1px solid color-mix(in oklch,var(--warning) 22%,var(--border));background:color-mix(in oklch,var(--warning) 9%,var(--surface));cursor:pointer;transition:background 140ms var(--ease)}
     .announcement-banner:hover{background:color-mix(in oklch,var(--warning) 14%,var(--surface))}.announcement-mark{display:grid;place-items:center;width:26px;height:26px;flex:0 0 auto;border-radius:7px;background:color-mix(in oklch,var(--warning) 20%,var(--surface));color:oklch(.58 .14 70)}
     .announcement-copy{min-width:0;flex:1}.announcement-title{font-size:12px;font-weight:650}.announcement-line{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:12px}.announcement-arrow{color:var(--muted)}
-    .quote-preview{display:none;align-items:center;gap:10px;margin:8px 8px 0;padding:8px 9px;border-left:3px solid var(--accent);border-radius:6px;background:color-mix(in oklch,var(--fg) 5%,transparent)}.quote-preview.open{display:flex}.quote-preview-main{min-width:0;flex:1}.quote-preview-name{font-size:11px;font-weight:650}.quote-preview-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:11px}.quote-preview .icon-btn{width:26px;height:26px}
+    .quote-preview{display:none;min-height:32px;align-items:center;gap:10px;margin:0 14px 3px;padding:3px 0 3px 11px;border-left:1px solid color-mix(in oklch,var(--muted) 58%,transparent);background:transparent}.quote-preview.open{display:flex}.quote-preview-main{min-width:0;flex:1}.quote-preview-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:12px;font-weight:400}.quote-preview .icon-btn{display:grid;width:24px;height:24px;align-self:center;place-items:center;padding:0;border-radius:50%;background:color-mix(in oklch,var(--fg) 12%,transparent);color:var(--on);font-size:16px;line-height:1}.quote-preview .icon-btn:hover{background:color-mix(in oklch,var(--fg) 20%,transparent)}
     .quoted-block{margin:-2px -4px 7px;padding:6px 8px;border-left:2px solid color-mix(in oklch,var(--fg) 25%,transparent);border-radius:5px;background:color-mix(in oklch,var(--fg) 6%,transparent);font-size:11px}.sent .quoted-block{border-left-color:color-mix(in oklch,var(--on) 55%,transparent);background:color-mix(in oklch,var(--fg) 12%,transparent)}.quoted-who{font-weight:650}.quoted-text{margin-top:2px;opacity:.72;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px}
     .msg.context-target .bubble,.msg.context-target .file-card,.msg.context-target .image-msg,.msg.context-target .ai-card{outline:2px solid color-mix(in oklch,var(--accent) 42%,transparent);outline-offset:2px}.msg.flash .bubble,.msg.flash .file-card,.msg.flash .image-msg,.msg.flash .ai-card{animation:messageFlash 1.2s ease}@keyframes messageFlash{0%,100%{box-shadow:inherit}30%{box-shadow:0 0 0 6px color-mix(in oklch,var(--accent) 22%,transparent)}}
     .context.message-menu{min-width:188px;padding:6px}.context.message-menu button{gap:10px;height:36px}.context.message-menu svg{width:16px;height:16px;color:var(--muted)}.context-sep{height:1px;margin:5px 7px;background:var(--border)}.context button:disabled{opacity:.38;cursor:not-allowed}.context button:disabled:hover{background:transparent}
@@ -297,8 +297,8 @@ groupChat=function(x){return uxBaseGroupChat(x)+`<div class="msg sent" data-mess
 
 const uxBanner=document.createElement("div");uxBanner.className="announcement-banner";uxBanner.hidden=true;uxBanner.innerHTML='<span class="announcement-mark"><svg class="icon sm" viewBox="0 0 24 24"><path d="m4 13 2 6h3l-1-6M5 8v5h4l8 4V4L9 8ZM17 8a4 4 0 0 1 0 5"/></svg></span><span class="announcement-copy"><span class="announcement-title">群公告</span><span class="announcement-line" id="announcementBannerText"></span></span><svg class="icon sm announcement-arrow" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>';
 document.querySelector(".chat-head").insertAdjacentElement("afterend",uxBanner);
-const uxQuotePreview=document.createElement("div");uxQuotePreview.className="quote-preview";uxQuotePreview.innerHTML='<div class="quote-preview-main"><div class="quote-preview-name" id="quotePreviewName"></div><div class="quote-preview-text" id="quotePreviewText"></div></div><button class="icon-btn" id="cancelQuote" title="取消引用">×</button>';
-document.querySelector(".compose-box").prepend(uxQuotePreview);
+const uxQuotePreview=document.createElement("div");uxQuotePreview.className="quote-preview";uxQuotePreview.innerHTML='<div class="quote-preview-main"><div class="quote-preview-name" id="quotePreviewName"></div></div><button class="icon-btn" id="cancelQuote" title="取消引用">×</button>';
+document.querySelector(".compose-toolbar").before(uxQuotePreview);
 
 function uxGroup(){const x=current();return x&&x.group?x:null}
 function uxRoleState(x=uxGroup()){if(!x)return null;return uxGroupRoles[x.id]||(uxGroupRoles[x.id]={owner:"self",admins:new Set()})}
@@ -331,7 +331,7 @@ function uxShowMessageMenu(e,row){e.preventDefault();e.stopPropagation();documen
 function uxCloseMessageMenu(){$("context").classList.remove("open");document.querySelectorAll(".msg.context-target").forEach(x=>x.classList.remove("context-target"))}
 function uxHandleMessageAction(action,row){const summary=uxMessageSummary(row);if(action==="copy"){navigator.clipboard?.writeText(summary.replace(/^\[[^\]]+\]\s*/,""));toast("内容已复制")}else if(action==="forward")uxOpenForward(row);else if(action==="quote"){uxQuote={sender:uxMessageSender(row),text:summary,type:uxMessageType(row),target:row.dataset.messageId};uxRenderQuote();input.focus()}else if(action==="save")toast(`已打开“另存为”：${summary.replace(/^\[文件\]\s*/,"")}`);else if(action==="recall"){row.innerHTML='<div class="day" style="margin:6px auto">你撤回了一条消息</div>';row.className="msg";toast("消息已撤回")}else if(action==="delete")confirmBox("删除这条消息？","消息只会从本机聊天记录中删除。","删除",()=>{row.remove();toast("消息已删除")})}
 function uxJumpToMessage(id){const row=messages.querySelector(`[data-message-id="${id}"]`);if(!row)return toast("原消息已被删除或不在当前记录中");row.scrollIntoView({behavior:"smooth",block:"center"});row.classList.add("flash");setTimeout(()=>row.classList.remove("flash"),1300)}
-function uxRenderQuote(){uxQuotePreview.classList.toggle("open",!!uxQuote);if(uxQuote){$("quotePreviewName").textContent=`引用 ${uxQuote.sender}`;$("quotePreviewText").textContent=uxQuote.text}}
+function uxRenderQuote(){uxQuotePreview.classList.toggle("open",!!uxQuote);if(uxQuote)$("quotePreviewName").textContent=`${uxQuote.sender}: ${uxQuote.text}`}
 $("cancelQuote").onclick=()=>{uxQuote=null;uxRenderQuote()};
 
 const uxBaseSendMessage=sendMessage;
@@ -390,8 +390,6 @@ selectDevice("design-group");
   .drawer-state-button{height:30px;padding:0 10px;border:0;border-radius:7px;background:transparent;font-size:12px}.drawer-state-button:hover{background:color-mix(in oklch,var(--fg) 5%,transparent)}.drawer-state-button.active{color:var(--accent);font-weight:650}
   .drawer-prototype[data-variant="B"]{background:var(--surface)}.drawer-prototype[data-variant="B"] .drawer-section{padding:0}.drawer-prototype[data-variant="B"] .drawer-section-label{height:24px;margin:0;padding:8px 12px 0;background:color-mix(in oklch,var(--bg) 60%,var(--surface))}.drawer-prototype[data-variant="B"] .drawer-card{border-inline:0;border-radius:0}.drawer-prototype[data-variant="B"] .drawer-row{padding-inline:14px}
   .drawer-prototype[data-variant="C"] .drawer-profile{justify-items:start;text-align:left}.drawer-prototype[data-variant="C"] .drawer-profile:not(.compact){grid-template-columns:48px minmax(0,1fr);gap:11px;padding:16px 12px}.drawer-prototype[data-variant="C"] .drawer-profile:not(.compact) .drawer-profile-avatar{width:48px;height:48px;border-radius:11px}.drawer-prototype[data-variant="C"] .drawer-profile:not(.compact) .drawer-profile-name{margin-top:3px;font-size:15px}.drawer-prototype[data-variant="C"] .drawer-profile:not(.compact) .drawer-profile-meta{justify-content:flex-start}
-  .prototype-switcher{position:fixed;left:50%;bottom:18px;z-index:1000;display:grid;grid-template-columns:34px minmax(154px,auto) 34px;align-items:center;padding:4px;border:1px solid color-mix(in oklch,var(--fg) 18%,transparent);border-radius:999px;background:oklch(.23 .015 70);color:white;box-shadow:0 10px 30px color-mix(in oklch,var(--fg) 28%,transparent);transform:translateX(-50%)}
-  .prototype-switcher button{display:grid;width:34px;height:30px;place-items:center;border:0;border-radius:999px;background:transparent;color:white;font-size:18px}.prototype-switcher button:hover{background:color-mix(in oklch,white 14%,transparent)}.prototype-switcher-label{text-align:center;font-size:11px;font-weight:650}.prototype-switcher-label small{display:block;color:oklch(.78 .01 70);font-size:9px;font-weight:400}
 </style>
 <script>
 const drawerPrototypeRoot=document.createElement("div");
@@ -399,10 +397,7 @@ drawerPrototypeRoot.className="drawer-prototype";
 drawerPrototypeRoot.setAttribute("data-prototype-only","");
 document.querySelector(".info").append(drawerPrototypeRoot);
 
-const drawerVariantNames={A:"内嵌分组列表",B:"通栏设置列表",C:"折叠次要功能"};
-const drawerVariants=Object.keys(drawerVariantNames);
-const requestedDrawerVariant=new URL(location.href).searchParams.get("variant")?.toUpperCase();
-let drawerVariant=drawerVariants.includes(requestedDrawerVariant)?requestedDrawerVariant:"B";
+let drawerVariant="B";
 let drawerMoreOpen=false,drawerActiveId="";
 const drawerPinned=new Set(),drawerUnread=new Set();
 
@@ -458,19 +453,91 @@ drawerPrototypeRoot.onclick=event=>{
   else if(action==="unread"){drawerUnread.has(x.id)?drawerUnread.delete(x.id):drawerUnread.add(x.id);drawerRender();toast(drawerUnread.has(x.id)?"已标记未读":"已取消未读标记")}
 };
 
-const prototypeSwitcher=document.createElement("div");
-prototypeSwitcher.className="prototype-switcher";
-prototypeSwitcher.setAttribute("data-prototype-only","");
-prototypeSwitcher.innerHTML='<button data-variant-step="-1" aria-label="上一个方案">‹</button><div class="prototype-switcher-label"></div><button data-variant-step="1" aria-label="下一个方案">›</button>';
-document.body.append(prototypeSwitcher);
-function setDrawerVariant(next){drawerVariant=next;drawerMoreOpen=false;const url=new URL(location.href);url.searchParams.set("variant",next);history.replaceState({},"",url);prototypeSwitcher.querySelector(".prototype-switcher-label").innerHTML=`${next} · ${drawerVariantNames[next]}<small>原型专用 · ← → 切换</small>`;drawerRender()}
-function stepDrawerVariant(step){const index=drawerVariants.indexOf(drawerVariant);setDrawerVariant(drawerVariants[(index+step+drawerVariants.length)%drawerVariants.length])}
-prototypeSwitcher.onclick=event=>{const button=event.target.closest("[data-variant-step]");if(button)stepDrawerVariant(Number(button.dataset.variantStep))};
-addEventListener("keydown",event=>{if(!["ArrowLeft","ArrowRight"].includes(event.key)||event.target.matches("input,textarea,select,[contenteditable]"))return;event.preventDefault();stepDrawerVariant(event.key==="ArrowRight"?1:-1)});
-
 app.classList.add("info-open");
 $("moreBtn").classList.add("active");
-setDrawerVariant(drawerVariant);
+drawerRender();
+</script>
+
+<!-- PROTOTYPE ONLY: hover message actions, reactions, quote and urgent reminder. -->
+<style>
+  .msg{position:relative}
+  .message-quick-actions{position:relative;display:flex;align-items:center;align-self:flex-start;margin-top:20px;border:1px solid color-mix(in oklch,var(--fg) 10%,var(--border));border-radius:8px;background:color-mix(in oklch,var(--surface) 98%,transparent);box-shadow:0 4px 12px color-mix(in oklch,var(--fg) 9%,transparent);opacity:0;transform:translateY(3px);pointer-events:none;transition:opacity 120ms var(--ease),transform 120ms var(--ease)}
+  .msg:not(:has(.sender-label)) .message-quick-actions{margin-top:3px}
+  .msg:hover .message-quick-actions,.msg.actions-open .message-quick-actions,.message-quick-actions:focus-within{opacity:1;transform:none;pointer-events:auto}
+  .message-action{display:grid;width:32px;height:30px;place-items:center;padding:0;border:0;border-right:1px solid color-mix(in oklch,var(--border) 72%,transparent);background:transparent;color:var(--muted);transition:background 110ms var(--ease),color 110ms var(--ease)}
+  .message-action:first-child{border-radius:7px 0 0 7px}.message-action:last-of-type{border-right:0;border-radius:0 7px 7px 0}.message-action:hover,.message-action.active{background:color-mix(in oklch,var(--fg) 6%,var(--surface));color:var(--fg)}
+  .message-action .icon{width:18px;height:18px;stroke-width:1.8}
+  .reaction-picker{position:fixed;z-index:900;width:300px;border:1px solid var(--border);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-lg);overflow:hidden;animation:message-pop 150ms var(--ease)}
+  .reaction-picker-head{display:flex;align-items:baseline;justify-content:space-between;padding:10px 12px 7px;border-bottom:1px solid color-mix(in oklch,var(--border) 72%,transparent)}.reaction-picker-head b{font-size:12px}.reaction-picker-head span{color:var(--muted);font-size:10px}.reaction-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:3px;max-height:176px;padding:8px 9px;overflow-y:auto}.reaction-picker button{display:grid;width:40px;height:38px;place-items:center;padding:0;border:0;border-radius:8px;background:transparent;font-size:23px;transition:background 100ms var(--ease),transform 100ms var(--ease)}.reaction-picker button:hover{background:color-mix(in oklch,var(--fg) 7%,transparent);transform:scale(1.1)}.reaction-recent{padding:7px 9px 9px;border-top:1px solid var(--border);background:color-mix(in oklch,var(--bg) 46%,var(--surface))}.reaction-recent-label{display:block;margin:0 3px 4px;color:var(--muted);font-size:10px}.reaction-recent-row{display:grid;grid-template-columns:repeat(6,1fr);gap:3px}.reaction-recent .reaction-recent-row button{height:34px;font-size:21px}
+  @keyframes message-pop{from{opacity:0;transform:translateY(5px) scale(.97)}to{opacity:1;transform:none}}
+  .reaction-strip{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}.sent .reaction-strip{justify-content:flex-end}.reaction-chip{display:flex;align-items:center;gap:4px;height:25px;padding:0 8px;border:1px solid color-mix(in oklch,var(--accent) 28%,var(--border));border-radius:13px;background:color-mix(in oklch,var(--accent) 7%,var(--surface));color:var(--fg);font-size:13px}.reaction-chip:hover,.reaction-chip.mine{border-color:var(--accent);background:color-mix(in oklch,var(--accent) 13%,var(--surface))}.reaction-count{color:var(--muted);font:10px/1 var(--mono)}
+  .context.message-compact-menu{min-width:176px;padding:5px}.context.message-compact-menu button{display:grid;grid-template-columns:22px 1fr;align-items:center;gap:8px;min-height:36px}.context.message-compact-menu .icon{width:17px;height:17px}.context.message-compact-menu .remind-action{color:var(--fg)}.context.message-compact-menu .remind-action .icon{color:var(--muted)}.context.message-compact-menu .remind-action:hover{background:color-mix(in oklch,var(--fg) 6%,var(--surface))}
+  .reminded-mark{display:inline-flex;align-items:center;gap:3px;margin-left:2px;color:var(--muted);font-weight:600}.reminded-mark:before{content:"";width:5px;height:5px;border-radius:50%;background:var(--muted)}
+  .urgent-preview{position:fixed;right:20px;bottom:20px;z-index:1500;width:324px;padding:0;border:1px solid color-mix(in oklch,var(--fg) 12%,var(--border));border-radius:15px;background:color-mix(in oklch,var(--surface) 98%,transparent);box-shadow:0 18px 52px color-mix(in oklch,var(--fg) 20%,transparent);overflow:hidden;animation:urgent-in 260ms var(--ease)}
+  @keyframes urgent-in{from{opacity:0;transform:translateX(32px) scale(.96)}to{opacity:1;transform:none}}
+  .urgent-body{display:grid;grid-template-columns:36px minmax(0,1fr);gap:10px;padding:12px 14px 4px;cursor:pointer}.urgent-avatar{display:grid;width:36px;height:36px;place-items:center;border-radius:9px;background:var(--accent);color:white;font-weight:750}.urgent-copy{min-width:0}.urgent-title{font-size:13px;font-weight:700}.urgent-text{display:-webkit-box;margin-top:3px;overflow:hidden;color:var(--muted);font-size:11px;line-height:1.4;-webkit-box-orient:vertical;-webkit-line-clamp:2}.urgent-foot{display:flex;align-items:center;justify-content:space-between;padding:0 12px 9px 60px;color:var(--muted);font-size:10px}.urgent-ignore{height:25px;padding:0 10px;border:1px solid var(--border);border-radius:7px;background:transparent;color:var(--muted)}.urgent-ignore:hover{background:color-mix(in oklch,var(--fg) 5%,var(--surface));color:var(--fg)}
+  @media(max-width:920px){.message-quick-actions{opacity:1;pointer-events:auto}.urgent-preview{right:12px;bottom:12px;width:min(324px,calc(100vw - 24px))}}
+</style>
+<script>
+const messageActionSvg={
+  emoji:'<svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M8.5 13.5s1.3 2 3.5 2 3.5-2 3.5-2M9 9.5h.01M15 9.5h.01"/></svg>',
+  quote:'<svg class="icon" viewBox="0 0 24 24"><path d="M4 5h16v12H8l-4 3Z"/><path d="M8 9h8M8 13h5"/></svg>',
+  more:'<svg class="icon" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>',
+  remind:'<svg class="icon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0-6 6c0 7-3 7-3 9h18c0-2-3-2-3-9a6 6 0 0 0-6-6Z"/><path d="M10 21h4"/></svg>',
+  edit:'<svg class="icon" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16ZM13 7l4 4M4 20h16"/></svg>'
+};
+const messageReactionSet=["🙂","😊","😁","😍","😳","😎","😅","🤣","😔","🤫","😴","😭","🤨","🙏","⚔️","👍","👏","👋","🤙","🫶","🤝","👌","✌️","👉","🤟","👎","👐","😄","😂","🎉","❤️","🔥","💯","🤔","🙌","💪"];
+let messageRecentReactions=["👍","❤️","😂","👏","🎉","😊"];
+let urgentPreviewTimer;
+
+function closeInlineMessagePopovers(except=null){
+  document.querySelectorAll(".reaction-picker").forEach(panel=>{if(panel!==except)panel.remove()});
+  document.querySelectorAll(".msg.actions-open").forEach(row=>{if(!except||!row.contains(except))row.classList.remove("actions-open")});
+}
+function ensureReactionStrip(row){
+  let strip=row.querySelector(".reaction-strip");
+  if(strip)return strip;
+  strip=document.createElement("div");strip.className="reaction-strip";
+  const stack=row.querySelector(".msg-stack"),time=stack?.querySelector(".msg-time");
+  time?stack.insertBefore(strip,time):stack?.append(strip);return strip;
+}
+function toggleMessageReaction(row,emoji){
+  messageRecentReactions=[emoji,...messageRecentReactions.filter(item=>item!==emoji)].slice(0,6);
+  const strip=ensureReactionStrip(row);let chip=[...strip.querySelectorAll(".reaction-chip")].find(x=>x.dataset.emoji===emoji);
+  if(chip){chip.remove();if(!strip.children.length)strip.remove();toast(`已取消 ${emoji} 回应`);return}
+  chip=document.createElement("button");chip.className="reaction-chip mine";chip.dataset.emoji=emoji;chip.innerHTML=`<span>${emoji}</span><span class="reaction-count">1</span>`;chip.onclick=()=>toggleMessageReaction(row,emoji);strip.append(chip);toast(`已回应 ${emoji}`)
+}
+function openReactionPicker(button,row){
+  const currentPanel=button.parentElement.querySelector(".reaction-picker");if(currentPanel){closeInlineMessagePopovers();return}
+  closeInlineMessagePopovers();row.classList.add("actions-open");button.classList.add("active");
+  const panel=document.createElement("div");panel.className="reaction-picker";panel.innerHTML=`<div class="reaction-picker-head"><b>表情回应</b><span>选择表情回应这条消息</span></div><div class="reaction-grid">${messageReactionSet.map(emoji=>`<button type="button" data-reaction="${emoji}" aria-label="回应 ${emoji}">${emoji}</button>`).join("")}</div><div class="reaction-recent"><span class="reaction-recent-label">最近使用</span><div class="reaction-recent-row">${messageRecentReactions.map(emoji=>`<button type="button" data-reaction="${emoji}" aria-label="最近使用 ${emoji}">${emoji}</button>`).join("")}</div></div>`;button.parentElement.append(panel);const rect=button.parentElement.getBoundingClientRect(),panelWidth=panel.offsetWidth,panelHeight=panel.offsetHeight;panel.style.left=`${Math.max(12,Math.min(rect.left,innerWidth-panelWidth-12))}px`;panel.style.top=`${rect.top>panelHeight+16?rect.top-panelHeight-8:rect.bottom+8}px`;
+  panel.onclick=event=>{event.stopPropagation();const target=event.target.closest("[data-reaction]");if(!target)return;toggleMessageReaction(row,target.dataset.reaction);closeInlineMessagePopovers()}
+}
+function markMessageReminded(row){
+  const time=row.querySelector(".msg-time");if(time&&!time.querySelector(".reminded-mark"))time.insertAdjacentHTML("beforeend",'<span class="reminded-mark">已提醒</span>');
+}
+function showUrgentPreview(row){
+  document.querySelector(".urgent-preview")?.remove();clearTimeout(urgentPreviewTimer);
+  const card=document.createElement("aside");card.className="urgent-preview";card.setAttribute("role","alert");const summary=uxMessageSummary(row).replace(/^\[[^\]]+\]\s*/,"");
+  card.innerHTML=`<div class="urgent-body" data-open-urgent><span class="urgent-avatar">我</span><div class="urgent-copy"><div class="urgent-title">eason-laptop 提醒你查看消息</div><div class="urgent-text">${uxEsc(summary)}</div></div></div><div class="urgent-foot"><span>点击查看消息</span><button class="urgent-ignore" type="button">忽略</button></div>`;
+  document.body.append(card);card.querySelector(".urgent-ignore").onclick=event=>{event.stopPropagation();card.remove();toast("已忽略这条强提醒")};card.querySelector("[data-open-urgent]").onclick=()=>{card.remove();uxJumpToMessage(row.dataset.messageId);toast("已定位到提醒消息")};urgentPreviewTimer=setTimeout(()=>card.remove(),9000)
+}
+function sendStrongReminder(row){markMessageReminded(row);showUrgentPreview(row);toast("强提醒已发送")}
+function reEditMessage(row){const text=row.querySelector(".bubble")?.childNodes;const content=[...(text||[])].filter(node=>node.nodeType===Node.TEXT_NODE).map(node=>node.textContent).join("").trim()||uxMessageSummary(row);input.value=content;input.dispatchEvent(new Event("input"));input.focus();toast("消息内容已放回输入框")}
+function openCompactMessageMenu(button,row){
+  closeInlineMessagePopovers();row.classList.add("actions-open");uxContextMessage=row;const sent=row.classList.contains("sent"),type=uxMessageType(row),m=$("context"),rect=button.getBoundingClientRect();
+  m.className="context message-compact-menu open";m.innerHTML=`${sent?`<button class="remind-action" data-compact-action="remind">${messageActionSvg.remind}提醒</button>`:""}<button data-compact-action="copy">${uxSvg.copy}复制</button><button data-compact-action="forward">${uxSvg.forward}转发</button>${sent&&type==="text"?`<button data-compact-action="edit">${messageActionSvg.edit}重新编辑</button>`:""}<div class="context-sep"></div><button data-compact-action="recall" ${sent?"":"disabled"}>${uxSvg.recall}撤回</button><button class="danger-text" data-compact-action="delete">${uxSvg.remove}删除</button>`;
+  m.style.left=`${Math.max(12,Math.min(rect.right-m.offsetWidth,innerWidth-m.offsetWidth-12))}px`;m.style.top=`${Math.max(12,Math.min(rect.bottom+7,innerHeight-m.offsetHeight-12))}px`;
+  m.querySelectorAll("[data-compact-action]").forEach(item=>item.onclick=()=>{const action=item.dataset.compactAction;if(item.disabled)return;if(action==="remind")sendStrongReminder(row);else if(action==="edit")reEditMessage(row);else uxHandleMessageAction(action,row);m.classList.remove("open");row.classList.remove("actions-open")})
+}
+function attachQuickMessageActions(){
+  [...messages.querySelectorAll(".msg")].forEach(row=>{if(row.querySelector(".message-quick-actions")||!row.querySelector(".msg-stack"))return;const actions=document.createElement("div");actions.className="message-quick-actions";actions.setAttribute("aria-label","消息操作");actions.innerHTML=`<button class="message-action" data-quick-action="reaction" title="表情回应">${messageActionSvg.emoji}</button><button class="message-action" data-quick-action="quote" title="引用">${messageActionSvg.quote}</button><button class="message-action" data-quick-action="more" title="更多">${messageActionSvg.more}</button>`;row.append(actions);actions.onclick=event=>{event.stopPropagation();const button=event.target.closest("[data-quick-action]");if(!button)return;const action=button.dataset.quickAction;if(action==="reaction")openReactionPicker(button,row);else if(action==="quote"){uxHandleMessageAction("quote",row);closeInlineMessagePopovers()}else openCompactMessageMenu(button,row)}
+  })
+}
+const messageActionsBaseBind=bindMessageActions;
+bindMessageActions=function(){messageActionsBaseBind();attachQuickMessageActions()};
+document.addEventListener("click",event=>{if(!event.target.closest(".message-quick-actions")&&!event.target.closest(".reaction-picker"))closeInlineMessagePopovers()});
+bindMessageActions();
 </script>
 </body>
 </html>

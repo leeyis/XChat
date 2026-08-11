@@ -236,6 +236,31 @@ description = "Allows sending a message to a conversation"
 commands.allow = ["send_conversation_message"]
 
 [[permission]]
+identifier = "allow-react-to-conversation-message"
+description = "Allows reacting to a conversation message"
+commands.allow = ["react_to_conversation_message"]
+
+[[permission]]
+identifier = "allow-send-strong-reminder"
+description = "Allows sending a strong reminder for an owned message"
+commands.allow = ["send_strong_reminder"]
+
+[[permission]]
+identifier = "allow-show-strong-reminder"
+description = "Allows displaying the always-on-top strong reminder card"
+commands.allow = ["show_strong_reminder"]
+
+[[permission]]
+identifier = "allow-open-strong-reminder"
+description = "Allows opening the strong reminder target in the main window"
+commands.allow = ["open_strong_reminder"]
+
+[[permission]]
+identifier = "allow-dismiss-strong-reminder"
+description = "Allows dismissing the strong reminder card"
+commands.allow = ["dismiss_strong_reminder"]
+
+[[permission]]
 identifier = "allow-send-conversation-file"
 description = "Allows sending a file to a conversation"
 commands.allow = ["send_conversation_file"]

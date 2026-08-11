@@ -37,6 +37,21 @@ pub enum ProtocolMessage {
         from_id: String,
         timestamp: u64,
     },
+    MessageReaction {
+        conversation_id: String,
+        client_message_id: String,
+        from_id: String,
+        emoji: String,
+        timestamp: u64,
+    },
+    StrongReminder {
+        conversation_id: String,
+        client_message_id: String,
+        from_id: String,
+        from_name: String,
+        summary: String,
+        timestamp: u64,
+    },
     DeliveryAck {
         conversation_id: String,
         from_id: String,
@@ -93,6 +108,38 @@ impl ProtocolMessage {
                 require_value(conversation_id, "conversation_id")?;
                 require_value(client_message_id, "client_message_id")?;
                 require_value(from_id, "from_id")
+            }
+            Self::MessageReaction {
+                conversation_id,
+                client_message_id,
+                from_id,
+                emoji,
+                ..
+            } => {
+                require_value(conversation_id, "conversation_id")?;
+                require_value(client_message_id, "client_message_id")?;
+                require_value(from_id, "from_id")?;
+                require_value(emoji, "emoji")?;
+                if emoji.chars().count() > 8 {
+                    return Err("emoji must not exceed 8 characters".to_string());
+                }
+                Ok(())
+            }
+            Self::StrongReminder {
+                conversation_id,
+                client_message_id,
+                from_id,
+                summary,
+                ..
+            } => {
+                require_value(conversation_id, "conversation_id")?;
+                require_value(client_message_id, "client_message_id")?;
+                require_value(from_id, "from_id")?;
+                require_value(summary, "summary")?;
+                if summary.chars().count() > 240 {
+                    return Err("summary must not exceed 240 characters".to_string());
+                }
+                Ok(())
             }
             Self::DeliveryAck {
                 conversation_id,

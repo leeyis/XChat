@@ -33,6 +33,10 @@ pub struct DiscoveryAnnouncement {
 }
 
 impl DiscoveryAnnouncement {
+    fn has_authoritative_metadata(&self) -> bool {
+        !self.is_reply || !self.capabilities.is_empty()
+    }
+
     pub fn parse(message: &str) -> Result<Option<Self>, String> {
         let parts: Vec<&str> = message.split('|').collect();
         if parts.len() < 6 || parts[0] != "LANChat" || parts[1] != "ONLINE" {
@@ -365,7 +369,7 @@ pub async fn start_listening(
                     announcement.mac_address.clone(),
                     Some("lan".to_string()),
                     announcement.capabilities.clone(),
-                    !announcement.is_reply,
+                    announcement.has_authoritative_metadata(),
                 );
 
                 // 保存或更新用户到数据库
@@ -378,7 +382,7 @@ pub async fn start_listening(
                     announcement.hostname.as_deref(),
                     announcement.mac_address.as_deref(),
                     Some("lan"),
-                    !announcement.is_reply,
+                    announcement.has_authoritative_metadata(),
                 )
                 .await;
 
@@ -517,7 +521,7 @@ pub async fn start_listening(
                     announcement.mac_address.clone(),
                     Some("lan".to_string()),
                     announcement.capabilities.clone(),
-                    !announcement.is_reply,
+                    announcement.has_authoritative_metadata(),
                 );
 
                 // 保存或更新用户到数据库
@@ -530,7 +534,7 @@ pub async fn start_listening(
                     announcement.hostname.as_deref(),
                     announcement.mac_address.as_deref(),
                     Some("lan"),
-                    !announcement.is_reply,
+                    announcement.has_authoritative_metadata(),
                 )
                 .await;
 
@@ -651,6 +655,21 @@ mod tests {
             DiscoveryAnnouncement::parse(&encoded).unwrap(),
             Some(announcement)
         );
+    }
+
+    #[test]
+    fn capable_reply_is_authoritative_but_legacy_reply_is_not() {
+        let capable = DiscoveryAnnouncement::parse(
+            "LANChat|ONLINE|peer-1|Alice|8888|512|1|2|||group_chat,receipts",
+        )
+        .unwrap()
+        .unwrap();
+        let legacy = DiscoveryAnnouncement::parse("LANChat|ONLINE|peer-2|Bob|8888|512|1")
+            .unwrap()
+            .unwrap();
+
+        assert!(capable.has_authoritative_metadata());
+        assert!(!legacy.has_authoritative_metadata());
     }
 
     #[test]

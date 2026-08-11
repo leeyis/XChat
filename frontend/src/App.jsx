@@ -34,6 +34,22 @@ import {
 import CaptureEditor from "./CaptureEditor.jsx";
 
 const FILE_KINDS = ["all", "image", "document", "audio", "video", "other"];
+const RECENT_EMOJI_KEY = "xchat.recentEmoji";
+
+function readRecentEmoji() {
+  try {
+    const value = JSON.parse(globalThis.localStorage?.getItem(RECENT_EMOJI_KEY) || "[]");
+    return Array.isArray(value) ? value.filter((emoji) => EMOJI_SET.includes(emoji)).slice(0, 6) : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberEmoji(emoji, current = []) {
+  const next = [emoji, ...current.filter((item) => item !== emoji)].slice(0, 6);
+  globalThis.localStorage?.setItem(RECENT_EMOJI_KEY, JSON.stringify(next));
+  return next;
+}
 
 const copy = {
   "zh-CN": {
@@ -786,6 +802,56 @@ function quoteReferenceText(source = {}, labels = copy["zh-CN"]) {
   return `${author}: ${content || fallback}`;
 }
 
+function groupedReactions(reactions = []) {
+  const groups = new Map();
+  for (const reaction of reactions) {
+    const group = groups.get(reaction.emoji) || { emoji: reaction.emoji, count: 0 };
+    group.count += 1;
+    groups.set(reaction.emoji, group);
+  }
+  return [...groups.values()];
+}
+
+function StrongReminderCard({ payload, embedded = false, onOpen, onDismiss }) {
+  const name = payload.from_name || payload.from_id || "Xchat";
+  return (
+    <article className={`strong-reminder-card ${embedded ? "embedded" : ""}`} onClick={onOpen}>
+      <span className="strong-reminder-avatar">{name.trim().slice(0, 1) || "我"}</span>
+      <span className="strong-reminder-copy">
+        <b>{name} 提醒你查看消息</b>
+        <span>{payload.summary || "点击查看这条消息"}</span>
+      </span>
+      <footer>
+        <span>点击查看消息</span>
+        <button type="button" onClick={(event) => { event.stopPropagation(); onDismiss(); }}>忽略</button>
+      </footer>
+    </article>
+  );
+}
+
+function StrongReminderWindow() {
+  const params = new URLSearchParams(globalThis.location?.search || "");
+  const payload = {
+    conversation_id: params.get("conversation_id") || "",
+    client_message_id: params.get("client_message_id") || "",
+    from_name: params.get("from_name") || "Xchat",
+    summary: params.get("summary") || "",
+  };
+  const invoke = globalThis.window?.__TAURI__?.core?.invoke;
+  return (
+    <main className="strong-reminder-window">
+      <StrongReminderCard
+        payload={payload}
+        onOpen={() => invoke?.("open_strong_reminder", {
+          conversationId: payload.conversation_id,
+          clientMessageId: payload.client_message_id,
+        })}
+        onDismiss={() => invoke?.("dismiss_strong_reminder")}
+      />
+    </main>
+  );
+}
+
 function Avatar({ entity = {}, labels, large = false, self = false }) {
   const groupRows = entity.kind === "group" ? groupAvatarRows(entity.members) : [];
   if (groupRows.length) {
@@ -839,7 +905,7 @@ function formatTime(timestamp, locale) {
 function appVersion() {
   return typeof globalThis.__XCHAT_VERSION__ === "string" && globalThis.__XCHAT_VERSION__
     ? globalThis.__XCHAT_VERSION__
-    : "0.1.1";
+    : "0.1.2";
 }
 
 function formatSize(bytes) {
@@ -1585,6 +1651,7 @@ function DraftAttachment({ attachment, labels, onRemove }) {
 function Composer({ state, conversation, workspace, labels, quote, onClearQuote }) {
   const [text, setText] = useState(conversation?.draft || "");
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [recentEmoji, setRecentEmoji] = useState(readRecentEmoji);
   const [mention, setMention] = useState(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [mentionTargets, setMentionTargets] = useState([]);
@@ -1823,6 +1890,7 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
     const end = element?.selectionEnd ?? start;
     const next = insertTextAtSelection(text, emoji, start, end);
     setText(next.value);
+    setRecentEmoji((current) => rememberEmoji(emoji, current));
     setEmojiOpen(false);
     requestAnimationFrame(() => {
       element?.focus();
@@ -2122,6 +2190,14 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
                 </button>
               ))}
             </div>
+            <div className="emoji-recent" aria-label={labels.locale === "en" ? "Recently used" : "最近使用"}>
+              <small>{labels.locale === "en" ? "Recent" : "最近使用"}</small>
+              <span>
+                {(recentEmoji.length ? recentEmoji : EMOJI_SET.slice(0, 6)).map((emoji) => (
+                  <button type="button" key={emoji} onMouseDown={(event) => event.preventDefault()} onClick={() => insertEmoji(emoji)}>{emoji}</button>
+                ))}
+              </span>
+            </div>
           </div>
         )}
       </div>
@@ -2261,6 +2337,8 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
   const messages = state.messagesByConversation[state.activeConversationId] || [];
   const scroll = useRef(null);
   const [menu, setMenu] = useState(null);
+  const [reactionPicker, setReactionPicker] = useState(null);
+  const [recentEmoji, setRecentEmoji] = useState(readRecentEmoji);
   const [quote, setQuote] = useState(null);
   const [forward, setForward] = useState(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -2270,10 +2348,14 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
   useEffect(() => {
     setQuote(null);
     setMenu(null);
+    setReactionPicker(null);
   }, [conversation?.id]);
 
   useEffect(() => {
-    const close = () => setMenu(null);
+    const close = () => {
+      setMenu(null);
+      setReactionPicker(null);
+    };
     addEventListener("pointerdown", close);
     addEventListener("resize", close);
     return () => {
@@ -2493,7 +2575,62 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
                 </span>
               )}
             </div>
+            <div className="message-quick-actions" aria-label={labels.locale === "en" ? "Message actions" : "消息操作"}>
+              <button
+                type="button"
+                aria-label={labels.emoji}
+                title={labels.emoji}
+                disabled={!message.client_message_id}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setMenu(null);
+                  setReactionPicker({
+                    message,
+                    x: Math.max(10, Math.min(rect.left - 130, globalThis.innerWidth - 326)),
+                    y: Math.max(10, Math.min(rect.bottom + 7, globalThis.innerHeight - 356)),
+                  });
+                }}
+              ><Icon name="emoji" size={18} /></button>
+              <button
+                type="button"
+                aria-label={labels.locale === "en" ? "Quote" : "引用"}
+                title={labels.locale === "en" ? "Quote" : "引用"}
+                onClick={() => { setQuote(message); setMenu(null); setReactionPicker(null); }}
+              ><Icon name="quote" size={18} /></button>
+              <button
+                type="button"
+                aria-label={labels.locale === "en" ? "More" : "更多"}
+                title={labels.locale === "en" ? "More" : "更多"}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setReactionPicker(null);
+                  setMenu({
+                    x: Math.max(10, Math.min(rect.right - 188, globalThis.innerWidth - 198)),
+                    y: Math.max(10, Math.min(rect.bottom + 7, globalThis.innerHeight - 250)),
+                    message,
+                  });
+                }}
+              ><Icon name="more" size={18} /></button>
+            </div>
             </article>
+            {groupedReactions(message.reactions).length > 0 && (
+              <div className={`message-reactions ${message.own ? "sent" : "received"}`}>
+                {groupedReactions(message.reactions).map((reaction) => (
+                  <button
+                    type="button"
+                    key={reaction.emoji}
+                    onClick={() => workspace.dispatch({
+                      type: "message.react",
+                      conversationId: conversation.id,
+                      clientMessageId: message.client_message_id,
+                      emoji: reaction.emoji,
+                    })}
+                  >{reaction.emoji}<span>{reaction.count}</span></button>
+                ))}
+              </div>
+            )}
           </Fragment>
         ))}
       </div>
@@ -2505,6 +2642,40 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
         quote={quote}
         onClearQuote={() => setQuote(null)}
       />
+      {reactionPicker && (
+        <div
+          className="message-reaction-picker"
+          style={{ left: reactionPicker.x, top: reactionPicker.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <div className="message-reaction-grid">
+            {EMOJI_SET.map((emoji) => (
+              <button
+                type="button"
+                key={emoji}
+                onClick={() => {
+                  workspace.dispatch({
+                    type: "message.react",
+                    conversationId: conversation.id,
+                    clientMessageId: reactionPicker.message.client_message_id,
+                    emoji,
+                  });
+                  setRecentEmoji((current) => rememberEmoji(emoji, current));
+                  setReactionPicker(null);
+                }}
+              >{emoji}</button>
+            ))}
+          </div>
+          <div className="message-reaction-recent">
+            <small>{labels.locale === "en" ? "Recent" : "最近使用"}</small>
+            <span>{(recentEmoji.length ? recentEmoji : EMOJI_SET.slice(0, 6)).map((emoji) => <button type="button" key={emoji} onClick={() => {
+              workspace.dispatch({ type: "message.react", conversationId: conversation.id, clientMessageId: reactionPicker.message.client_message_id, emoji });
+              setRecentEmoji((current) => rememberEmoji(emoji, current));
+              setReactionPicker(null);
+            }}>{emoji}</button>)}</span>
+          </div>
+        </div>
+      )}
       {menu && (
         <div
           className="message-context-menu"
@@ -2512,6 +2683,18 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
           role="menu"
           onPointerDown={(event) => event.stopPropagation()}
         >
+          {menu.message.own && menu.message.client_message_id && (
+            <button onClick={() => {
+              workspace.dispatch({
+                type: "message.strongReminder",
+                conversationId: conversation.id,
+                clientMessageId: menu.message.client_message_id,
+              });
+              setMenu(null);
+            }}>
+              <Icon name="bell" size={16} />{labels.locale === "en" ? "Remind" : "提醒"}
+            </button>
+          )}
           {isCopyableMessage(menu.message) && (
             <button onClick={async () => {
               if (!["text", "quote"].includes(menu.message.msg_type)) {
@@ -3704,6 +3887,7 @@ export default function App({ workspace }) {
   if (requestedView === "capture-editor" || requestedView === "capture-pin") {
     return <CaptureEditor workspace={workspace} mode={requestedView === "capture-pin" ? "pin" : "editor"} />;
   }
+  if (requestedView === "strong-reminder") return <StrongReminderWindow />;
   const state = useSyncExternalStore(workspace.subscribe, workspace.getSnapshot);
   const savedLanguage = state.settings.language === "en" ? "en" : "zh-CN";
   const [languagePreview, setLanguagePreview] = useState(null);
@@ -3971,6 +4155,20 @@ export default function App({ workspace }) {
         <div className={`toast ${state.notices.at(-1).kind}`} role="status">
           <i />
           {state.notices.at(-1).message}
+        </div>
+      )}
+      {state.strongReminder && !globalThis.window?.__TAURI__ && (
+        <div className="strong-reminder-fallback">
+          <StrongReminderCard
+            embedded
+            payload={state.strongReminder}
+            onOpen={() => workspace.dispatch({
+              type: "strongReminder.open",
+              conversationId: state.strongReminder.conversation_id,
+              clientMessageId: state.strongReminder.client_message_id,
+            })}
+            onDismiss={() => workspace.dispatch({ type: "strongReminder.dismiss" })}
+          />
         </div>
       )}
       {modal === "group" && (

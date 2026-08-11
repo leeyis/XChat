@@ -103,6 +103,18 @@ Keep touched Rust code rustfmt-compatible and formatting changes local.
 - Preserve user changes in the working tree. Do not clean, reset, commit, or
   reformat unrelated files.
 
+## UI prototype review gate
+
+- For every new requirement that adds, changes, or optimizes any user interface,
+  first present the proposed UI in
+  `ui-ref/xchat-desktop-prototype.html` for user review.
+- Do not implement the UI change in the production application until the user
+  has explicitly reviewed and approved the prototype.
+- After approval, implement the accepted prototype faithfully in the production
+  application. If the production implementation requires a material UI change
+  from the approved prototype, update the prototype and obtain approval again
+  before proceeding.
+
 ## Verification
 
 - Re-run the narrow compile/test command that exercises the changed path.

@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "strong-reminder",
+  "description": "Restricts the always-on-top reminder card to opening or dismissing its target",
+  "windows": [
+    "strong-reminder"
+  ],
+  "permissions": [
+    "core:default",
+    "allow-open-strong-reminder",
+    "allow-dismiss-strong-reminder"
+  ]
+}

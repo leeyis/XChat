@@ -172,6 +172,13 @@ struct RecallMessageRequest {
 }
 
 #[derive(Deserialize)]
+struct MessageControlRequest {
+    conversation_id: String,
+    client_message_id: String,
+    emoji: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct ForwardMessageRequest {
     source_message_id: i64,
     conversation_ids: Vec<String>,
@@ -290,6 +297,11 @@ pub async fn start_server(
             post(recall_conversation_message_http),
         )
         .route("/api/messages/forward", post(forward_message_http))
+        .route("/api/message/reaction", post(react_to_message_http))
+        .route(
+            "/api/message/strong-reminder",
+            post(send_strong_reminder_http),
+        )
         .route(
             "/api/conversations/:id/state",
             post(update_conversation_state_http),
@@ -498,6 +510,44 @@ async fn send_conversation_message_http(
     .await
     {
         Ok(message) => Json(message).into_response(),
+        Err(error) => backend_error(error),
+    }
+}
+
+async fn react_to_message_http(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<MessageControlRequest>,
+) -> ApiResponse {
+    let Some(emoji) = payload.emoji else {
+        return api_error(StatusCode::BAD_REQUEST, "emoji is required".to_string());
+    };
+    match crate::workspace::react_to_message(
+        &state.pool,
+        &state.peer_manager,
+        &payload.conversation_id,
+        &payload.client_message_id,
+        &emoji,
+    )
+    .await
+    {
+        Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Err(error) => backend_error(error),
+    }
+}
+
+async fn send_strong_reminder_http(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<MessageControlRequest>,
+) -> ApiResponse {
+    match crate::workspace::send_strong_reminder(
+        &state.pool,
+        &state.peer_manager,
+        &payload.conversation_id,
+        &payload.client_message_id,
+    )
+    .await
+    {
+        Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
         Err(error) => backend_error(error),
     }
 }
@@ -1936,6 +1986,71 @@ async fn handle_protocol_message(
                 );
             }
         }
+        ProtocolMessage::MessageReaction {
+            conversation_id,
+            client_message_id,
+            from_id,
+            emoji,
+            timestamp,
+        } => {
+            let message = crate::db::get_message_by_client_id(&state.pool, &client_message_id)
+                .await?
+                .ok_or_else(|| "reaction target message not found".to_string())?;
+            if message.conversation_id.as_deref() != Some(conversation_id.as_str()) {
+                return Err("reaction target does not belong to conversation".to_string());
+            }
+            let members = crate::db::get_conversation_members(&state.pool, &conversation_id).await?;
+            if !members.iter().any(|member| member.peer_id == from_id) {
+                return Err("reaction sender is not a conversation member".to_string());
+            }
+            crate::db::save_message_reaction(
+                &state.pool,
+                &client_message_id,
+                &from_id,
+                &emoji,
+            )
+            .await?;
+            broadcast_incoming_event(
+                state,
+                serde_json::json!({
+                    "msg_type": "message_reaction",
+                    "conversation_id": conversation_id,
+                    "client_message_id": client_message_id,
+                    "from_id": from_id,
+                    "emoji": emoji,
+                    "timestamp": timestamp,
+                }),
+            );
+        }
+        ProtocolMessage::StrongReminder {
+            conversation_id,
+            client_message_id,
+            from_id,
+            from_name,
+            summary,
+            timestamp,
+        } => {
+            let message = crate::db::get_message_by_client_id(&state.pool, &client_message_id)
+                .await?
+                .ok_or_else(|| "strong reminder target message not found".to_string())?;
+            if message.conversation_id.as_deref() != Some(conversation_id.as_str())
+                || message.sender_id != from_id
+            {
+                return Err("strong reminder sender does not own the target message".to_string());
+            }
+            broadcast_incoming_event(
+                state,
+                serde_json::json!({
+                    "msg_type": "strong_reminder",
+                    "conversation_id": conversation_id,
+                    "client_message_id": client_message_id,
+                    "from_id": from_id,
+                    "from_name": from_name,
+                    "summary": summary,
+                    "timestamp": timestamp,
+                }),
+            );
+        }
         ProtocolMessage::MessageRecall {
             conversation_id,
             client_message_id,
@@ -2049,6 +2164,52 @@ async fn handle_stable_direct_message(
     ) else {
         return Ok(false);
     };
+    if matches!(message.msg_type.as_str(), "message_reaction" | "strong_reminder") {
+        let my_id = crate::db::get_user_id(&state.pool).await?;
+        let expected_conversation_id =
+            crate::db::stable_direct_conversation_id(&my_id, &message.from_id);
+        if conversation_id != expected_conversation_id {
+            return Err("direct control conversation does not match sender".to_string());
+        }
+        let target = crate::db::get_message_by_client_id(&state.pool, client_message_id)
+            .await?
+            .ok_or_else(|| "control target message not found".to_string())?;
+        if target.conversation_id.as_deref() != Some(conversation_id) {
+            return Err("control target does not belong to conversation".to_string());
+        }
+        let control = serde_json::from_str::<serde_json::Value>(&message.content)
+            .map_err(|error| format!("invalid message control: {error}"))?;
+        if message.msg_type == "strong_reminder" && target.sender_id != message.from_id {
+            return Err("strong reminder sender does not own target message".to_string());
+        }
+        if message.msg_type == "message_reaction" {
+            let emoji = control
+                .get("emoji")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| "reaction emoji is missing".to_string())?;
+            crate::db::save_message_reaction(
+                &state.pool,
+                client_message_id,
+                &message.from_id,
+                emoji,
+            )
+            .await?;
+        }
+        broadcast_incoming_event(
+            state,
+            serde_json::json!({
+                "msg_type": message.msg_type,
+                "conversation_id": conversation_id,
+                "client_message_id": client_message_id,
+                "from_id": message.from_id,
+                "from_name": message.from_name,
+                "emoji": control.get("emoji").and_then(|value| value.as_str()),
+                "summary": control.get("summary").and_then(|value| value.as_str()),
+                "timestamp": message.timestamp,
+            }),
+        );
+        return Ok(true);
+    }
     if !matches!(message.msg_type.as_str(), "text" | "quote" | "announcement")
         || message.from_id.trim().is_empty()
         || conversation_id.trim().is_empty()

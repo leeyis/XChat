@@ -2392,6 +2392,153 @@ pub async fn send_conversation_message(
 }
 
 #[tauri::command]
+pub async fn react_to_conversation_message(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    peer_state: State<'_, PeerState>,
+    conversation_id: String,
+    client_message_id: String,
+    emoji: String,
+) -> Result<(), String> {
+    crate::workspace::react_to_message(
+        &state.pool,
+        &peer_state.manager,
+        &conversation_id,
+        &client_message_id,
+        &emoji,
+    )
+    .await?;
+    let _ = app.emit(
+        "message-reaction",
+        serde_json::json!({
+            "conversation_id": conversation_id,
+            "client_message_id": client_message_id,
+            "from_id": crate::db::get_user_id(&state.pool).await?,
+            "emoji": emoji,
+        }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn send_strong_reminder(
+    state: State<'_, DbState>,
+    peer_state: State<'_, PeerState>,
+    conversation_id: String,
+    client_message_id: String,
+) -> Result<(), String> {
+    crate::workspace::send_strong_reminder(
+        &state.pool,
+        &peer_state.manager,
+        &conversation_id,
+        &client_message_id,
+    )
+    .await
+}
+
+#[tauri::command]
+pub fn show_strong_reminder(
+    app: AppHandle,
+    conversation_id: String,
+    client_message_id: String,
+    from_name: String,
+    summary: String,
+) -> Result<(), String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+
+        if let Some(existing) = app.get_webview_window("strong-reminder") {
+            let _ = existing.close();
+        }
+        let url = format!(
+            "index.html?view=strong-reminder&conversation_id={}&client_message_id={}&from_name={}&summary={}",
+            urlencoding::encode(&conversation_id),
+            urlencoding::encode(&client_message_id),
+            urlencoding::encode(&from_name),
+            urlencoding::encode(&summary),
+        );
+        let window = WebviewWindowBuilder::new(
+            &app,
+            "strong-reminder",
+            WebviewUrl::App(url.into()),
+        )
+        .title("Xchat")
+        .inner_size(324.0, 106.0)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(true)
+        .visible(false)
+        .build()
+        .map_err(|error| format!("open strong reminder: {error}"))?;
+        let monitor = app
+            .get_webview_window("main")
+            .and_then(|main| main.current_monitor().ok().flatten())
+            .or_else(|| app.primary_monitor().ok().flatten());
+        if let Some(monitor) = monitor {
+            let scale = monitor.scale_factor();
+            let width = (324.0 * scale).round() as i32;
+            let height = (106.0 * scale).round() as i32;
+            let x = monitor.position().x + monitor.size().width as i32 - width - (18.0 * scale) as i32;
+            let y = monitor.position().y + monitor.size().height as i32 - height - (54.0 * scale) as i32;
+            let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(x, y)));
+        }
+        window.show().map_err(|error| format!("show strong reminder: {error}"))?;
+        return Ok(());
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = app.emit(
+            "strong-reminder",
+            serde_json::json!({
+                "conversation_id": conversation_id,
+                "client_message_id": client_message_id,
+                "from_name": from_name,
+                "summary": summary,
+            }),
+        );
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub fn open_strong_reminder(
+    app: AppHandle,
+    conversation_id: String,
+    client_message_id: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.show();
+        let _ = main.unminimize();
+        let _ = main.set_focus();
+        let _ = main.emit(
+            "strong-reminder-open",
+            serde_json::json!({
+                "conversation_id": conversation_id,
+                "client_message_id": client_message_id,
+            }),
+        );
+    }
+    if let Some(reminder) = app.get_webview_window("strong-reminder") {
+        let _ = reminder.close();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn dismiss_strong_reminder(app: AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(reminder) = app.get_webview_window("strong-reminder") {
+        reminder.close().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn send_conversation_file(
     app: AppHandle,
     state: State<'_, DbState>,

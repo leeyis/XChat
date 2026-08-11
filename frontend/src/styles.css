@@ -804,6 +804,44 @@ time,
   flex-direction: row-reverse;
 }
 
+.message-quick-actions {
+  display: flex;
+  align-self: center;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 3px 10px color-mix(in oklch, var(--fg) 8%, transparent);
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 120ms var(--ease-out), transform 120ms var(--ease-out);
+  pointer-events: none;
+}
+
+.message:hover .message-quick-actions,
+.message:focus-within .message-quick-actions {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.message-quick-actions button {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+}
+
+.message-quick-actions button:last-child { border-right: 0; }
+.message-quick-actions button:hover { background: color-mix(in oklch, var(--fg) 7%, transparent); color: var(--fg); }
+.message-quick-actions button:disabled { opacity: .4; }
+.message-quick-actions .icon { stroke-width: 1.8; }
+
 .message .avatar {
   width: 30px;
   height: 30px;
@@ -1195,12 +1233,40 @@ time,
 .emoji-grid {
   display: grid;
   max-height: 240px;
-  grid-template-columns: repeat(9, minmax(24px, 1fr));
+  grid-template-columns: repeat(6, minmax(36px, 1fr));
   gap: 4px;
   padding-right: 3px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
+
+.emoji-recent,
+.message-reaction-recent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.emoji-recent small,
+.message-reaction-recent small { color: var(--muted); white-space: nowrap; }
+.emoji-recent span,
+.message-reaction-recent span { display: grid; flex: 1; grid-template-columns: repeat(6, 1fr); }
+.emoji-recent button,
+.message-reaction-recent button {
+  display: grid;
+  min-height: 30px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 20px;
+}
+.emoji-recent button:hover,
+.message-reaction-recent button:hover { background: color-mix(in oklch, var(--fg) 7%, transparent); }
 
 .emoji-grid button {
   display: grid;
@@ -1315,6 +1381,54 @@ time,
   background: var(--surface);
   box-shadow: var(--shadow-2);
 }
+
+.message-reaction-picker {
+  position: fixed;
+  z-index: 125;
+  width: 304px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+}
+
+.message-reaction-grid {
+  display: grid;
+  max-height: 258px;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 3px;
+  overflow-y: auto;
+}
+
+.message-reaction-grid button {
+  display: grid;
+  min-height: 38px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  font-size: 23px;
+}
+
+.message-reaction-grid button:hover { background: color-mix(in oklch, var(--fg) 7%, transparent); }
+
+.message-reactions { display: flex; gap: 4px; margin: -8px 38px 8px; }
+.message-reactions.sent { justify-content: flex-end; }
+.message-reactions button {
+  display: flex;
+  min-height: 25px;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--fg);
+}
+.message-reactions button:hover { border-color: color-mix(in oklch, var(--accent) 45%, var(--border)); background: color-mix(in oklch, var(--accent) 8%, var(--surface)); }
+.message-reactions span { color: var(--muted); font-size: 11px; }
 
 .message-context-menu button,
 .forward-list button {
@@ -2461,6 +2575,86 @@ input[type="checkbox"]:disabled { cursor: not-allowed; opacity: .42; }
 .message-context-menu button { display: flex; min-height: 36px; align-items: center; gap: 10px; padding-inline: 12px; }
 .message-context-menu button .icon { color: var(--muted); }
 .context-separator { height: 1px; margin: 5px 7px; background: var(--border); }
+
+.strong-reminder-window {
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  background: transparent;
+}
+
+html:has(.strong-reminder-window),
+html:has(.strong-reminder-window) body,
+html:has(.strong-reminder-window) #root { background: transparent; overflow: hidden; }
+
+.strong-reminder-card {
+  display: grid;
+  width: 324px;
+  height: 106px;
+  grid-template-columns: 60px minmax(0, 1fr);
+  grid-template-rows: 70px 36px;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklch, var(--fg) 14%, transparent);
+  border-radius: 16px;
+  background: var(--surface);
+  color: var(--fg);
+  box-shadow: 0 10px 30px color-mix(in oklch, var(--fg) 16%, transparent);
+  cursor: default;
+}
+
+.strong-reminder-avatar {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  margin-left: 12px;
+  place-items: center;
+  border-radius: 11px;
+  background: #18ad75;
+  color: white;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.strong-reminder-copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  padding: 9px 13px 7px 2px;
+}
+.strong-reminder-copy b { overflow: hidden; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.strong-reminder-copy > span {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 18px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.strong-reminder-card footer {
+  display: flex;
+  min-height: 36px;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 14px 4px 60px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+.strong-reminder-card footer button {
+  min-width: 51px;
+  min-height: 27px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+}
+.strong-reminder-card footer button:hover { background: color-mix(in oklch, var(--fg) 7%, transparent); color: var(--fg); }
+.strong-reminder-fallback { position: fixed; z-index: 300; right: 18px; bottom: 18px; }
+.strong-reminder-card.embedded { cursor: pointer; }
 
 .message-scroll {
   scrollbar-width: thin;
