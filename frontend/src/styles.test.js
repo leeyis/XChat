@@ -61,7 +61,7 @@ test("conversation presence dots distinguish online and offline peers", async ()
   assert.match(offline, /background:\s*var\(--muted\)/);
 });
 
-test("group quick actions use a relaxed vertical layout", async () => {
+test("group quick actions use the approved full-width vertical layout", async () => {
   const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
   const layouts = [...css.matchAll(/\.group-quick-actions\s*\{([^}]*)\}/g)];
   const finalLayout = layouts.at(-1)?.[1];
@@ -70,7 +70,76 @@ test("group quick actions use a relaxed vertical layout", async () => {
   assert.match(finalLayout, /grid-template-columns:\s*1fr/);
   assert.match(
     css,
-    /\.group-quick-actions button,[\s\S]*?min-height:\s*52px;[\s\S]*?border-right:\s*0;/,
+    /\.drawer-setting-list\s*>\s*button\s*\{[^}]*height:\s*40px;[^}]*border-right:\s*0;/s,
+  );
+});
+
+test("chat feedback colors and focused controls match the approved palette", async () => {
+  const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+  assert.match(css, /\.conversation-row\.selected,[\s\S]*?background:\s*#16ad6f/);
+  assert.match(css, /\.bubble\s*\{[^}]*background:\s*#9df29f/s);
+  assert.match(css, /\.message\.sent \.bubble\s*\{[^}]*background:\s*#9df29f/s);
+  assert.match(css, /\.group-setting-row button\.danger\s*\{[^}]*background:\s*var\(--danger\)/s);
+  assert.match(css, /\.forward-note:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/s);
+  assert.match(css, /\.forward-list\s*\{[^}]*overflow-y:\s*auto/s);
+  assert.match(css, /\.forward-list::-webkit-scrollbar-thumb\s*\{[^}]*background:\s*transparent/s);
+});
+
+test("direct conversation actions use full-width icon rows and centered state actions", async () => {
+  const [app, css] = await Promise.all([
+    readFile(new URL("./App.jsx", import.meta.url), "utf8"),
+    readFile(new URL("./styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(app, /direct-info-actions[\s\S]*?<Icon name="edit"[\s\S]*?<Icon name="trash"/);
+  assert.match(app, /direct-info-actions drawer-setting-list/);
+  assert.match(css, /\.drawer-setting-list\s*\{[^}]*border-block:\s*1px solid var\(--border\)/s);
+  assert.match(css, /\.conversation-state-actions\s*\{[^}]*justify-content:\s*center/s);
+});
+
+test("conversation drawers use fixed-height full-width setting rows on every desktop platform", async () => {
+  const [app, css] = await Promise.all([
+    readFile(new URL("./App.jsx", import.meta.url), "utf8"),
+    readFile(new URL("./styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(app, /group-quick-actions drawer-setting-list/);
+  assert.match(app, /direct-info-actions drawer-setting-list/);
+  assert.match(
+    css,
+    /\.drawer-setting-list\s*>\s*button\s*\{[^}]*width:\s*100%;[^}]*height:\s*40px;[^}]*min-height:\s*40px;[^}]*max-height:\s*40px;[^}]*flex:\s*0 0 40px;/s,
+  );
+  assert.match(
+    css,
+    /\.conversation-state-actions\s*\{[^}]*height:\s*48px;[^}]*flex:\s*0 0 48px;[^}]*justify-content:\s*center/s,
+  );
+});
+
+test("direct drawer keeps WeChat-style sections compact and the footer visible", async () => {
+  const [app, css] = await Promise.all([
+    readFile(new URL("./App.jsx", import.meta.url), "utf8"),
+    readFile(new URL("./styles.css", import.meta.url), "utf8"),
+  ]);
+  const direct = app.slice(
+    app.indexOf("function LegacyInfoPanel"),
+    app.indexOf("function GroupManageModal"),
+  );
+
+  assert.equal(
+    direct.match(/drawer-section-label/g)?.length,
+    2,
+    "direct drawer needs device-info and conversation-management section labels",
+  );
+  assert.match(
+    css,
+    /\.info-panel \.info-kv\s*\{[^}]*flex:\s*0 0 auto;[^}]*grid-auto-rows:\s*32px;[^}]*align-content:\s*start;/s,
+  );
+  assert.match(
+    css,
+    /\.info-panel \.info-kv\s*>\s*div\s*\{[^}]*height:\s*32px;[^}]*min-height:\s*32px;[^}]*max-height:\s*32px;/s,
+  );
+  assert.match(
+    css,
+    /\.conversation-state-actions\s*\{[^}]*position:\s*sticky;[^}]*bottom:\s*0;/s,
   );
 });
 
@@ -118,6 +187,14 @@ test("quote preview and sent messages follow the WeChat reference layout", async
   assert.match(sent, /border-right:\s*2px/);
   assert.match(sent, /border-left:\s*0/);
   assert.match(css, /\.quote-preview-close\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;[^}]*border-radius:\s*50%/s);
+});
+
+test("quoted messages pass the stable target field used by conversation navigation", async () => {
+  const app = await readFile(new URL("./App.jsx", import.meta.url), "utf8");
+  const chat = app.slice(app.indexOf("function ChatWorkspace"), app.indexOf("function HostWorkspace"));
+
+  assert.match(chat, /targetClientMessageId:\s*messageId/);
+  assert.doesNotMatch(chat, /\n\s+messageId:\s*messageId/);
 });
 
 test("all checkbox-like controls use the shared polished square style", async () => {

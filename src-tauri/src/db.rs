@@ -72,6 +72,8 @@ pub struct MessageReceiptRecord {
     pub updated_at: i64,
     pub delivery_ack_sent_at: Option<i64>,
     pub read_ack_sent_at: Option<i64>,
+    pub recall_requested_at: Option<i64>,
+    pub recall_sent_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::FromRow)]
@@ -83,6 +85,15 @@ pub struct PendingReceiptRecord {
     pub read_at: Option<i64>,
     pub delivery_ack_sent_at: Option<i64>,
     pub read_ack_sent_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::FromRow)]
+pub struct PendingRecallRecord {
+    pub message_client_id: String,
+    pub conversation_id: String,
+    pub sender_id: String,
+    pub reader_id: String,
+    pub recall_requested_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::FromRow)]
@@ -457,6 +468,8 @@ async fn init_db_with_path_and_machine_name(
             updated_at INTEGER NOT NULL,
             delivery_ack_sent_at INTEGER,
             read_ack_sent_at INTEGER,
+            recall_requested_at INTEGER,
+            recall_sent_at INTEGER,
             PRIMARY KEY (message_client_id, reader_id)
         )",
     )
@@ -474,6 +487,12 @@ async fn init_db_with_path_and_machine_name(
     )
     .execute(&pool)
     .await;
+    let _ = sqlx::query("ALTER TABLE message_receipts ADD COLUMN recall_requested_at INTEGER")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE message_receipts ADD COLUMN recall_sent_at INTEGER")
+        .execute(&pool)
+        .await;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS transfers (
@@ -2185,6 +2204,16 @@ pub async fn save_conversation_message(
     if get_conversation(pool, conversation_id).await?.is_none() {
         return Err("conversation not found".to_string());
     }
+    if let Some(existing) = get_message_by_client_id(pool, client_message_id).await? {
+        if existing.status.as_deref() == Some("recalled") {
+            if existing.conversation_id.as_deref() == Some(conversation_id)
+                && existing.sender_id == sender_id
+            {
+                return Ok(existing);
+            }
+            return Err("client message id conflicts with another message".to_string());
+        }
+    }
 
     let timestamp = if timestamp > 0 {
         timestamp
@@ -2203,6 +2232,7 @@ pub async fn save_conversation_message(
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(client_message_id) DO UPDATE SET
             status = CASE
+                WHEN messages.status = 'recalled' THEN messages.status
                 WHEN messages.status = 'read' THEN messages.status
                 WHEN messages.status = 'delivered'
                      AND excluded.status IN ('pending', 'sent') THEN messages.status
@@ -2299,6 +2329,7 @@ pub async fn mark_message_status_by_client_id(
 ) -> Result<MessageRecord, String> {
     let result = sqlx::query(
         "UPDATE messages SET status = CASE
+            WHEN status = 'recalled' THEN status
             WHEN status = 'read' THEN status
             WHEN status = 'delivered' AND ? IN ('pending', 'sent') THEN status
             WHEN status = 'sent' AND ? = 'pending' THEN status
@@ -2348,14 +2379,15 @@ pub async fn get_conversation_messages(
                        file_status, file_size, sender_msg_id, status, conversation_id,
                        client_message_id
                 FROM messages
-                WHERE conversation_id = ?
+                WHERE COALESCE(status, '') != 'recalled'
+                  AND (conversation_id = ?
                    OR (
                         conversation_id IS NULL AND (
                             (sender_id = 'me' AND receiver_id = ?)
                             OR (sender_id = ? AND (receiver_id = ? OR receiver_id IS NULL))
                             OR (sender_id = ? AND receiver_id = ?)
                         )
-                   )
+                   ))
                 ORDER BY timestamp DESC, id DESC
                 LIMIT ? OFFSET ?
              )
@@ -2383,6 +2415,7 @@ pub async fn get_conversation_messages(
                        client_message_id
                 FROM messages
                 WHERE conversation_id = ?
+                  AND COALESCE(status, '') != 'recalled'
                 ORDER BY timestamp DESC, id DESC
                 LIMIT ? OFFSET ?
              )
@@ -2428,7 +2461,8 @@ pub async fn search_messages(
                 file_status, file_size, sender_msg_id, status, conversation_id,
                 client_message_id
          FROM messages
-         WHERE msg_type IN ('text', 'file')
+         WHERE msg_type IN ('text', 'file', 'quote')
+           AND COALESCE(status, '') != 'recalled'
            AND content LIKE ? ESCAPE '\\' COLLATE NOCASE
          ORDER BY timestamp DESC, id DESC
          LIMIT ?",
@@ -2571,7 +2605,7 @@ pub async fn save_message_receipt(
 
     sqlx::query_as::<_, MessageReceiptRecord>(
         "SELECT message_client_id, reader_id, mentioned, delivered_at, read_at, updated_at,
-                delivery_ack_sent_at, read_ack_sent_at
+                delivery_ack_sent_at, read_ack_sent_at, recall_requested_at, recall_sent_at
          FROM message_receipts
          WHERE message_client_id = ? AND reader_id = ?",
     )
@@ -2588,7 +2622,7 @@ pub async fn get_message_receipts(
 ) -> Result<Vec<MessageReceiptRecord>, String> {
     sqlx::query_as::<_, MessageReceiptRecord>(
         "SELECT message_client_id, reader_id, mentioned, delivered_at, read_at, updated_at,
-                delivery_ack_sent_at, read_ack_sent_at
+                delivery_ack_sent_at, read_ack_sent_at, recall_requested_at, recall_sent_at
          FROM message_receipts
          WHERE message_client_id = ?
          ORDER BY reader_id ASC",
@@ -2597,6 +2631,164 @@ pub async fn get_message_receipts(
     .fetch_all(pool)
     .await
     .map_err(|e| format!("查询消息回执失败: {}", e))
+}
+
+pub async fn recall_message_for_recipients(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    conversation_id: &str,
+    client_message_id: &str,
+    sender_id: &str,
+    recipient_ids: &[String],
+) -> Result<MessageRecord, String> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("开始撤回消息事务失败: {e}"))?;
+    let message = sqlx::query_as::<_, MessageRecord>(
+        "SELECT id, sender_id, receiver_id, content, msg_type, timestamp, file_path,
+                file_status, file_size, sender_msg_id, status, conversation_id,
+                client_message_id
+         FROM messages WHERE client_message_id = ?",
+    )
+    .bind(client_message_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| format!("读取待撤回消息失败: {e}"))?
+    .ok_or_else(|| "消息不存在".to_string())?;
+    if message.conversation_id.as_deref() != Some(conversation_id)
+        || message.sender_id != sender_id
+    {
+        tx.rollback().await.ok();
+        return Err("只能撤回自己发送的消息".to_string());
+    }
+
+    let now = unix_timestamp();
+    sqlx::query(
+        "UPDATE messages
+         SET content = '', file_path = NULL, file_status = NULL, file_size = NULL,
+             sender_msg_id = NULL, status = 'recalled'
+         WHERE client_message_id = ?",
+    )
+    .bind(client_message_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("保存撤回消息标记失败: {e}"))?;
+    for recipient_id in recipient_ids {
+        sqlx::query(
+            "INSERT INTO message_receipts
+                (message_client_id, reader_id, updated_at, recall_requested_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(message_client_id, reader_id) DO UPDATE SET
+                updated_at = MAX(message_receipts.updated_at, excluded.updated_at),
+                recall_requested_at = COALESCE(
+                    message_receipts.recall_requested_at,
+                    excluded.recall_requested_at
+                )",
+        )
+        .bind(client_message_id)
+        .bind(recipient_id)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("保存撤回消息收件人失败: {e}"))?;
+    }
+    let tombstone = sqlx::query_as::<_, MessageRecord>(
+        "SELECT id, sender_id, receiver_id, content, msg_type, timestamp, file_path,
+                file_status, file_size, sender_msg_id, status, conversation_id,
+                client_message_id
+         FROM messages WHERE client_message_id = ?",
+    )
+    .bind(client_message_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| format!("读取撤回消息标记失败: {e}"))?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("提交撤回消息事务失败: {e}"))?;
+    Ok(tombstone)
+}
+
+pub async fn store_recalled_tombstone(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    conversation_id: &str,
+    client_message_id: &str,
+    sender_id: &str,
+    timestamp: i64,
+) -> Result<MessageRecord, String> {
+    if get_conversation(pool, conversation_id).await?.is_none() {
+        return Err("会话不存在".to_string());
+    }
+    if let Some(message) = get_message_by_client_id(pool, client_message_id).await? {
+        if message.conversation_id.as_deref() != Some(conversation_id)
+            || message.sender_id != sender_id
+        {
+            return Err("撤回消息身份不匹配".to_string());
+        }
+    }
+    sqlx::query(
+        "INSERT INTO messages
+            (sender_id, content, msg_type, timestamp, status, conversation_id,
+             client_message_id)
+         VALUES (?, '', 'recalled', ?, 'recalled', ?, ?)
+         ON CONFLICT(client_message_id) DO UPDATE SET
+            content = '', file_path = NULL, file_status = NULL, file_size = NULL,
+            sender_msg_id = NULL, status = 'recalled'",
+    )
+    .bind(sender_id)
+    .bind(timestamp.max(0))
+    .bind(conversation_id)
+    .bind(client_message_id)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("保存撤回消息标记失败: {e}"))?;
+    get_message_by_client_id(pool, client_message_id)
+        .await?
+        .ok_or_else(|| "撤回消息标记不存在".to_string())
+}
+
+pub async fn get_pending_recalls_for_peer(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    peer_id: &str,
+) -> Result<Vec<PendingRecallRecord>, String> {
+    sqlx::query_as::<_, PendingRecallRecord>(
+        "SELECT r.message_client_id, m.conversation_id, m.sender_id, r.reader_id,
+                r.recall_requested_at
+         FROM message_receipts r
+         INNER JOIN messages m ON m.client_message_id = r.message_client_id
+         WHERE r.reader_id = ?
+           AND m.status = 'recalled'
+           AND r.recall_requested_at IS NOT NULL
+           AND r.recall_sent_at IS NULL
+         ORDER BY r.recall_requested_at ASC",
+    )
+    .bind(peer_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("查询待同步撤回失败: {e}"))
+}
+
+pub async fn mark_recall_sent(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    client_message_id: &str,
+    reader_id: &str,
+) -> Result<(), String> {
+    let result = sqlx::query(
+        "UPDATE message_receipts SET recall_sent_at = ?, updated_at = MAX(updated_at, ?)
+         WHERE message_client_id = ? AND reader_id = ?
+           AND recall_requested_at IS NOT NULL",
+    )
+    .bind(unix_timestamp())
+    .bind(unix_timestamp())
+    .bind(client_message_id)
+    .bind(reader_id)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("标记撤回消息已发送失败: {e}"))?;
+    if result.rows_affected() == 0 {
+        return Err("待同步撤回不存在".to_string());
+    }
+    Ok(())
 }
 
 pub async fn get_pending_receipts_for_peer(
@@ -2669,6 +2861,7 @@ pub async fn get_undelivered_messages_for_peer(
          INNER JOIN message_receipts r
            ON r.message_client_id = m.client_message_id
          WHERE r.reader_id = ? AND r.delivered_at IS NULL
+           AND COALESCE(m.status, '') != 'recalled'
          ORDER BY m.timestamp ASC, m.id ASC",
     )
     .bind(peer_id)

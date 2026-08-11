@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useEffect,
   useMemo,
   useRef,
@@ -8,9 +9,11 @@ import {
 import {
   ACTIVE_TRANSFER_STATES,
   EMOJI_SET,
+  avatarText,
   fileKind,
   fileStatus,
   groupMentionCandidates,
+  groupAvatarRows,
   insertTextAtSelection,
   isAppActive,
   isCopyableMessage,
@@ -23,6 +26,8 @@ import {
   nativeClipboardPaths,
   nativeCaptureShortcutAvailable,
   nativeDragDropTarget,
+  formatMessageTime,
+  messageTimeDividerIndices,
   retainedMentionIds,
   shortcutLabelFromEvent,
 } from "./xchat.js";
@@ -226,6 +231,8 @@ const copy = {
     captureShortcutHint: "点击输入框后按下字母或数字组合键",
     captureShortcutFocusedHint: "仅在 Xchat 窗口聚焦时生效",
     captureShortcutGlobalHint: "启动 Xchat 后全局生效，包括隐藏到托盘时",
+    deviceInformation: "设备信息",
+    conversationManagement: "会话管理",
     groupMembers: (count) => `群成员 · ${count}`,
     editDeviceRemark: "修改设备备注",
     unpinConversation: "取消置顶",
@@ -475,6 +482,8 @@ const copy = {
     captureShortcutHint: "Focus this field, then press a letter or number shortcut",
     captureShortcutFocusedHint: "Works only while the Xchat window is focused",
     captureShortcutGlobalHint: "Works globally while Xchat is running, including from the tray",
+    deviceInformation: "Device information",
+    conversationManagement: "Conversation management",
     groupMembers: (count) => `${count} group ${count === 1 ? "member" : "members"}`,
     editDeviceRemark: "Edit device remark",
     unpinConversation: "Unpin conversation",
@@ -712,6 +721,14 @@ function Icon({ name, size = 20 }) {
         </>
       );
       break;
+    case "edit":
+      body = (
+        <>
+          <path d="M4 20h4L19 9l-4-4L4 16Z" />
+          <path d="m13 7 4 4M4 20h16" />
+        </>
+      );
+      break;
     case "folder":
       body = (
         <>
@@ -770,11 +787,34 @@ function quoteReferenceText(source = {}, labels = copy["zh-CN"]) {
 }
 
 function Avatar({ entity = {}, labels, large = false, self = false }) {
+  const groupRows = entity.kind === "group" ? groupAvatarRows(entity.members) : [];
+  if (groupRows.length) {
+    return (
+      <span
+        aria-hidden="true"
+        className={`avatar group-avatar group-avatar-${Math.max(...groupRows.map((row) => row.length))}${large ? " avatar-large" : ""}`}
+      >
+        {groupRows.map((row, rowIndex) => (
+          <span className="group-avatar-row" key={rowIndex}>
+            {row.map((label, cellIndex) => (
+              <i
+                className="group-avatar-cell"
+                key={`${rowIndex}:${cellIndex}`}
+                style={{ "--avatar": hashColor(`${entity.id}:${rowIndex}:${cellIndex}`) }}
+              >
+                {label}
+              </i>
+            ))}
+          </span>
+        ))}
+      </span>
+    );
+  }
   const label =
     entity.avatar ||
     (entity.kind === "group"
       ? labels.groupAvatar
-      : displayName(entity, labels).slice(0, 1));
+      : avatarText(displayName(entity, labels)));
   return (
     <span
       aria-hidden="true"
@@ -2315,8 +2355,15 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
   const announcement = [...messages].reverse().find((message) => message.msg_type === "announcement");
   const announcementKey = announcement && `${conversation.id}:${announcement.client_message_id || announcement.id}`;
   const announcementHidden = !announcement || dismissedAnnouncement === announcementKey || globalThis.localStorage?.getItem(`xchat:announcement:${announcementKey}`) === "dismissed";
-  const visibleMessages = messages.filter((message) => message.msg_type !== "announcement");
-  const jumpToMessage = (messageId) => workspace.dispatch({ type: "conversation.open", id: conversation.id, messageId });
+  const visibleMessages = messages.filter(
+    (message) => message.msg_type !== "announcement" && message.status !== "recalled",
+  );
+  const messageDividerIndices = new Set(messageTimeDividerIndices(visibleMessages));
+  const jumpToMessage = (messageId) => workspace.dispatch({
+    type: "conversation.open",
+    id: conversation.id,
+    targetClientMessageId: messageId,
+  });
   const subtitle =
     conversation.kind === "group"
       ? labels.memberCount(conversation.members?.length || 0)
@@ -2376,10 +2423,15 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
         {!messages.length && (
           <EmptyState title={labels.noMessages} detail={labels.noMessagesHint} />
         )}
-        {visibleMessages.map((message) => (
-          <article
+        {visibleMessages.map((message, index) => (
+          <Fragment key={message.client_message_id || message.id}>
+            {messageDividerIndices.has(index) && (
+              <div className="message-time-divider">
+                {formatMessageTime(message.timestamp, labels.locale)}
+              </div>
+            )}
+            <article
             className={`message ${message.own ? "sent" : "received"}`}
-            key={message.client_message_id || message.id}
             data-od-id={`message-${message.client_message_id || message.id}`}
             data-message-key={
               message.client_message_id || message.message_id || message.id
@@ -2435,14 +2487,14 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
                   labels={labels}
                 />
               )}
-              <span className={`message-meta ${message.status === "failed" ? "danger-text" : ""}`}>
-                {formatTime(message.timestamp, labels.locale)}
-                {statusLabel(message, conversation.kind === "group", labels) && (
+              {statusLabel(message, conversation.kind === "group", labels) && (
+                <span className={`message-meta ${message.status === "failed" ? "danger-text" : ""}`}>
                   <i>{statusLabel(message, conversation.kind === "group", labels)}</i>
-                )}
-              </span>
+                </span>
+              )}
             </div>
-          </article>
+            </article>
+          </Fragment>
         ))}
       </div>
       <Composer
@@ -3254,6 +3306,7 @@ function LegacyInfoPanel({ state, conversation, workspace, labels, onRemark, onC
         </section>
       ) : (
         <>
+          <div className="drawer-section-label">{labels.deviceInformation}</div>
           <dl className="info-section info-kv">
             <div>
               <dt>{labels.hostname}</dt>
@@ -3272,9 +3325,10 @@ function LegacyInfoPanel({ state, conversation, workspace, labels, onRemark, onC
               <dd>{sourceText(peer?.discovery_source, labels)}</dd>
             </div>
           </dl>
-          <div className="info-actions">
+          <div className="drawer-section-label">{labels.conversationManagement}</div>
+          <div className="info-actions direct-info-actions drawer-setting-list">
             <button onClick={onRemark} disabled={!state.capabilities.deviceMetadata}>
-              {labels.editDeviceRemark}
+              <Icon name="edit" size={17} />{labels.editDeviceRemark}
             </button>
             <button
               className="danger-text"
@@ -3287,12 +3341,12 @@ function LegacyInfoPanel({ state, conversation, workspace, labels, onRemark, onC
                 })
               }
             >
-              {labels.clearHistory}
+              <Icon name="trash" size={17} />{labels.clearHistory}
             </button>
           </div>
         </>
       )}
-      <div className="info-actions">
+      <div className="info-actions conversation-state-actions">
         {group && owner && (
           <button onClick={() => { const value = prompt(labels.locale === "en" ? "New group name" : "新的群名称", conversation.title); if (value) runGroupAction("rename", value); }}>
             {labels.locale === "en" ? "Rename group" : "修改群名称"}
@@ -3421,13 +3475,13 @@ function InfoPanel({ state, conversation, workspace, labels, onRemark, onConfirm
         {members.slice(0, 7).map((member) => <button className="member-tile" key={member.peer_id} onClick={() => open("members")}><Avatar entity={{ id: member.peer_id, name: member.display_name || member.name }} labels={labels} /><span>{member.display_name || member.name}</span></button>)}
         {manager && <button className="member-tile" onClick={() => open("members")}><span className="member-add-tile"><Icon name="plus" /></span><span>{labels.locale === "en" ? "Add" : "添加"}</span></button>}
       </div>
-      <div className="group-quick-actions">
+      <div className="group-quick-actions drawer-setting-list">
         <button onClick={() => open("members")}><Icon name="user" />{labels.locale === "en" ? "View members" : "查看群成员"}</button>
         <button onClick={() => dispatchEvent(new Event("xchat:open-history"))}><Icon name="search" />{labels.locale === "en" ? "Search history" : "查找聊天记录"}</button>
         {manager && <button onClick={() => open("announcement")}><Icon name="chat" />{labels.locale === "en" ? "Announcement" : "发布群公告"}</button>}
         <button onClick={() => open("settings")}><Icon name="settings" />{labels.locale === "en" ? "Group settings" : "群聊设置"}</button>
       </div>
-      <div className="info-actions"><button disabled={!state.capabilities.conversationState} onClick={() => workspace.dispatch({ type: "conversation.pin", id: conversation.id, value: !conversation.pinned })}>{conversation.pinned ? labels.unpinConversation : labels.pinConversation}</button><button disabled={!state.capabilities.conversationState} onClick={() => workspace.dispatch({ type: "conversation.markUnread", id: conversation.id, value: !conversation.forced_unread })}>{conversation.forced_unread ? labels.unmarkUnread : labels.markUnread}</button></div>
+      <div className="info-actions conversation-state-actions"><button disabled={!state.capabilities.conversationState} onClick={() => workspace.dispatch({ type: "conversation.pin", id: conversation.id, value: !conversation.pinned })}>{conversation.pinned ? labels.unpinConversation : labels.pinConversation}</button><button disabled={!state.capabilities.conversationState} onClick={() => workspace.dispatch({ type: "conversation.markUnread", id: conversation.id, value: !conversation.forced_unread })}>{conversation.forced_unread ? labels.unmarkUnread : labels.markUnread}</button></div>
       {manageView && <GroupManageModal state={state} conversation={conversation} workspace={workspace} labels={labels} initialView={manageView} onClose={() => setManageView("")} onConfirm={onConfirm} />}
     </aside>
   );

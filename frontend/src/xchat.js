@@ -84,6 +84,83 @@ export function isAppActive(visibilityState, focused) {
   return visibilityState === "visible" && focused;
 }
 
+function graphemes(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return [];
+  if (globalThis.Intl?.Segmenter) {
+    return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)]
+      .map(({ segment }) => segment);
+  }
+  return Array.from(text);
+}
+
+export function avatarText(name, length = 2) {
+  return graphemes(name).slice(-length).join("");
+}
+
+export function groupAvatarCells(members = []) {
+  return members.slice(0, 9).map((member) =>
+    avatarText(member.display_name || member.name || member.peer_id || member.id, 1));
+}
+
+export function groupAvatarRows(members = []) {
+  const cells = groupAvatarCells(members);
+  const columns = cells.length <= 4 ? 2 : 3;
+  const firstRowSize = cells.length % columns || columns;
+  const rows = [cells.slice(0, firstRowSize)];
+  for (let index = firstRowSize; index < cells.length; index += columns) {
+    rows.push(cells.slice(index, index + columns));
+  }
+  return rows.filter((row) => row.length);
+}
+
+export function messageTimeDividerIndices(messages = [], intervalSeconds = 300) {
+  const indices = [];
+  let lastShown = null;
+  messages.forEach((message, index) => {
+    const timestamp = Number(message.timestamp || 0);
+    if (lastShown == null || timestamp - lastShown >= intervalSeconds) {
+      indices.push(index);
+      lastShown = timestamp;
+    }
+  });
+  return indices;
+}
+
+function localDayNumber(date) {
+  return Math.floor(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000);
+}
+
+export function formatMessageTime(timestamp, locale = "zh-CN", now = new Date()) {
+  if (!timestamp) return "";
+  const date = new Date(Number(timestamp) * 1000);
+  const time = new Intl.DateTimeFormat(locale, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+  const dayDifference = localDayNumber(now) - localDayNumber(date);
+  const chinese = String(locale).toLowerCase().startsWith("zh");
+  if (dayDifference === 0) return time;
+  if (dayDifference === 1) return chinese ? `昨天 ${time}` : `Yesterday ${time}`;
+  if (dayDifference > 1 && dayDifference <= 7) {
+    const weekday = new Intl.DateTimeFormat(locale, { weekday: "long" }).format(date);
+    return `${weekday} ${time}`;
+  }
+  if (chinese) {
+    const dateText = date.getFullYear() === now.getFullYear()
+      ? `${date.getMonth() + 1}月${date.getDate()}日`
+      : `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+    return `${dateText} ${time}`;
+  }
+  const dateText = new Intl.DateTimeFormat(locale, {
+    ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+    month: "short",
+    day: "numeric",
+  }).format(date);
+  return `${dateText} ${time}`;
+}
+
 class TransportError extends Error {
   constructor(message, code = "transport_error", status = 0, retryable = true) {
     super(message);
@@ -2112,6 +2189,10 @@ export function createXChatModule() {
           pageSize = 200;
           page = await loadMessages(conversation, pageSize, offset);
           offset += page.length;
+        }
+        if (target && !hasTarget()) {
+          patch({ focusedMessageId: null });
+          addNotice(uiCopy("原消息已不存在", "The original message no longer exists"));
         }
         await markVisibleRead(action.id);
         return;

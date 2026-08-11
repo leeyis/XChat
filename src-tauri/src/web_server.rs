@@ -1863,6 +1863,14 @@ async fn handle_protocol_message(
                 .await?;
             let is_new = existing.is_none();
             let stored = if let Some(stored) = existing {
+                if stored.status.as_deref() == Some("recalled") {
+                    if stored.conversation_id.as_deref() == Some(group_id.as_str())
+                        && stored.sender_id == from_id
+                    {
+                        return Ok(());
+                    }
+                    return Err("client message id conflicts with another message".to_string());
+                }
                 if stored.conversation_id.as_deref() != Some(group_id.as_str())
                     || stored.sender_id != from_id
                     || stored.content != content
@@ -1932,17 +1940,40 @@ async fn handle_protocol_message(
             conversation_id,
             client_message_id,
             from_id,
-            ..
+            timestamp,
         } => {
-            let message = crate::db::get_message_by_client_id(&state.pool, &client_message_id)
-                .await?
-                .ok_or_else(|| "撤回的消息不存在".to_string())?;
-            if message.conversation_id.as_deref() != Some(conversation_id.as_str())
-                || message.sender_id != from_id
+            if let Some(message) =
+                crate::db::get_message_by_client_id(&state.pool, &client_message_id).await?
             {
-                return Err("撤回消息身份不匹配".to_string());
+                if message.conversation_id.as_deref() != Some(conversation_id.as_str())
+                    || message.sender_id != from_id
+                {
+                    return Err("撤回消息身份不匹配".to_string());
+                }
+            } else {
+                let conversation = crate::db::get_conversation(&state.pool, &conversation_id)
+                    .await?
+                    .ok_or_else(|| "会话不存在".to_string())?;
+                let valid_sender = if conversation.kind == "group" {
+                    crate::db::get_conversation_members(&state.pool, &conversation_id)
+                        .await?
+                        .iter()
+                        .any(|member| member.peer_id == from_id)
+                } else {
+                    conversation.peer_id.as_deref() == Some(from_id.as_str())
+                };
+                if !valid_sender {
+                    return Err("撤回消息身份不匹配".to_string());
+                }
             }
-            crate::db::delete_message_by_client_id(&state.pool, &client_message_id).await?;
+            crate::db::store_recalled_tombstone(
+                &state.pool,
+                &conversation_id,
+                &client_message_id,
+                &from_id,
+                wire_i64(timestamp),
+            )
+            .await?;
             broadcast_incoming_event(
                 state,
                 serde_json::json!({
@@ -2033,6 +2064,17 @@ async fn handle_stable_direct_message(
         return Err("稳定单聊会话 ID 与发送者不匹配".to_string());
     }
     crate::db::ensure_direct_conversation(&state.pool, &message.from_id).await?;
+    if let Some(existing) = crate::db::get_message_by_client_id(&state.pool, client_message_id).await?
+    {
+        if existing.status.as_deref() == Some("recalled") {
+            if existing.conversation_id.as_deref() == Some(conversation_id)
+                && existing.sender_id == message.from_id
+            {
+                return Ok(true);
+            }
+            return Err("client message id conflicts with another message".to_string());
+        }
+    }
     let stored = crate::db::save_conversation_message(
         &state.pool,
         conversation_id,

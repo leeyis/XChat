@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  avatarText,
   createXChatModule,
   directConversationId,
   encodeQuoteMessage,
@@ -8,6 +9,8 @@ import {
   fileKind,
   fileStatus,
   groupMentionCandidates,
+  groupAvatarCells,
+  groupAvatarRows,
   HttpWsAdapter,
   insertTextAtSelection,
   isAppActive,
@@ -20,6 +23,8 @@ import {
   matchesShortcut,
   measureTransfers,
   mergeMessages,
+  messageTimeDividerIndices,
+  formatMessageTime,
   mentionQueryAtCaret,
   mentionToken,
   nativeClipboardPaths,
@@ -33,6 +38,42 @@ import {
   shortcutLabelFromEvent,
   TauriAdapter,
 } from "./xchat.js";
+
+test("text avatars use the last two characters and groups use member tail characters", () => {
+  assert.equal(avatarText("张三丰"), "三丰");
+  assert.equal(avatarText("A"), "A");
+  assert.equal(avatarText("👨‍👩‍👧‍👦家庭"), "家庭");
+  assert.deepEqual(
+    groupAvatarCells([
+      { display_name: "张三" },
+      { display_name: "李四" },
+      { display_name: "Alice" },
+      { display_name: "王五" },
+    ]),
+    ["三", "四", "e", "五"],
+  );
+  const members = Array.from({ length: 9 }, (_, index) => ({ name: `成员${index}` }));
+  assert.deepEqual(groupAvatarRows(members.slice(0, 3)).map((row) => row.length), [1, 2]);
+  assert.deepEqual(groupAvatarRows(members.slice(0, 5)).map((row) => row.length), [2, 3]);
+  assert.deepEqual(groupAvatarRows(members.slice(0, 9)).map((row) => row.length), [3, 3, 3]);
+});
+
+test("message time dividers follow the five-minute WeChat-style cadence", () => {
+  const messages = [0, 120, 299, 300, 599, 600, 901].map((timestamp, id) => ({ id, timestamp }));
+  assert.deepEqual(messageTimeDividerIndices(messages), [0, 3, 5, 6]);
+});
+
+test("message time labels distinguish today, yesterday, weekdays, dates, and years", () => {
+  const stamp = (year, month, day, hour, minute) =>
+    Math.floor(new Date(year, month - 1, day, hour, minute).getTime() / 1000);
+  const now = new Date(2026, 7, 11, 12, 0);
+
+  assert.equal(formatMessageTime(stamp(2026, 8, 11, 9, 37), "zh-CN", now), "09:37");
+  assert.equal(formatMessageTime(stamp(2026, 8, 10, 9, 37), "zh-CN", now), "昨天 09:37");
+  assert.equal(formatMessageTime(stamp(2026, 8, 8, 9, 37), "zh-CN", now), "星期六 09:37");
+  assert.equal(formatMessageTime(stamp(2026, 7, 20, 9, 37), "zh-CN", now), "7月20日 09:37");
+  assert.equal(formatMessageTime(stamp(2025, 12, 31, 9, 37), "zh-CN", now), "2025年12月31日 09:37");
+});
 
 test("copyable message classification only allows text and image content", () => {
   assert.equal(isTextFile({ file_name: "notes.md" }), true);

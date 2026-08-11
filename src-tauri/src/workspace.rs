@@ -395,6 +395,7 @@ async fn conversation_view(
          WHERE conversation_id = ?
            AND sender_id NOT IN ('me', ?)
            AND client_message_id IS NOT NULL
+           AND COALESCE(status, '') != 'recalled'
            AND COALESCE(status, 'received') != 'read'",
     )
     .bind(&record.id)
@@ -801,6 +802,7 @@ pub async fn recall_message(
             .await?
             .into_iter()
             .map(|member| member.peer_id)
+            .filter(|peer_id| peer_id != &self_id)
             .collect::<Vec<_>>()
     } else {
         vec![conversation
@@ -811,15 +813,28 @@ pub async fn recall_message(
     let recall = ProtocolMessage::MessageRecall {
         conversation_id: conversation_id.to_string(),
         client_message_id: client_message_id.to_string(),
-        from_id: self_id,
+        from_id: self_id.clone(),
         timestamp: now() as u64,
     };
+    db::recall_message_for_recipients(
+        pool,
+        conversation_id,
+        client_message_id,
+        &self_id,
+        &recipients,
+    )
+    .await?;
     for recipient in recipients {
         if let Some(peer) = peers.get(&recipient).filter(|peer| !peer.is_offline) {
-            let _ = crate::network::protocol::send_protocol_message(&peer.addr, &recall).await;
+            if crate::network::protocol::send_protocol_message(&peer.addr, &recall)
+                .await
+                .is_ok()
+            {
+                db::mark_recall_sent(pool, client_message_id, &recipient).await?;
+            }
         }
     }
-    db::delete_message_by_client_id(pool, client_message_id).await
+    Ok(())
 }
 
 pub async fn send_message(
@@ -1154,6 +1169,19 @@ pub async fn resend_for_peer(
             &group_sync_message(&group, &members),
         )
         .await?;
+    }
+    for pending in db::get_pending_recalls_for_peer(pool, peer_id).await? {
+        crate::network::protocol::send_protocol_message(
+            peer_addr,
+            &ProtocolMessage::MessageRecall {
+                conversation_id: pending.conversation_id,
+                client_message_id: pending.message_client_id.clone(),
+                from_id: pending.sender_id,
+                timestamp: pending.recall_requested_at.max(0) as u64,
+            },
+        )
+        .await?;
+        db::mark_recall_sent(pool, &pending.message_client_id, peer_id).await?;
     }
     for receipt in db::get_pending_receipts_for_peer(pool, peer_id).await? {
         if receipt.delivered_at.is_some() && receipt.delivery_ack_sent_at.is_none() {
@@ -1674,6 +1702,159 @@ mod tests {
             .filter(|receipt| receipt.mentioned)
             .count();
         assert_eq!(mentioned, 1);
+
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn offline_recall_keeps_a_hidden_tombstone_instead_of_losing_retry_state() {
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-recall-test-{}", uuid::Uuid::new_v4()));
+        let pool = db::init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        let conversation = db::ensure_direct_conversation(&pool, "peer-offline")
+            .await
+            .unwrap();
+        let peers = PeerManager::new();
+
+        send_message(
+            &pool,
+            &peers,
+            &conversation.id,
+            "recall-offline-1",
+            "withdraw me",
+            "text",
+            vec![],
+        )
+        .await
+        .unwrap();
+        recall_message(
+            &pool,
+            &peers,
+            &conversation.id,
+            "recall-offline-1",
+        )
+        .await
+        .unwrap();
+
+        let tombstone = db::get_message_by_client_id(&pool, "recall-offline-1")
+            .await
+            .unwrap()
+            .expect("offline recall must survive for retry");
+        assert_eq!(tombstone.status.as_deref(), Some("recalled"));
+        let pending = db::get_pending_recalls_for_peer(&pool, "peer-offline")
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].message_client_id, "recall-offline-1");
+        assert!(db::get_conversation_messages(&pool, &conversation.id, 40, 0)
+            .await
+            .unwrap()
+            .is_empty());
+
+        db::store_recalled_tombstone(
+            &pool,
+            &conversation.id,
+            "late-message-1",
+            "peer-offline",
+            42,
+        )
+        .await
+        .unwrap();
+        let late = db::save_conversation_message(
+            &pool,
+            &conversation.id,
+            "peer-offline",
+            None,
+            "must stay hidden",
+            "text",
+            43,
+            "delivered",
+            "late-message-1",
+        )
+        .await
+        .unwrap();
+        assert_eq!(late.status.as_deref(), Some("recalled"));
+        assert!(late.content.is_empty());
+        assert!(db::get_undelivered_messages_for_peer(&pool, "peer-offline")
+            .await
+            .unwrap()
+            .is_empty());
+
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn group_recall_tracks_each_offline_member() {
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-group-recall-test-{}", uuid::Uuid::new_v4()));
+        let pool = db::init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        let self_id = db::get_user_id(&pool).await.unwrap();
+        db::create_group_conversation(
+            &pool,
+            Some("group-recall-test"),
+            "Test",
+            &self_id,
+            &[
+                NewConversationMember {
+                    peer_id: self_id.clone(),
+                    display_name: "Me".into(),
+                    role: "owner".into(),
+                },
+                NewConversationMember {
+                    peer_id: "peer-a".into(),
+                    display_name: "Peer A".into(),
+                    role: "member".into(),
+                },
+                NewConversationMember {
+                    peer_id: "peer-b".into(),
+                    display_name: "Peer B".into(),
+                    role: "member".into(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        let peers = PeerManager::new();
+        send_message(
+            &pool,
+            &peers,
+            "group-recall-test",
+            "group-recall-1",
+            "withdraw from everyone",
+            "text",
+            vec![],
+        )
+        .await
+        .unwrap();
+        recall_message(
+            &pool,
+            &peers,
+            "group-recall-test",
+            "group-recall-1",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            db::get_pending_recalls_for_peer(&pool, "peer-a")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            db::get_pending_recalls_for_peer(&pool, "peer-b")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(db::get_pending_recalls_for_peer(&pool, &self_id)
+            .await
+            .unwrap()
+            .is_empty());
 
         pool.close().await;
         std::fs::remove_dir_all(app_dir).unwrap();
