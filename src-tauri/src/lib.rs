@@ -87,6 +87,10 @@ pub fn run() {
             commands::get_workspace_snapshot,
             commands::update_workspace_preference,
             commands::create_group,
+            commands::update_group,
+            commands::recall_conversation_message,
+            commands::forward_conversation_message,
+            commands::save_conversation_file_as,
             commands::send_conversation_message,
             commands::send_conversation_file,
             commands::retry_conversation_file,
@@ -117,6 +121,8 @@ pub fn run() {
             commands::stage_image_attachment,
             commands::discard_staged_attachment,
             commands::read_workspace_media,
+            commands::pick_workspace_directory,
+            commands::copy_file_message_content,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

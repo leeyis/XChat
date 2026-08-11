@@ -103,6 +103,10 @@ fn main() {
             lanchat::commands::get_workspace_snapshot,
             lanchat::commands::update_workspace_preference,
             lanchat::commands::create_group,
+            lanchat::commands::update_group,
+            lanchat::commands::recall_conversation_message,
+            lanchat::commands::forward_conversation_message,
+            lanchat::commands::save_conversation_file_as,
             lanchat::commands::send_conversation_message,
             lanchat::commands::send_conversation_file,
             lanchat::commands::retry_conversation_file,
@@ -133,6 +137,8 @@ fn main() {
             lanchat::commands::stage_image_attachment,
             lanchat::commands::discard_staged_attachment,
             lanchat::commands::read_workspace_media,
+            lanchat::commands::pick_workspace_directory,
+            lanchat::commands::copy_file_message_content,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

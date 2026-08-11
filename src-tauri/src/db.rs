@@ -1431,6 +1431,56 @@ pub async fn delete_user_and_history(
     Ok(())
 }
 
+pub async fn delete_message_by_client_id(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    client_message_id: &str,
+) -> Result<(), String> {
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|e| format!("开始删除消息失败: {e}"))?;
+    sqlx::query("DELETE FROM message_receipts WHERE message_client_id = ?")
+        .bind(client_message_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| format!("删除消息回执失败: {e}"))?;
+    sqlx::query("DELETE FROM messages WHERE client_message_id = ?")
+        .bind(client_message_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| format!("删除消息失败: {e}"))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|e| format!("提交删除消息失败: {e}"))
+}
+
+pub async fn delete_conversation(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    conversation_id: &str,
+) -> Result<(), String> {
+    clear_conversation_messages(pool, conversation_id).await?;
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|e| format!("开始删除群聊失败: {e}"))?;
+    for (table, column) in [
+        ("transfers", "conversation_id"),
+        ("conversation_members", "conversation_id"),
+        ("conversations", "id"),
+    ] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE {column} = ?"))
+        .bind(conversation_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| format!("删除群聊失败: {e}"))?;
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|e| format!("提交删除群聊失败: {e}"))
+}
+
 // ── 自定义 IP ──
 
 const CUSTOM_PEER_KEY_PREFIX: &str = "custom_peer_";
@@ -2224,6 +2274,22 @@ pub async fn get_message_by_client_id(
     .fetch_optional(pool)
     .await
     .map_err(|e| format!("按稳定 ID 查询消息失败: {}", e))
+}
+
+pub async fn get_message_by_id(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    message_id: i64,
+) -> Result<Option<MessageRecord>, String> {
+    sqlx::query_as::<_, MessageRecord>(
+        "SELECT id, sender_id, receiver_id, content, msg_type, timestamp, file_path,
+                file_status, file_size, sender_msg_id, status, conversation_id,
+                client_message_id
+         FROM messages WHERE id = ?",
+    )
+    .bind(message_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("按 ID 查询消息失败: {}", e))
 }
 
 pub async fn mark_message_status_by_client_id(

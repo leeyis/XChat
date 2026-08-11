@@ -107,6 +107,7 @@ pub struct WorkspaceConversation {
     pub kind: String,
     pub peer_id: Option<String>,
     pub title: String,
+    pub created_by: Option<String>,
     pub pinned: bool,
     pub forced_unread: bool,
     pub draft: String,
@@ -413,6 +414,7 @@ async fn conversation_view(
         kind: record.kind,
         peer_id: record.peer_id,
         title,
+        created_by: record.created_by,
         pinned: record.pinned,
         forced_unread: record.forced_unread,
         draft: record.draft,
@@ -589,13 +591,26 @@ pub async fn send_group_sync(
 ) -> Result<(), String> {
     let members = db::get_conversation_members(pool, &conversation.id).await?;
     let sync = group_sync_message(conversation, &members);
+    let recipients = members
+        .iter()
+        .map(|member| member.peer_id.clone())
+        .collect();
+    send_group_sync_to(pool, peer_manager, sync, recipients).await
+}
+
+async fn send_group_sync_to(
+    pool: &Pool<Sqlite>,
+    peer_manager: &PeerManager,
+    sync: ProtocolMessage,
+    recipients: BTreeSet<String>,
+) -> Result<(), String> {
     let self_id = db::get_user_id(pool).await?;
     let peers = peer_map(peer_manager);
-    for member in members {
-        let Some(peer) = peers.get(&member.peer_id) else {
+    for peer_id in recipients {
+        let Some(peer) = peers.get(&peer_id) else {
             continue;
         };
-        if member.peer_id == self_id || peer.is_offline {
+        if peer_id == self_id || peer.is_offline {
             continue;
         }
         let addr = peer.addr.clone();
@@ -608,6 +623,203 @@ pub async fn send_group_sync(
         });
     }
     Ok(())
+}
+
+pub async fn update_group(
+    pool: &Pool<Sqlite>,
+    peer_manager: &PeerManager,
+    conversation_id: &str,
+    operation: &str,
+    value: Option<String>,
+    member_ids: Vec<String>,
+) -> Result<Option<ConversationRecord>, String> {
+    let conversation = db::get_conversation(pool, conversation_id)
+        .await?
+        .filter(|conversation| conversation.kind == "group")
+        .ok_or_else(|| "群聊不存在".to_string())?;
+    let self_id = db::get_user_id(pool).await?;
+    let old_members = db::get_conversation_members(pool, conversation_id).await?;
+    let my_role = old_members
+        .iter()
+        .find(|member| member.peer_id == self_id)
+        .map(|member| member.role.as_str())
+        .ok_or_else(|| "你不是群成员".to_string())?;
+    let owner = my_role == "owner";
+    let manager = owner || my_role == "admin";
+    if matches!(
+        operation,
+        "rename" | "set_admin" | "remove_admin" | "disband"
+    ) && !owner
+    {
+        return Err("仅群主可执行此操作".to_string());
+    }
+    if matches!(operation, "add_members" | "remove_members" | "announcement") && !manager {
+        return Err("仅群主或群管理员可执行此操作".to_string());
+    }
+    if operation == "announcement" {
+        let content = value.unwrap_or_default();
+        if content.trim().is_empty() || content.chars().count() > 2000 {
+            return Err("群公告需要 1–2000 个字符".to_string());
+        }
+        send_message(
+            pool,
+            peer_manager,
+            conversation_id,
+            &uuid::Uuid::new_v4().to_string(),
+            content.trim(),
+            "announcement",
+            vec![],
+        )
+        .await?;
+        return Ok(Some(conversation));
+    }
+
+    let previous_recipients = old_members
+        .iter()
+        .map(|member| member.peer_id.clone())
+        .collect::<BTreeSet<_>>();
+    if operation == "disband" {
+        let sync = ProtocolMessage::GroupSync {
+            group_id: conversation.id.clone(),
+            title: conversation.title.clone().unwrap_or_default(),
+            created_by: conversation.created_by.clone().unwrap_or_default(),
+            members: vec![],
+            version: (conversation.version + 1) as u64,
+            timestamp: now() as u64,
+        };
+        send_group_sync_to(pool, peer_manager, sync, previous_recipients).await?;
+        db::delete_conversation(pool, conversation_id).await?;
+        return Ok(None);
+    }
+
+    let requested = member_ids
+        .into_iter()
+        .filter(|id| !id.trim().is_empty())
+        .collect::<BTreeSet<_>>();
+    let peers = peer_map(peer_manager);
+    let mut members = old_members
+        .into_iter()
+        .map(|member| NewConversationMember {
+            peer_id: member.peer_id,
+            display_name: member.display_name,
+            role: member.role,
+        })
+        .collect::<Vec<_>>();
+    match operation {
+        "rename" => {
+            let title = value.as_deref().unwrap_or_default();
+            if title.trim().is_empty() || title.chars().count() > 80 {
+                return Err("群名称需要 1–80 个字符".to_string());
+            }
+        }
+        "add_members" => {
+            for id in &requested {
+                if members.iter().any(|member| &member.peer_id == id) {
+                    continue;
+                }
+                let peer = peers.get(id).ok_or_else(|| format!("找不到设备 {id}"))?;
+                if !peer
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == "group_chat")
+                {
+                    return Err(format!("设备 {} 不支持群聊协议", peer.name));
+                }
+                members.push(NewConversationMember {
+                    peer_id: id.clone(),
+                    display_name: peer.name.clone(),
+                    role: "member".to_string(),
+                });
+            }
+        }
+        "remove_members" => members.retain(|member| {
+            !requested.contains(&member.peer_id)
+                || member.role == "owner"
+                || (!owner && member.role == "admin")
+        }),
+        "set_admin" | "remove_admin" => {
+            for member in &mut members {
+                if requested.contains(&member.peer_id) && member.role != "owner" {
+                    member.role = if operation == "set_admin" {
+                        "admin"
+                    } else {
+                        "member"
+                    }
+                    .to_string();
+                }
+            }
+        }
+        _ => return Err("未知的群聊操作".to_string()),
+    }
+    let title = if operation == "rename" {
+        value.unwrap_or_default().trim().to_string()
+    } else {
+        conversation.title.clone().unwrap_or_default()
+    };
+    let updated = db::apply_group_sync(
+        pool,
+        conversation_id,
+        &title,
+        conversation.created_by.as_deref().unwrap_or_default(),
+        conversation.version + 1,
+        &members,
+    )
+    .await?;
+    let current_members = db::get_conversation_members(pool, conversation_id).await?;
+    let recipients = previous_recipients
+        .into_iter()
+        .chain(current_members.iter().map(|member| member.peer_id.clone()))
+        .collect();
+    send_group_sync_to(
+        pool,
+        peer_manager,
+        group_sync_message(&updated, &current_members),
+        recipients,
+    )
+    .await?;
+    Ok(Some(updated))
+}
+
+pub async fn recall_message(
+    pool: &Pool<Sqlite>,
+    peer_manager: &PeerManager,
+    conversation_id: &str,
+    client_message_id: &str,
+) -> Result<(), String> {
+    let message = db::get_message_by_client_id(pool, client_message_id)
+        .await?
+        .ok_or_else(|| "消息不存在".to_string())?;
+    let self_id = db::get_user_id(pool).await?;
+    if message.conversation_id.as_deref() != Some(conversation_id) || message.sender_id != self_id {
+        return Err("只能撤回自己发送的消息".to_string());
+    }
+    let conversation = db::get_conversation(pool, conversation_id)
+        .await?
+        .ok_or_else(|| "会话不存在".to_string())?;
+    let recipients = if conversation.kind == "group" {
+        db::get_conversation_members(pool, conversation_id)
+            .await?
+            .into_iter()
+            .map(|member| member.peer_id)
+            .collect::<Vec<_>>()
+    } else {
+        vec![conversation
+            .peer_id
+            .ok_or_else(|| "会话缺少接收方".to_string())?]
+    };
+    let peers = peer_map(peer_manager);
+    let recall = ProtocolMessage::MessageRecall {
+        conversation_id: conversation_id.to_string(),
+        client_message_id: client_message_id.to_string(),
+        from_id: self_id,
+        timestamp: now() as u64,
+    };
+    for recipient in recipients {
+        if let Some(peer) = peers.get(&recipient).filter(|peer| !peer.is_offline) {
+            let _ = crate::network::protocol::send_protocol_message(&peer.addr, &recall).await;
+        }
+    }
+    db::delete_message_by_client_id(pool, client_message_id).await
 }
 
 pub async fn send_message(
@@ -623,8 +835,8 @@ pub async fn send_message(
     if content.is_empty() || content.len() > 64 * 1024 {
         return Err("消息内容不能为空且不能超过 64 KiB".to_string());
     }
-    if msg_type != "text" {
-        return Err("此接口只接受文本消息".to_string());
+    if !matches!(msg_type, "text" | "quote" | "announcement") {
+        return Err("不支持的消息类型".to_string());
     }
     if client_message_id.trim().is_empty() || client_message_id.len() > 128 {
         return Err("无效的客户端消息 ID".to_string());
@@ -729,6 +941,7 @@ pub async fn send_message(
             let conversation_id = conversation_id.to_string();
             let client_message_id = client_message_id.to_string();
             let content = content.to_string();
+            let msg_type = msg_type.to_string();
             let sender_id = self_id.clone();
             let sender_name = self_name.clone();
             tokio::spawn(async move {
@@ -739,6 +952,7 @@ pub async fn send_message(
                     conversation_id,
                     client_message_id,
                     content,
+                    msg_type,
                 )
                 .await
                 {
@@ -750,6 +964,67 @@ pub async fn send_message(
 
     let (names, addresses) = names_and_addresses(pool, peer_manager, &self_id, &self_name).await?;
     message_view(pool, message, &self_id, &names, &addresses).await
+}
+
+pub async fn forward_message(
+    pool: &Pool<Sqlite>,
+    peer_manager: &PeerManager,
+    source_message_id: i64,
+    conversation_ids: Vec<String>,
+    note: Option<String>,
+) -> Result<(), String> {
+    let source = db::get_message_by_id(pool, source_message_id)
+        .await?
+        .ok_or_else(|| "消息不存在".to_string())?;
+    let targets = conversation_ids
+        .into_iter()
+        .filter(|id| !id.trim().is_empty())
+        .collect::<BTreeSet<_>>();
+    if targets.is_empty() || targets.len() > 100 {
+        return Err("请选择 1–100 个转发对象".to_string());
+    }
+    let note = note.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+    for conversation_id in targets {
+        if source.msg_type == "file" {
+            let path = source
+                .file_path
+                .as_deref()
+                .ok_or_else(|| "原文件已不存在，无法转发".to_string())?;
+            crate::network::conversation_file::send_path(
+                pool,
+                peer_manager,
+                &conversation_id,
+                path,
+            )
+            .await?;
+        } else if matches!(source.msg_type.as_str(), "text" | "quote" | "announcement") {
+            send_message(
+                pool,
+                peer_manager,
+                &conversation_id,
+                &uuid::Uuid::new_v4().to_string(),
+                &source.content,
+                &source.msg_type,
+                vec![],
+            )
+            .await?;
+        } else {
+            return Err("此消息类型暂不支持转发".to_string());
+        }
+        if let Some(note) = note.as_deref() {
+            send_message(
+                pool,
+                peer_manager,
+                &conversation_id,
+                &uuid::Uuid::new_v4().to_string(),
+                note,
+                "text",
+                vec![],
+            )
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 pub async fn get_messages(
@@ -948,6 +1223,7 @@ pub async fn resend_for_peer(
                 conversation_id,
                 client_message_id,
                 message.content,
+                message.msg_type,
             )
             .await?;
         }
@@ -1269,6 +1545,28 @@ mod tests {
             value.get("captureShortcut"),
             "the shortcut is only exposed when capture is real"
         );
+    }
+
+    #[test]
+    fn conversation_snapshot_serializes_the_group_creator() {
+        let conversation = WorkspaceConversation {
+            id: "group-1".into(),
+            kind: "group".into(),
+            peer_id: None,
+            title: "Test group".into(),
+            created_by: Some("self-device".into()),
+            pinned: false,
+            forced_unread: false,
+            draft: String::new(),
+            unread_count: 0,
+            last_message: String::new(),
+            last_message_at: 0,
+            members: vec![],
+            version: 1,
+        };
+
+        let value = serde_json::to_value(conversation).unwrap();
+        assert_eq!(value.get("created_by").and_then(|item| item.as_str()), Some("self-device"));
     }
 
     #[tokio::test]
