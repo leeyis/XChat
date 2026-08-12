@@ -97,8 +97,22 @@ test("message actions stay compact and anchored to the message body", async () =
   );
   assert.match(
     css,
-    /\.message-body-line\s*\{[^}]*align-items:\s*flex-end;[^}]*gap:\s*8px;/s,
+    /\.message-body-line\s*\{[^}]*position:\s*relative;[^}]*align-items:\s*flex-end;[^}]*gap:\s*8px;/s,
   );
+  assert.match(
+    css,
+    /\.message-body-content\s*\{[^}]*max-width:\s*100%;/s,
+  );
+  assert.match(
+    css,
+    /\.message-quick-actions\s*\{[^}]*position:\s*absolute;[^}]*bottom:\s*0;[^}]*left:\s*calc\(100% \+ 8px\);/s,
+  );
+  assert.match(
+    css,
+    /\.message\.sent \.message-quick-actions\s*\{[^}]*right:\s*calc\(100% \+ 8px\);[^}]*left:\s*auto;/s,
+  );
+  assert.match(css, /\.message-stack\s*\{[^}]*max-width:\s*65%;/s);
+  assert.doesNotMatch(css, /max-width:\s*calc\(100% - 103px\)/);
   assert.match(
     css,
     /\.message-quick-actions button\s*\{[^}]*width:\s*31px;[^}]*height:\s*30px;/s,

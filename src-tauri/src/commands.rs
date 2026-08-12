@@ -2444,22 +2444,51 @@ pub fn show_strong_reminder(
     from_name: String,
     summary: String,
 ) -> Result<(), String> {
+    show_strong_reminder_window(
+        &app,
+        &conversation_id,
+        &client_message_id,
+        &from_name,
+        &summary,
+    )
+}
+
+pub fn show_strong_reminder_window<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    conversation_id: &str,
+    client_message_id: &str,
+    from_name: &str,
+    summary: &str,
+) -> Result<(), String> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
-        if let Some(existing) = app.get_webview_window("strong-reminder") {
-            let _ = existing.close();
-        }
-        let url = format!(
-            "index.html?view=strong-reminder&conversation_id={}&client_message_id={}&from_name={}&summary={}",
-            urlencoding::encode(&conversation_id),
-            urlencoding::encode(&client_message_id),
-            urlencoding::encode(&from_name),
-            urlencoding::encode(&summary),
+        let url = strong_reminder_url(
+            conversation_id,
+            client_message_id,
+            from_name,
+            summary,
         );
+        if let Some(existing) = app.get_webview_window("strong-reminder") {
+            let target = existing
+                .url()
+                .and_then(|current| {
+                    current
+                        .join(&url)
+                        .map_err(|error| tauri::Error::InvalidUrl(error))
+                })
+                .map_err(|error| format!("resolve strong reminder URL: {error}"))?;
+            existing
+                .navigate(target)
+                .map_err(|error| format!("update strong reminder: {error}"))?;
+            existing
+                .show()
+                .map_err(|error| format!("show strong reminder: {error}"))?;
+            return Ok(());
+        }
         let window = WebviewWindowBuilder::new(
-            &app,
+            app,
             "strong-reminder",
             WebviewUrl::App(url.into()),
         )
@@ -2504,13 +2533,27 @@ pub fn show_strong_reminder(
     }
 }
 
+fn strong_reminder_url(
+    conversation_id: &str,
+    client_message_id: &str,
+    from_name: &str,
+    summary: &str,
+) -> String {
+    format!(
+        "index.html?view=strong-reminder&conversation_id={}&client_message_id={}&from_name={}&summary={}",
+        urlencoding::encode(conversation_id),
+        urlencoding::encode(client_message_id),
+        urlencoding::encode(from_name),
+        urlencoding::encode(summary),
+    )
+}
+
 #[tauri::command]
 pub fn open_strong_reminder(
     app: AppHandle,
     conversation_id: String,
     client_message_id: String,
 ) -> Result<(), String> {
-    use tauri::Manager;
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.show();
         let _ = main.unminimize();
@@ -2761,7 +2804,7 @@ pub async fn reveal_workspace_file(
 mod desktop_attention_tests {
     use super::{
         begin_attention_generation, end_attention_generation, lock_active_generation, AtomicU64,
-        Mutex, Ordering, ICON_ALERT, ICON_NORMAL,
+        strong_reminder_url, Mutex, Ordering, ICON_ALERT, ICON_NORMAL,
     };
     use tauri::image::Image;
 
@@ -2805,4 +2848,16 @@ mod desktop_attention_tests {
         assert_ne!(first, second);
         assert_eq!(generation.load(Ordering::Acquire), second);
     }
+
+    #[test]
+    fn strong_reminder_window_url_preserves_message_identity_and_text() {
+        let url = strong_reminder_url("direct:a&b", "message/1", "张 三", "查看?现在");
+
+        assert!(url.starts_with("index.html?view=strong-reminder&"));
+        assert!(url.contains("conversation_id=direct%3Aa%26b"));
+        assert!(url.contains("client_message_id=message%2F1"));
+        assert!(url.contains("from_name=%E5%BC%A0%20%E4%B8%89"));
+        assert!(url.contains("summary=%E6%9F%A5%E7%9C%8B%3F%E7%8E%B0%E5%9C%A8"));
+    }
+
 }

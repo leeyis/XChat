@@ -77,6 +77,17 @@ pub struct AppState {
 
 type ApiResponse = axum::response::Response;
 const MAX_BROWSER_UPLOAD_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+async fn cleanup_persisted_control_messages(pool: &Pool<Sqlite>) -> Result<u64, String> {
+    sqlx::query(
+        "DELETE FROM messages
+         WHERE msg_type IN ('message_reaction', 'strong_reminder')",
+    )
+    .execute(pool)
+    .await
+    .map(|result| result.rows_affected())
+    .map_err(|error| error.to_string())
+}
 const MAX_PEER_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const MAX_UPLOAD_REQUEST_BYTES: usize = 5 * 1024 * 1024;
 const WEB_OUTBOX_DIRECTORY: &str = ".xchat-outbox";
@@ -237,6 +248,14 @@ pub async fn start_server(
 ) {
     let media_token = uuid::Uuid::new_v4().to_string();
     println!("[Web Server] 媒体访问 Token: {}", media_token);
+
+    match cleanup_persisted_control_messages(&pool).await {
+        Ok(removed) if removed > 0 => {
+            println!("[Web Server] 已清理 {} 条误存的消息控制记录", removed);
+        }
+        Ok(_) => {}
+        Err(error) => eprintln!("[Web Server] 清理误存消息控制记录失败: {error}"),
+    }
 
     // 将 token 存入全局，供 Tauri command 读取（仅 Android）
     #[cfg(target_os = "android")]
@@ -1668,6 +1687,25 @@ fn broadcast_incoming_event(state: &AppState, value: serde_json::Value) {
     #[cfg(feature = "desktop")]
     if let Some(ref app) = state.app_handle {
         use tauri::Emitter;
+        if value.get("msg_type").and_then(serde_json::Value::as_str)
+            == Some("strong_reminder")
+        {
+            let field = |name| {
+                value
+                    .get(name)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+            };
+            if let Err(error) = crate::commands::show_strong_reminder_window(
+                app,
+                field("conversation_id"),
+                field("client_message_id"),
+                field("from_name"),
+                field("summary"),
+            ) {
+                eprintln!("[StrongReminder] 无法显示提醒卡片: {error}");
+            }
+        }
         let _ = app.emit("new-message", value);
     }
 }
@@ -2274,6 +2312,19 @@ async fn handle_stable_direct_message(
     Ok(true)
 }
 
+fn should_handle_as_stable_direct_message(
+    value: &serde_json::Value,
+    msg_type: &str,
+) -> bool {
+    if matches!(msg_type, "message_reaction" | "strong_reminder") {
+        return true;
+    }
+
+    matches!(msg_type, "text" | "quote" | "announcement")
+        && (value.get("conversation_id").is_some()
+            || value.get("client_message_id").is_some())
+}
+
 // 处理 WebSocket 连接
 async fn handle_websocket(socket: WebSocket, state: Arc<AppState>) {
     let (mut sender, mut receiver) = socket.split();
@@ -2336,10 +2387,7 @@ async fn handle_websocket(socket: WebSocket, state: Arc<AppState>) {
                             .unwrap_or("text")
                             .to_string();
 
-                        if msg_type == "text"
-                            && (val.get("conversation_id").is_some()
-                                || val.get("client_message_id").is_some())
-                        {
+                        if should_handle_as_stable_direct_message(&val, &msg_type) {
                             match serde_json::from_value::<crate::network::messaging::TextMessage>(
                                 val.clone(),
                             ) {
@@ -5646,8 +5694,76 @@ pub fn get_media_token() -> String {
 #[cfg(test)]
 mod websocket_protocol_tests {
     use super::*;
-    use axum::extract::FromRequest;
     use crate::network::protocol::{GroupMember, ProtocolMessage};
+    use axum::extract::FromRequest;
+
+    #[test]
+    fn direct_controls_and_stable_messages_never_fall_back_to_legacy_storage() {
+        assert!(should_handle_as_stable_direct_message(
+            &serde_json::json!({"msg_type": "strong_reminder"}),
+            "strong_reminder",
+        ));
+        assert!(should_handle_as_stable_direct_message(
+            &serde_json::json!({"msg_type": "message_reaction"}),
+            "message_reaction",
+        ));
+        assert!(should_handle_as_stable_direct_message(
+            &serde_json::json!({
+                "msg_type": "quote",
+                "conversation_id": "direct:a:b",
+                "client_message_id": "quote-1",
+            }),
+            "quote",
+        ));
+        assert!(!should_handle_as_stable_direct_message(
+            &serde_json::json!({"msg_type": "text"}),
+            "text",
+        ));
+        assert!(!should_handle_as_stable_direct_message(
+            &serde_json::json!({
+                "msg_type": "file",
+                "conversation_id": "direct:a:b",
+                "client_message_id": "file-1",
+            }),
+            "file",
+        ));
+    }
+
+    #[tokio::test]
+    async fn startup_cleanup_removes_only_persisted_control_packets() {
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-control-cleanup-{}", uuid::Uuid::new_v4()));
+        let pool = crate::db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        for (msg_type, content) in [
+            ("strong_reminder", r#"{"summary":"请查看"}"#),
+            ("message_reaction", r#"{"emoji":"😂"}"#),
+            ("text", "正常消息"),
+        ] {
+            sqlx::query(
+                "INSERT INTO messages (sender_id, content, msg_type, timestamp)
+                 VALUES ('peer-a', ?, ?, 1)",
+            )
+            .bind(content)
+            .bind(msg_type)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(cleanup_persisted_control_messages(&pool).await.unwrap(), 2);
+        let remaining = sqlx::query_scalar::<_, String>(
+            "SELECT msg_type FROM messages ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, vec!["text"]);
+
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
 
     #[tokio::test]
     async fn duplicate_group_message_keeps_first_mentions_without_rebroadcasting() {

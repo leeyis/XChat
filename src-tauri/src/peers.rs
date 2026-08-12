@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const PEER_OFFLINE_TIMEOUT_SECS: u64 = 30;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Peer {
     pub id: String, // UUID
@@ -206,12 +208,16 @@ impl PeerManager {
             .unwrap()
             .as_secs();
 
+        self.mark_stale_as_offline_at(now);
+    }
+
+    fn mark_stale_as_offline_at(&self, now: u64) {
         let mut peers = self.peers.write().unwrap();
 
-        // 标记超过 5 秒未见的用户为离线
+        // 局域网广播会受休眠、调度和 Wi-Fi 抖动影响；给 2 秒心跳留出足够余量。
         for peer in peers.values_mut() {
-            let time_since_seen = now - peer.last_seen;
-            if time_since_seen > 5 && !peer.is_offline {
+            let time_since_seen = now.saturating_sub(peer.last_seen);
+            if time_since_seen > PEER_OFFLINE_TIMEOUT_SECS && !peer.is_offline {
                 println!(
                     "[PeerManager] 用户离线: {} ({}) - {}秒未见",
                     peer.name, peer.id, time_since_seen
@@ -341,5 +347,27 @@ mod tests {
 
         let peer = manager.get_all_peers().pop().unwrap();
         assert!(peer.capabilities.is_empty());
+    }
+
+    #[test]
+    fn heartbeat_jitter_does_not_flap_peer_online_state() {
+        let manager = PeerManager::new();
+        manager.add_or_update("peer-1".into(), "Alice".into(), "127.0.0.1:8888".into());
+        {
+            let mut peers = manager.peers.write().unwrap();
+            peers.get_mut("peer-1").unwrap().last_seen = 1_000;
+        }
+
+        manager.mark_stale_as_offline_at(1_017);
+        assert!(!manager.peers.read().unwrap()["peer-1"].is_offline);
+
+        manager.mark_stale_as_offline_at(1_030);
+        assert!(!manager.peers.read().unwrap()["peer-1"].is_offline);
+
+        manager.mark_stale_as_offline_at(999);
+        assert!(!manager.peers.read().unwrap()["peer-1"].is_offline);
+
+        manager.mark_stale_as_offline_at(1_031);
+        assert!(manager.peers.read().unwrap()["peer-1"].is_offline);
     }
 }

@@ -805,6 +805,7 @@ time,
 }
 
 .message-body-line {
+  position: relative;
   display: flex;
   width: max-content;
   max-width: 100%;
@@ -819,7 +820,7 @@ time,
 .message-body-content {
   display: flex;
   width: max-content;
-  max-width: calc(100% - 103px);
+  max-width: 100%;
   flex: 0 1 auto;
   flex-direction: column;
 }
@@ -833,9 +834,10 @@ time,
 }
 
 .message-quick-actions {
+  position: absolute;
+  bottom: 0;
+  left: calc(100% + 8px);
   display: flex;
-  align-self: flex-end;
-  flex: 0 0 auto;
   overflow: hidden;
   border: 1px solid color-mix(in oklch, var(--fg) 8%, var(--border));
   border-radius: 8px;
@@ -845,6 +847,11 @@ time,
   transform: translateY(2px);
   transition: opacity 120ms var(--ease-out), transform 120ms var(--ease-out);
   pointer-events: none;
+}
+
+.message.sent .message-quick-actions {
+  right: calc(100% + 8px);
+  left: auto;
 }
 
 .message-body-line:hover .message-quick-actions,
@@ -880,7 +887,7 @@ time,
 
 .message-stack {
   display: flex;
-  max-width: calc(65% + 103px);
+  max-width: 65%;
   flex-direction: column;
 }
 
