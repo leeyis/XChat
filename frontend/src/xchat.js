@@ -860,6 +860,25 @@ function normalizeWorkspace(raw, previous, runtime) {
   };
 }
 
+export function markConversationReadState(previous, conversationId, messageIds = []) {
+  const marked = new Set(messageIds);
+  return {
+    conversations: previous.conversations.map((conversation) =>
+      conversation.id === conversationId
+        ? { ...conversation, unread_count: 0, forced_unread: false }
+        : conversation,
+    ),
+    messagesByConversation: {
+      ...previous.messagesByConversation,
+      [conversationId]: (previous.messagesByConversation[conversationId] ?? []).map((message) =>
+        marked.has(message.client_message_id)
+          ? { ...message, status: "read" }
+          : message,
+      ),
+    },
+  };
+}
+
 async function parseResponse(response) {
   const text = await response.text();
   let data = null;
@@ -1985,6 +2004,8 @@ export function createXChatModule() {
   let stopEvents = () => {};
   let pollTimer;
   let refreshTimer;
+  let refreshSequence = 0;
+  const pendingReadMessages = new Map();
   const listeners = new Set();
   const alertedMessages = new Set();
   const reactionsInFlight = new Set();
@@ -2036,12 +2057,22 @@ export function createXChatModule() {
     });
 
   const refreshWorkspace = async ({ quiet = false } = {}) => {
+    const sequence = ++refreshSequence;
     try {
       const raw = await adapter.getSnapshot();
+      if (sequence !== refreshSequence) return snapshot;
       const next = normalizeWorkspace(raw, snapshot, adapter.runtime);
+      if (pendingReadMessages.size) {
+        for (const [conversationId, messageIds] of pendingReadMessages) {
+          const readState = markConversationReadState(next, conversationId, messageIds);
+          next.conversations = readState.conversations;
+          next.messagesByConversation = readState.messagesByConversation;
+        }
+      }
       publish(next);
       return next;
     } catch (error) {
+      if (sequence !== refreshSequence) return snapshot;
       patch({ phase: snapshot.phase === "booting" ? "error" : "offline" });
       if (quiet) throw error;
       throw new TransportError(
@@ -2111,6 +2142,16 @@ export function createXChatModule() {
     }
     const payload = event.payload?.payload ?? event.payload;
     const eventType = String(event.type || "").replaceAll("_", ".").replaceAll("-", ".");
+    if (eventType === "notifications.changed") {
+      refreshSequence += 1;
+      patch({
+        settings: {
+          ...snapshot.settings,
+          notifications_enabled: Boolean(payload),
+        },
+      });
+      return;
+    }
     if (eventType.includes("message.reaction")) {
       applyReaction(payload);
       return;
@@ -2273,7 +2314,21 @@ export function createXChatModule() {
           !message.own && message.client_message_id && message.status !== "read",
       )
       .map((message) => message.client_message_id);
-    if (messageIds.length) await adapter.markRead(conversationId, messageIds.slice(-100));
+    if (!messageIds.length) return;
+    refreshSequence += 1;
+    pendingReadMessages.set(conversationId, messageIds);
+    patch(markConversationReadState(snapshot, conversationId, messageIds));
+    try {
+      for (let offset = 0; offset < messageIds.length; offset += 100) {
+        await adapter.markRead(conversationId, messageIds.slice(offset, offset + 100));
+      }
+    } catch (error) {
+      scheduleRefresh();
+      throw error;
+    } finally {
+      pendingReadMessages.delete(conversationId);
+    }
+    scheduleRefresh();
   };
 
   const activeConversation = () =>
@@ -2776,6 +2831,12 @@ export function createXChatModule() {
           storage.set("xchat.language", action.patch.language);
         }
         patch({ settings: { ...snapshot.settings, ...action.patch } });
+        if (action.patch.notifications_enabled !== undefined) {
+          refreshSequence += 1;
+          if (!action.patch.notifications_enabled) {
+            await Promise.resolve(adapter.stopAttention()).catch(() => {});
+          }
+        }
         return;
       case "settings.pickPath": {
         const selected = await adapter.pickDirectory(action.title);

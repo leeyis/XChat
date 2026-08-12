@@ -1784,22 +1784,42 @@ fn get_notification_id(from_id: &str) -> i32 {
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+#[cfg(windows)]
+fn windows_notification_script(title: &str, body: &str) -> String {
+    let safe_title = title.replace('\'', "''");
+    let safe_body = body.replace('\'', "''");
+    format!(
+        "Add-Type -AssemblyName System.Windows.Forms; \
+         $n = New-Object System.Windows.Forms.NotifyIcon; \
+         try {{ \
+           $n.Icon = [System.Drawing.SystemIcons]::Information; \
+           $n.Visible = $true; \
+           $n.ShowBalloonTip(5000, '{safe_title}', '{safe_body}', [System.Windows.Forms.ToolTipIcon]::None); \
+           Start-Sleep -Milliseconds 5500 \
+         }} finally {{ \
+           $n.Visible = $false; \
+           $n.Dispose() \
+         }}"
+    )
+}
+
 #[tauri::command]
-pub fn show_notification(_app: tauri::AppHandle, title: String, body: String, #[allow(unused_variables)] from_id: String) {
+pub async fn show_notification(
+    _app: tauri::AppHandle,
+    state: tauri::State<'_, crate::db::DbState>,
+    title: String,
+    body: String,
+    #[allow(unused_variables)] from_id: String,
+) -> Result<(), String> {
+    if !crate::db::get_notifications_enabled(&state.pool).await {
+        return Ok(());
+    }
+
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
 
-        // Windows 使用 PowerShell（不依赖 Start Menu 注册）
-        let safe_title = title.replace('\'', "''");
-        let safe_body = body.replace('\'', "''");
-        let script = format!(
-            "Add-Type -AssemblyName System.Windows.Forms; \
-             $n = New-Object System.Windows.Forms.NotifyIcon; \
-             $n.Icon = [System.Drawing.SystemIcons]::Information; \
-             $n.Visible = $true; \
-             $n.ShowBalloonTip(5000, '{safe_title}', '{safe_body}', [System.Windows.Forms.ToolTipIcon]::None)"
-        );
+        let script = windows_notification_script(&title, &body);
         if let Err(error) = std::process::Command::new("powershell")
             .creation_flags(CREATE_NO_WINDOW)
             .args([
@@ -1840,6 +1860,31 @@ pub fn show_notification(_app: tauri::AppHandle, title: String, body: String, #[
             builder = builder.id(notif_id);
         }
         let _ = builder.show();
+    }
+
+    Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod notification_tests {
+    use super::windows_notification_script;
+
+    #[test]
+    fn windows_notification_always_hides_and_disposes_the_notify_icon() {
+        let script = windows_notification_script("title", "body");
+
+        assert!(script.contains("finally"));
+        assert!(script.contains("$n.Visible = $false"));
+        assert!(script.contains("$n.Dispose()"));
+        assert!(script.contains("Start-Sleep -Milliseconds 5500"));
+    }
+
+    #[test]
+    fn windows_notification_escapes_powershell_single_quotes() {
+        let script = windows_notification_script("Alice's PC", "it's ready");
+
+        assert!(script.contains("Alice''s PC"));
+        assert!(script.contains("it''s ready"));
     }
 }
 

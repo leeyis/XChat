@@ -22,6 +22,7 @@ import {
   isMessageAlertControlType,
   applyReactionUpdate,
   localFileAvailable,
+  markConversationReadState,
   matchesShortcut,
   measureTransfers,
   mergeMessages,
@@ -623,6 +624,29 @@ test("Tauri path selection and file-content copy use native commands", async () 
     ["copy_file_message_content", { messageId: 7, kind: "text" }],
     ["copy_file_message_content", { messageId: 8, kind: "image" }],
   ]);
+});
+
+test("marking a visible conversation read clears its badge and local message state", () => {
+  const previous = {
+    conversations: [
+      { id: "conversation-1", unread_count: 2, forced_unread: true },
+      { id: "conversation-2", unread_count: 3, forced_unread: false },
+    ],
+    messagesByConversation: {
+      "conversation-1": [
+        { client_message_id: "message-1", status: "received" },
+        { client_message_id: "message-2", status: "received" },
+      ],
+    },
+  };
+
+  const next = markConversationReadState(previous, "conversation-1", ["message-1"]);
+
+  assert.equal(next.conversations[0].unread_count, 0);
+  assert.equal(next.conversations[0].forced_unread, false);
+  assert.equal(next.conversations[1].unread_count, 3);
+  assert.equal(next.messagesByConversation["conversation-1"][0].status, "read");
+  assert.equal(next.messagesByConversation["conversation-1"][1].status, "received");
 });
 
 test("manual file acceptance converts persisted string IDs at the Tauri boundary", async () => {
