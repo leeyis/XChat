@@ -748,6 +748,23 @@ export function mergeMessages(existing = [], incoming = []) {
   );
 }
 
+export function applyReactionUpdate(messages = [], payload = {}) {
+  const clientMessageId = payload.client_message_id;
+  const emoji = String(payload.emoji || "").trim();
+  const fromId = String(payload.from_id || "").trim();
+  if (!clientMessageId || !emoji || !fromId) return messages;
+  const active = payload.active !== false;
+
+  return messages.map((message) => {
+    if (message.client_message_id !== clientMessageId) return message;
+    const reactions = (message.reactions ?? []).filter(
+      (reaction) => reaction.from_id !== fromId,
+    );
+    if (active) reactions.push({ from_id: fromId, emoji });
+    return { ...message, reactions };
+  });
+}
+
 function normalizeDevice(raw = {}) {
   return {
     ...raw,
@@ -1970,6 +1987,7 @@ export function createXChatModule() {
   let refreshTimer;
   const listeners = new Set();
   const alertedMessages = new Set();
+  const reactionsInFlight = new Set();
 
   const publish = (next) => {
     if (next === snapshot) return;
@@ -2069,21 +2087,14 @@ export function createXChatModule() {
 
   const applyReaction = (payload = {}) => {
     const conversationId = payload.conversation_id;
-    const clientMessageId = payload.client_message_id;
-    const emoji = String(payload.emoji || "").trim();
-    const fromId = payload.from_id || "unknown";
-    if (!conversationId || !clientMessageId || !emoji) return;
+    if (!conversationId) return;
     patch({
       messagesByConversation: {
         ...snapshot.messagesByConversation,
-        [conversationId]: (snapshot.messagesByConversation[conversationId] ?? []).map((message) => {
-          if (message.client_message_id !== clientMessageId) return message;
-          const reactions = (message.reactions ?? []).filter(
-            (reaction) => reaction.from_id !== fromId,
-          );
-          reactions.push({ from_id: fromId, emoji });
-          return { ...message, reactions };
-        }),
+        [conversationId]: applyReactionUpdate(
+          snapshot.messagesByConversation[conversationId] ?? [],
+          payload,
+        ),
       },
     });
   };
@@ -2643,17 +2654,25 @@ export function createXChatModule() {
       case "message.react": {
         const conversation = conversationForAction(action);
         if (!conversation || !action.clientMessageId || !action.emoji) return;
-        await adapter.reactToMessage(
-          conversation.id,
-          action.clientMessageId,
-          action.emoji,
-        );
-        applyReaction({
-          conversation_id: conversation.id,
-          client_message_id: action.clientMessageId,
-          from_id: snapshot.self.id,
-          emoji: action.emoji,
-        });
+        const reactionKey = `${conversation.id}:${action.clientMessageId}`;
+        if (reactionsInFlight.has(reactionKey)) return;
+        reactionsInFlight.add(reactionKey);
+        try {
+          const result = await adapter.reactToMessage(
+            conversation.id,
+            action.clientMessageId,
+            action.emoji,
+          );
+          applyReaction({
+            conversation_id: conversation.id,
+            client_message_id: action.clientMessageId,
+            from_id: snapshot.self.id,
+            emoji: action.emoji,
+            active: typeof result === "boolean" ? result : result?.active !== false,
+          });
+        } finally {
+          reactionsInFlight.delete(reactionKey);
+        }
         return;
       }
       case "message.strongReminder": {

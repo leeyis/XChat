@@ -862,7 +862,7 @@ pub async fn react_to_message(
     conversation_id: &str,
     client_message_id: &str,
     emoji: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let emoji = emoji.trim();
     if emoji.is_empty() || emoji.chars().count() > 8 {
         return Err("invalid reaction emoji".to_string());
@@ -874,7 +874,8 @@ pub async fn react_to_message(
         client_message_id,
         Some(emoji),
     )
-    .await
+    .await?
+    .ok_or_else(|| "reaction state is missing".to_string())
 }
 
 pub async fn send_strong_reminder(
@@ -891,6 +892,7 @@ pub async fn send_strong_reminder(
         None,
     )
     .await
+    .map(|_| ())
 }
 
 async fn send_message_control(
@@ -899,7 +901,7 @@ async fn send_message_control(
     conversation_id: &str,
     client_message_id: &str,
     reaction: Option<&str>,
-) -> Result<(), String> {
+) -> Result<Option<bool>, String> {
     let message = db::get_message_by_client_id(pool, client_message_id)
         .await?
         .ok_or_else(|| "message not found".to_string())?;
@@ -910,6 +912,15 @@ async fn send_message_control(
     if reaction.is_none() && message.sender_id != self_id {
         return Err("only the sender can issue a strong reminder".to_string());
     }
+    let reaction = if let Some(emoji) = reaction {
+        let active = !db::get_message_reactions(pool, client_message_id)
+            .await?
+            .iter()
+            .any(|item| item.reactor_id == self_id && item.emoji == emoji);
+        Some((emoji, active))
+    } else {
+        None
+    };
     let self_name = db::get_username(pool).await?;
     let conversation = db::get_conversation(pool, conversation_id)
         .await?
@@ -942,12 +953,13 @@ async fn send_message_control(
             continue;
         };
         let result = if conversation.kind == "group" {
-            let control = if let Some(emoji) = reaction {
+            let control = if let Some((emoji, active)) = reaction {
                 ProtocolMessage::MessageReaction {
                     conversation_id: conversation_id.to_string(),
                     client_message_id: client_message_id.to_string(),
                     from_id: self_id.clone(),
                     emoji: emoji.to_string(),
+                    active,
                     timestamp: now() as u64,
                 }
             } else {
@@ -962,10 +974,10 @@ async fn send_message_control(
             };
             crate::network::protocol::send_protocol_message(&peer.addr, &control).await
         } else {
-            let (msg_type, content) = if let Some(emoji) = reaction {
+            let (msg_type, content) = if let Some((emoji, active)) = reaction {
                 (
                     "message_reaction",
-                    serde_json::json!({ "emoji": emoji }).to_string(),
+                    serde_json::json!({ "emoji": emoji, "active": active }).to_string(),
                 )
             } else {
                 (
@@ -991,10 +1003,10 @@ async fn send_message_control(
     if delivered == 0 {
         return Err("no recipient is currently online".to_string());
     }
-    if let Some(emoji) = reaction {
-        db::save_message_reaction(pool, client_message_id, &self_id, emoji).await?;
+    if let Some((emoji, active)) = reaction {
+        db::set_message_reaction(pool, client_message_id, &self_id, emoji, active).await?;
     }
-    Ok(())
+    Ok(reaction.map(|(_, active)| active))
 }
 
 pub async fn send_message(

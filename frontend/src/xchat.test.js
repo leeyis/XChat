@@ -20,6 +20,7 @@ import {
   isTextFile,
   incomingMessageAlert,
   isMessageAlertControlType,
+  applyReactionUpdate,
   localFileAvailable,
   matchesShortcut,
   measureTransfers,
@@ -40,6 +41,27 @@ import {
   shortcutLabelFromEvent,
   TauriAdapter,
 } from "./xchat.js";
+
+test("message reactions are idempotent and toggle per user", () => {
+  const messages = [{ client_message_id: "message-1", reactions: [] }];
+  const active = {
+    conversation_id: "direct:a:b",
+    client_message_id: "message-1",
+    from_id: "peer-a",
+    emoji: "👍",
+    active: true,
+  };
+
+  const once = applyReactionUpdate(messages, active);
+  const duplicate = applyReactionUpdate(once, active);
+  assert.deepEqual(duplicate[0].reactions, [{ from_id: "peer-a", emoji: "👍" }]);
+
+  const removed = applyReactionUpdate(duplicate, { ...active, active: false });
+  assert.deepEqual(removed[0].reactions, []);
+
+  const changed = applyReactionUpdate(once, { ...active, emoji: "😂" });
+  assert.deepEqual(changed[0].reactions, [{ from_id: "peer-a", emoji: "😂" }]);
+});
 
 test("text avatars use the last two characters and groups use member tail characters", () => {
   assert.equal(avatarText("张三丰"), "三丰");

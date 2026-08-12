@@ -2399,8 +2399,8 @@ pub async fn react_to_conversation_message(
     conversation_id: String,
     client_message_id: String,
     emoji: String,
-) -> Result<(), String> {
-    crate::workspace::react_to_message(
+) -> Result<bool, String> {
+    let active = crate::workspace::react_to_message(
         &state.pool,
         &peer_state.manager,
         &conversation_id,
@@ -2415,9 +2415,10 @@ pub async fn react_to_conversation_message(
             "client_message_id": client_message_id,
             "from_id": crate::db::get_user_id(&state.pool).await?,
             "emoji": emoji,
+            "active": active,
         }),
     );
-    Ok(())
+    Ok(active)
 }
 
 #[tauri::command]

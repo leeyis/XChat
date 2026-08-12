@@ -549,7 +549,7 @@ async fn react_to_message_http(
     )
     .await
     {
-        Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Ok(active) => Json(serde_json::json!({ "ok": true, "active": active })).into_response(),
         Err(error) => backend_error(error),
     }
 }
@@ -2029,6 +2029,7 @@ async fn handle_protocol_message(
             client_message_id,
             from_id,
             emoji,
+            active,
             timestamp,
         } => {
             let message = crate::db::get_message_by_client_id(&state.pool, &client_message_id)
@@ -2041,11 +2042,12 @@ async fn handle_protocol_message(
             if !members.iter().any(|member| member.peer_id == from_id) {
                 return Err("reaction sender is not a conversation member".to_string());
             }
-            crate::db::save_message_reaction(
+            crate::db::set_message_reaction(
                 &state.pool,
                 &client_message_id,
                 &from_id,
                 &emoji,
+                active,
             )
             .await?;
             broadcast_incoming_event(
@@ -2056,6 +2058,7 @@ async fn handle_protocol_message(
                     "client_message_id": client_message_id,
                     "from_id": from_id,
                     "emoji": emoji,
+                    "active": active,
                     "timestamp": timestamp,
                 }),
             );
@@ -2225,11 +2228,16 @@ async fn handle_stable_direct_message(
                 .get("emoji")
                 .and_then(|value| value.as_str())
                 .ok_or_else(|| "reaction emoji is missing".to_string())?;
-            crate::db::save_message_reaction(
+            let active = control
+                .get("active")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true);
+            crate::db::set_message_reaction(
                 &state.pool,
                 client_message_id,
                 &message.from_id,
                 emoji,
+                active,
             )
             .await?;
         }
@@ -2242,6 +2250,7 @@ async fn handle_stable_direct_message(
                 "from_id": message.from_id,
                 "from_name": message.from_name,
                 "emoji": control.get("emoji").and_then(|value| value.as_str()),
+                "active": control.get("active").and_then(|value| value.as_bool()).unwrap_or(true),
                 "summary": control.get("summary").and_then(|value| value.as_str()),
                 "timestamp": message.timestamp,
             }),

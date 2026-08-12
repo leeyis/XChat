@@ -1,6 +1,6 @@
 # Xchat
 
-Xchat `0.1.2` 是一款基于 Tauri 2、React 和 Rust 的局域网聊天客户端。每台设备只需安装并运行客户端；客户端自身负责局域网发现、消息、文件传输和本地 SQLite 存储，不需要单独部署服务端。
+Xchat `0.1.3` 是一款基于 Tauri 2、React 和 Rust 的局域网聊天客户端。每台设备只需安装并运行客户端；客户端自身负责局域网发现、消息、文件传输和本地 SQLite 存储，不需要单独部署服务端。
 
 ## 功能
 
@@ -48,7 +48,7 @@ macOS 产物通常位于：
 
 ```text
 src-tauri/target/release/bundle/macos/Xchat.app
-src-tauri/target/release/bundle/dmg/Xchat_0.1.2_*.dmg
+src-tauri/target/release/bundle/dmg/Xchat_0.1.3_*.dmg
 ```
 
 指定架构：
@@ -84,7 +84,7 @@ cargo run --manifest-path src-tauri/Cargo.toml \
   -- --port 8888 --db-path /tmp/xchat-web
 ```
 
-内部 Rust 包和兼容二进制仍使用 `lanchat` / `lanchat-web` 名称；应用界面、安装包、版本和 bundle identifier 分别为 `Xchat`、`0.1.2` 和 `com.xchat.app`。
+内部 Rust 包和兼容二进制仍使用 `lanchat` / `lanchat-web` 名称；应用界面、安装包、版本和 bundle identifier 分别为 `Xchat`、`0.1.3` 和 `com.xchat.app`。
 
 ## 验证
 

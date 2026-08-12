@@ -817,6 +817,20 @@ time,
   flex-direction: row-reverse;
 }
 
+.message-body-line::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 100%;
+  width: 8px;
+  content: "";
+}
+
+.message.sent .message-body-line::after {
+  right: 100%;
+  left: auto;
+}
+
 .message-body-content {
   display: flex;
   width: max-content;

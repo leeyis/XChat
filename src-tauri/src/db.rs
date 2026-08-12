@@ -2675,6 +2675,29 @@ pub async fn save_message_reaction(
     Ok(())
 }
 
+pub async fn set_message_reaction(
+    pool: &Pool<Sqlite>,
+    message_client_id: &str,
+    reactor_id: &str,
+    emoji: &str,
+    active: bool,
+) -> Result<(), String> {
+    if active {
+        return save_message_reaction(pool, message_client_id, reactor_id, emoji).await;
+    }
+    sqlx::query(
+        "DELETE FROM message_reactions
+         WHERE message_client_id = ? AND reactor_id = ? AND emoji = ?",
+    )
+    .bind(message_client_id)
+    .bind(reactor_id)
+    .bind(emoji)
+    .execute(pool)
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 pub async fn get_message_reactions(
     pool: &Pool<Sqlite>,
     message_client_id: &str,
@@ -3396,6 +3419,40 @@ pub async fn set_setting(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn message_reaction_state_is_idempotent_and_removable() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE message_reactions (
+                message_client_id TEXT NOT NULL,
+                reactor_id TEXT NOT NULL,
+                emoji TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(message_client_id, reactor_id)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        set_message_reaction(&pool, "message-1", "peer-1", "👍", true)
+            .await
+            .unwrap();
+        set_message_reaction(&pool, "message-1", "peer-1", "👍", true)
+            .await
+            .unwrap();
+        assert_eq!(get_message_reactions(&pool, "message-1").await.unwrap().len(), 1);
+
+        set_message_reaction(&pool, "message-1", "peer-1", "👍", false)
+            .await
+            .unwrap();
+        assert!(get_message_reactions(&pool, "message-1").await.unwrap().is_empty());
+    }
 
     #[tokio::test]
     async fn discovered_user_metadata_keeps_the_first_authoritative_memory_snapshot() {

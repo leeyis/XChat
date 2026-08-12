@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+fn reaction_active_by_default() -> bool {
+    true
+}
+
 pub const MAX_RECEIPT_BATCH_SIZE: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +46,8 @@ pub enum ProtocolMessage {
         client_message_id: String,
         from_id: String,
         emoji: String,
+        #[serde(default = "reaction_active_by_default")]
+        active: bool,
         timestamp: u64,
     },
     StrongReminder {
@@ -187,6 +193,8 @@ pub fn parse_protocol_value(value: Value) -> Result<Option<ProtocolMessage>, Str
         Some("group_sync") => "group_sync",
         Some("group_message") => "group_message",
         Some("message_recall") => "message_recall",
+        Some("message_reaction") if value.get("emoji").is_some() => "message_reaction",
+        Some("strong_reminder") if value.get("summary").is_some() => "strong_reminder",
         Some("delivery_ack") => "delivery_ack",
         Some("read_ack") => "read_ack",
         _ => return Ok(None),
@@ -284,5 +292,45 @@ mod tests {
 
         let json = serde_json::to_string(&message).unwrap();
         assert_eq!(parse_protocol_message(&json).unwrap(), Some(message));
+    }
+
+    #[test]
+    fn reaction_state_is_explicit_and_old_packets_default_to_active() {
+        let old_packet = r#"{
+            "msg_type":"message_reaction",
+            "conversation_id":"group-1",
+            "client_message_id":"message-1",
+            "from_id":"peer-1",
+            "emoji":"👍",
+            "timestamp":42
+        }"#;
+        let parsed = parse_protocol_message(old_packet).unwrap().unwrap();
+        assert!(matches!(
+            parsed,
+            ProtocolMessage::MessageReaction { active: true, .. }
+        ));
+
+        let removed = ProtocolMessage::MessageReaction {
+            conversation_id: "group-1".into(),
+            client_message_id: "message-1".into(),
+            from_id: "peer-1".into(),
+            emoji: "👍".into(),
+            active: false,
+            timestamp: 43,
+        };
+        assert_eq!(
+            parse_protocol_message(&serde_json::to_string(&removed).unwrap()).unwrap(),
+            Some(removed)
+        );
+
+        let direct_control = r#"{
+            "msg_type":"message_reaction",
+            "conversation_id":"direct:a:b",
+            "client_message_id":"message-1",
+            "from_id":"peer-1",
+            "content":"{\"emoji\":\"👍\",\"active\":true}",
+            "timestamp":44
+        }"#;
+        assert_eq!(parse_protocol_message(direct_control).unwrap(), None);
     }
 }

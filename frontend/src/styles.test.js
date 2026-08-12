@@ -2,6 +2,20 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+test("opening a conversation keeps the viewport pinned while images finish loading", async () => {
+  const app = await readFile(new URL("./App.jsx", import.meta.url), "utf8");
+
+  assert.match(app, /addEventListener\(\s*["']load["'][\s\S]*?,\s*true\s*\)/);
+  assert.match(app, /requestAnimationFrame/);
+});
+
+test("message quick actions bridge the visual gap without losing hover", async () => {
+  const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+
+  assert.match(css, /\.message-body-line::after\s*\{[^}]*width:\s*8px/s);
+  assert.match(css, /\.message\.sent\s+\.message-body-line::after\s*\{/);
+});
+
 test("selected settings tab keeps a transparent background", async () => {
   const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
   const selected = css.match(/\.settings-nav-row\.selected\s*\{([^}]*)\}/)?.[1];
@@ -259,7 +273,7 @@ test("about card uses the application logo and the group snapshot exposes its cr
   assert.match(workspace, /created_by:\s*record\.created_by/);
 });
 
-test("user-visible version sources stay synchronized at 0.1.2", async () => {
+test("user-visible version sources stay synchronized at 0.1.3", async () => {
   const [packageJson, tauriConfig, cargoToml, app, android] = await Promise.all([
     readFile(new URL("../../package.json", import.meta.url), "utf8"),
     readFile(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
@@ -268,9 +282,9 @@ test("user-visible version sources stay synchronized at 0.1.2", async () => {
     readFile(new URL("../../src-tauri/gen/android/app/build.gradle.kts", import.meta.url), "utf8"),
   ]);
 
-  assert.equal(JSON.parse(packageJson).version, "0.1.2");
-  assert.equal(JSON.parse(tauriConfig).version, "0.1.2");
-  assert.match(cargoToml, /^version = "0\.1\.2"$/m);
-  assert.match(app, /:\s*"0\.1\.2";/);
-  assert.match(android, /versionName[^\n]*"0\.1\.2"/);
+  assert.equal(JSON.parse(packageJson).version, "0.1.3");
+  assert.equal(JSON.parse(tauriConfig).version, "0.1.3");
+  assert.match(cargoToml, /^version = "0\.1\.3"$/m);
+  assert.match(app, /:\s*"0\.1\.3";/);
+  assert.match(android, /versionName[^\n]*"0\.1\.3"/);
 });

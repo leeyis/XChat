@@ -905,7 +905,7 @@ function formatTime(timestamp, locale) {
 function appVersion() {
   return typeof globalThis.__XCHAT_VERSION__ === "string" && globalThis.__XCHAT_VERSION__
     ? globalThis.__XCHAT_VERSION__
-    : "0.1.2";
+    : "0.1.3";
 }
 
 function formatSize(bytes) {
@@ -2371,8 +2371,26 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
   }, []);
 
   useEffect(() => {
-    scroll.current?.scrollTo({ top: scroll.current.scrollHeight });
-  }, [conversation?.id, messages.length]);
+    const viewport = scroll.current;
+    if (!viewport || state.focusedMessageId != null) return undefined;
+    let animationFrame = 0;
+    const scheduleBottomScroll = () => {
+      cancelAnimationFrame(animationFrame);
+      animationFrame = requestAnimationFrame(() => {
+        viewport.scrollTop = viewport.scrollHeight;
+      });
+    };
+    const handleResourceLoad = (event) => {
+      if (event.target instanceof HTMLImageElement) scheduleBottomScroll();
+    };
+
+    scheduleBottomScroll();
+    viewport.addEventListener("load", handleResourceLoad, true);
+    return () => {
+      cancelAnimationFrame(animationFrame);
+      viewport.removeEventListener("load", handleResourceLoad, true);
+    };
+  }, [conversation?.id, messages.length, state.focusedMessageId]);
 
   useEffect(() => {
     if (state.focusedMessageId == null) return;
