@@ -216,6 +216,8 @@ const copy = {
     identity: "身份",
     localName: "本机名称",
     localIp: "本机 IP",
+    refreshIp: "刷新 IP",
+    selectIp: "选择 IP",
     deviceIdDetail: (id) => `设备 ID ${id}`,
     deviceIdUnavailable: "设备 ID 暂不可用",
     localAvatar: "本机头像",
@@ -467,6 +469,8 @@ const copy = {
     identity: "Identity",
     localName: "Device name",
     localIp: "Local IP",
+    refreshIp: "Refresh IP",
+    selectIp: "Select IP",
     deviceIdDetail: (id) => `Device ID ${id}`,
     deviceIdUnavailable: "Device ID unavailable",
     localAvatar: "Device avatar",
@@ -553,7 +557,7 @@ const copy = {
   },
 };
 
-function Icon({ name, size = 20 }) {
+function Icon({ name, size = 20, spin = false }) {
   let body;
   switch (name) {
     case "chat":
@@ -753,13 +757,16 @@ function Icon({ name, size = 20 }) {
         </>
       );
       break;
+    case "chevron-down":
+      body = <path d="m6 9 6 6 6-6" />;
+      break;
     default:
       body = <circle cx="12" cy="12" r="8" />;
   }
   return (
     <svg
       aria-hidden="true"
-      className="icon"
+      className={`icon ${spin ? "icon-spin" : ""}`}
       width={size}
       height={size}
       viewBox="0 0 24 24"
@@ -905,7 +912,7 @@ function formatTime(timestamp, locale) {
 function appVersion() {
   return typeof globalThis.__XCHAT_VERSION__ === "string" && globalThis.__XCHAT_VERSION__
     ? globalThis.__XCHAT_VERSION__
-    : "0.1.4";
+    : "0.1.5";
 }
 
 function formatSize(bytes) {
@@ -3223,7 +3230,24 @@ function SettingsWorkspace({
 }) {
   const [form, setForm] = useState(state.settings);
   const [dirty, setDirty] = useState(false);
+  const [ipLoading, setIpLoading] = useState(false);
+  const [availableIps, setAvailableIps] = useState([]);
+  const [ipDropdownOpen, setIpDropdownOpen] = useState(false);
   const scroll = useRef(null);
+  // 进入设置页就读取一次网卡列表，多网卡时下拉框才会直接可见
+  useEffect(() => {
+    const invoke = globalThis.window?.__TAURI__?.core?.invoke;
+    if (!invoke) return;
+    let cancelled = false;
+    Promise.resolve(invoke("get_all_local_ips"))
+      .then((ips) => {
+        if (!cancelled && Array.isArray(ips)) setAvailableIps(ips);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   useEffect(() => {
     if (!dirty) setForm(state.settings);
   }, [dirty, state.settings]);
@@ -3254,6 +3278,32 @@ function SettingsWorkspace({
       title: labels.chooseFolder,
     });
     if (result.ok && result.data) change(key, Array.isArray(result.data) ? result.data[0] : result.data);
+  };
+  const refreshIp = async () => {
+    const tauri = globalThis.window?.__TAURI__;
+    if (!tauri?.core?.invoke) return;
+    setIpLoading(true);
+    try {
+      const ips = await tauri.core.invoke("refresh_local_ips");
+      if (Array.isArray(ips)) setAvailableIps(ips);
+      // 立刻重读快照，否则展示的 IP 要等下一轮轮询（最多 5 秒）才更新
+      await workspace.dispatch({ type: "refresh" });
+    } catch {
+      // 探测失败保持原值，不打断设置页
+    } finally {
+      setIpLoading(false);
+    }
+  };
+  const selectIp = async (ip) => {
+    const tauri = globalThis.window?.__TAURI__;
+    if (!tauri?.core?.invoke) return;
+    setIpDropdownOpen(false);
+    try {
+      await tauri.core.invoke("set_local_ip", { ip });
+      await workspace.dispatch({ type: "refresh" });
+    } catch {
+      // 目标地址已失效时保持原值
+    }
   };
   const avatars = ["🐼", "🦊", "🐧", "🐰", "🐯", "🐸", "🐨", "🦁"];
   return (
@@ -3311,7 +3361,46 @@ function SettingsWorkspace({
             <input value={form.name} onChange={(event) => change("name", event.target.value)} />
           </SettingRow>
           <SettingRow label={labels.localIp}>
-            <output className="setting-readonly">{state.self.addr || labels.notProvided}</output>
+            <div className="ip-selector">
+              <output className="setting-readonly">{state.self.addr || labels.notProvided}</output>
+              <button
+                type="button"
+                className="icon-button ip-refresh-button"
+                onClick={refreshIp}
+                disabled={ipLoading}
+                aria-label={labels.refreshIp || "刷新IP"}
+                title={labels.refreshIp || "刷新IP地址"}
+              >
+                <Icon name="refresh" size={15} spin={ipLoading} />
+              </button>
+              {availableIps.length > 1 && (
+                <div className="ip-dropdown-container">
+                  <button
+                    type="button"
+                    className="icon-button ip-dropdown-button"
+                    onClick={() => setIpDropdownOpen(!ipDropdownOpen)}
+                    aria-label={labels.selectIp || "选择IP"}
+                    title={labels.selectIp || "选择IP地址"}
+                  >
+                    <Icon name="chevron-down" size={15} />
+                  </button>
+                  {ipDropdownOpen && (
+                    <div className="ip-dropdown-menu">
+                      {availableIps.map((ip) => (
+                        <button
+                          key={ip}
+                          type="button"
+                          className={`ip-option ${ip === state.self.addr ? "selected" : ""}`}
+                          onClick={() => selectIp(ip)}
+                        >
+                          {ip}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </SettingRow>
           <SettingRow label={labels.macAddress}>
             <output className="setting-readonly">

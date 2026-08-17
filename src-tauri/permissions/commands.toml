@@ -404,3 +404,18 @@ commands.allow = ["discard_staged_attachment"]
 identifier = "allow-read-workspace-media"
 description = "Allows reading image bytes resolved from a stored message ID"
 commands.allow = ["read_workspace_media"]
+
+[[permission]]
+identifier = "allow-refresh-local-ips"
+description = "Allows refreshing the list of available local IP addresses"
+commands.allow = ["refresh_local_ips"]
+
+[[permission]]
+identifier = "allow-get-all-local-ips"
+description = "Allows getting the list of all available local IP addresses"
+commands.allow = ["get_all_local_ips"]
+
+[[permission]]
+identifier = "allow-set-local-ip"
+description = "Allows setting the active local IP address from the available list"
+commands.allow = ["set_local_ip"]

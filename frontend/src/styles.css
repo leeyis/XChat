@@ -2020,7 +2020,7 @@ input[type="checkbox"]::before {
   transition: transform 130ms var(--ease-bounce);
 }
 
-input[type="checkbox"]:hover:not(:disabled) {
+input[type="checkbox"]:hover:not(:disabled):not(:checked) {
   border-color: var(--accent);
   background: color-mix(in oklch, var(--accent) 5%, var(--surface));
 }
@@ -2029,6 +2029,12 @@ input[type="checkbox"]:checked {
   border-color: var(--accent);
   background: var(--accent);
   box-shadow: 0 2px 7px color-mix(in oklch, var(--accent) 26%, transparent);
+}
+
+input[type="checkbox"]:checked:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+  box-shadow: 0 2px 8px color-mix(in oklch, var(--accent) 34%, transparent);
 }
 
 input[type="checkbox"]:checked::before {
@@ -3112,6 +3118,19 @@ button.primary { border-color: var(--accent); background: var(--accent); color: 
 .path-picker-field input { min-width: 0; flex: 1; border: 0 !important; outline: 0; background: transparent; box-shadow: none !important; }
 .path-picker-button { display: grid; width: 38px; height: 34px; flex: 0 0 auto; place-items: center; border: 0; border-left: 1px solid var(--border); background: transparent; color: var(--muted); }
 .path-picker-button:hover { background: color-mix(in oklch, var(--accent) 9%, transparent); color: var(--accent); }
+
+.ip-selector { display: flex; align-items: center; gap: 4px; }
+.ip-refresh-button, .ip-dropdown-button { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--muted); transition: background 140ms var(--ease-out), color 140ms var(--ease-out); }
+.ip-refresh-button:hover, .ip-dropdown-button:hover { background: color-mix(in oklch, var(--accent) 9%, transparent); color: var(--accent); }
+.ip-refresh-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.ip-dropdown-container { position: relative; }
+.ip-dropdown-menu { position: absolute; top: calc(100% + 4px); right: 0; min-width: 140px; max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: 0 4px 12px color-mix(in oklch, var(--fg) 12%, transparent); z-index: 100; }
+.ip-option { padding: 6px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--fg); text-align: left; font: 13px var(--font-body); transition: background 140ms var(--ease-out); }
+.ip-option:hover { background: color-mix(in oklch, var(--accent) 9%, transparent); }
+.ip-option.selected { background: var(--accent); color: var(--on-accent); font-weight: 500; }
+
+@keyframes icon-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.icon-spin { animation: icon-spin 1s linear infinite; }
 
 @media (prefers-reduced-motion: reduce) {
   *,

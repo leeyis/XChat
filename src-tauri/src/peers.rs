@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const PEER_OFFLINE_TIMEOUT_SECS: u64 = 30;
+// 局域网UDP发现会有网络抖动、延迟和丢包，90秒超时更合理（原30秒过于严格）
+const PEER_OFFLINE_TIMEOUT_SECS: u64 = 90;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Peer {
@@ -358,16 +359,17 @@ mod tests {
             peers.get_mut("peer-1").unwrap().last_seen = 1_000;
         }
 
-        manager.mark_stale_as_offline_at(1_017);
+        // 心跳每 2 秒一次，短时抖动/丢包不应把用户判成离线
+        manager.mark_stale_as_offline_at(1_000 + PEER_OFFLINE_TIMEOUT_SECS / 2);
         assert!(!manager.peers.read().unwrap()["peer-1"].is_offline);
 
-        manager.mark_stale_as_offline_at(1_030);
+        manager.mark_stale_as_offline_at(1_000 + PEER_OFFLINE_TIMEOUT_SECS);
         assert!(!manager.peers.read().unwrap()["peer-1"].is_offline);
 
         manager.mark_stale_as_offline_at(999);
         assert!(!manager.peers.read().unwrap()["peer-1"].is_offline);
 
-        manager.mark_stale_as_offline_at(1_031);
+        manager.mark_stale_as_offline_at(1_001 + PEER_OFFLINE_TIMEOUT_SECS);
         assert!(manager.peers.read().unwrap()["peer-1"].is_offline);
     }
 }

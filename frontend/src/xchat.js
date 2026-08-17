@@ -725,6 +725,19 @@ function monotonicStatus(previous, next) {
   return next || previous;
 }
 
+/// 重新拉取首页消息时，后端返回的内容是权威的（撤回/删除要能生效），
+/// 但本机刚发出、后端还没落库的消息不能被这一次替换抹掉，
+/// 否则消息会先消失、等下一轮轮询再出现。
+export function retainInFlightMessages(existing = [], fetched = []) {
+  const fetchedKeys = new Set(fetched.map((message) => messageKey(message)));
+  return existing.filter(
+    (message) =>
+      message.own &&
+      (message.status === "pending" || message.status === "failed") &&
+      !fetchedKeys.has(messageKey(message)),
+  );
+}
+
 export function mergeMessages(existing = [], incoming = []) {
   const merged = new Map(existing.map((message) => [messageKey(message), message]));
   for (const message of incoming) {
@@ -2278,7 +2291,8 @@ export function createXChatModule() {
       const messages = rows.map((item) =>
         normalizeMessage(item, snapshot.self.id, conversation.id),
       );
-      const existing = offset ? snapshot.messagesByConversation[conversation.id] : [];
+      const current = snapshot.messagesByConversation[conversation.id] ?? [];
+      const existing = offset ? current : retainInFlightMessages(current, messages);
       patch({
         messagesByConversation: {
           ...snapshot.messagesByConversation,

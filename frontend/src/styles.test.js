@@ -251,12 +251,16 @@ test("all checkbox-like controls use the shared polished square style", async ()
   const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
   const checkbox = css.match(/input\[type="checkbox"\]\s*\{([^}]*)\}/)?.[1];
   const selected = css.match(/input\[type="checkbox"\]:checked\s*\{([^}]*)\}/)?.[1];
+  const uncheckedHover = css.match(/input\[type="checkbox"\]:hover:not\(:disabled\):not\(:checked\)\s*\{([^}]*)\}/)?.[1];
+  const checkedHover = css.match(/input\[type="checkbox"\]:checked:hover:not\(:disabled\)\s*\{([^}]*)\}/)?.[1];
   const forward = css.match(/\.forward-check\s*\{([^}]*)\}/)?.[1];
 
   assert.match(checkbox, /appearance:\s*none/);
   assert.match(checkbox, /width:\s*22px/);
   assert.match(checkbox, /border-radius:\s*6px/);
   assert.match(selected, /background:\s*var\(--accent\)/);
+  assert.match(uncheckedHover, /background:\s*color-mix/);
+  assert.match(checkedHover, /background:\s*var\(--accent-hover\)/);
   assert.match(forward, /border-radius:\s*6px/);
 });
 
@@ -273,7 +277,22 @@ test("about card uses the application logo and the group snapshot exposes its cr
   assert.match(workspace, /created_by:\s*record\.created_by/);
 });
 
-test("user-visible version sources stay synchronized at 0.1.4", async () => {
+test("every prop passed to Icon is actually destructured by Icon", async () => {
+  const app = await readFile(new URL("./App.jsx", import.meta.url), "utf8");
+  const accepted = app.match(/function Icon\(\{([^}]*)\}/)?.[1];
+
+  assert.ok(accepted, "Icon signature is missing");
+  const known = new Set(accepted.split(",").map((part) => part.split("=")[0].trim()));
+  // Icon 渲染时读到未声明的 prop 会抛 ReferenceError，而 Icon 出现在几乎每个界面上，
+  // 于是整个应用白屏。Vite 不做作用域检查，所以这里守住。
+  for (const [, tag] of app.matchAll(/<Icon\s([^>]*)\/?>/g)) {
+    for (const [, prop] of tag.matchAll(/(?:^|\s)([a-z]\w*)=/g)) {
+      assert.ok(known.has(prop), `Icon 收到未声明的 prop: ${prop}`);
+    }
+  }
+});
+
+test("user-visible version sources stay synchronized at 0.1.5", async () => {
   const [packageJson, tauriConfig, cargoToml, app, android] = await Promise.all([
     readFile(new URL("../../package.json", import.meta.url), "utf8"),
     readFile(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
@@ -282,9 +301,9 @@ test("user-visible version sources stay synchronized at 0.1.4", async () => {
     readFile(new URL("../../src-tauri/gen/android/app/build.gradle.kts", import.meta.url), "utf8"),
   ]);
 
-  assert.equal(JSON.parse(packageJson).version, "0.1.4");
-  assert.equal(JSON.parse(tauriConfig).version, "0.1.4");
-  assert.match(cargoToml, /^version = "0\.1\.4"$/m);
-  assert.match(app, /:\s*"0\.1\.4";/);
-  assert.match(android, /versionName[^\n]*"0\.1\.4"/);
+  assert.equal(JSON.parse(packageJson).version, "0.1.5");
+  assert.equal(JSON.parse(tauriConfig).version, "0.1.5");
+  assert.match(cargoToml, /^version = "0\.1\.5"$/m);
+  assert.match(app, /:\s*"0\.1\.5";/);
+  assert.match(android, /versionName[^\n]*"0\.1\.5"/);
 });

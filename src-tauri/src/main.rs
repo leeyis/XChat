@@ -159,6 +159,9 @@ fn main() {
             lanchat::commands::read_workspace_media,
             lanchat::commands::pick_workspace_directory,
             lanchat::commands::copy_file_message_content,
+            lanchat::commands::refresh_local_ips,
+            lanchat::commands::get_all_local_ips,
+            lanchat::commands::set_local_ip,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

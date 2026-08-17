@@ -85,7 +85,10 @@
     "allow-update-device-metadata",
     "allow-delete-local-file",
     "allow-open-workspace-file",
-    "allow-reveal-workspace-file"
+    "allow-reveal-workspace-file",
+    "allow-refresh-local-ips",
+    "allow-get-all-local-ips",
+    "allow-set-local-ip"
   ],
   "scope": {
     "allow": [

@@ -1,6 +1,6 @@
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{Ipv4Addr, UdpSocket};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 #[cfg(feature = "desktop")]
@@ -17,7 +17,10 @@ pub const DISCOVERY_CAPABILITIES: &[&str] = &[
     "parallel_file_v2",
 ];
 static LOCAL_DEVICE_METADATA: OnceLock<(Option<String>, Option<String>)> = OnceLock::new();
-static LOCAL_IP_ADDRESS: OnceLock<Option<String>> = OnceLock::new();
+/// 当前对外展示/使用的本机 IP。外层 `None` 表示尚未探测过，
+/// 内层 `None` 表示探测过但没有可用地址（避免每次快照都重复全量探测）。
+static LOCAL_IP_ADDRESS: RwLock<Option<Option<String>>> = RwLock::new(None);
+static ALL_LOCAL_IPS: RwLock<Vec<String>> = RwLock::new(Vec::new());
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveryAnnouncement {
@@ -118,17 +121,112 @@ pub(crate) fn local_device_metadata() -> (Option<String>, Option<String>) {
         .clone()
 }
 
+/// 用一个目标地址反查内核为该路由选择的源 IP。
+/// UDP connect 不会发包，只做路由表查询，所以可以安全地大量探测。
+fn probe_local_ip(target: Ipv4Addr) -> Option<String> {
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect((target, 8888)).ok()?;
+    let address = socket.local_addr().ok()?.ip();
+    (!address.is_unspecified() && !address.is_loopback()).then(|| address.to_string())
+}
+
+/// 探测目标集合：覆盖组播、公网默认路由与常见私有网段。
+/// 每个存在对应网卡的网段都会返回该网卡的源 IP，没有路由的会直接失败。
+fn ip_probe_targets() -> Vec<Ipv4Addr> {
+    let mut targets = Vec::with_capacity(280);
+    targets.push(Ipv4Addr::new(224, 0, 0, 167));
+    targets.push(Ipv4Addr::new(8, 8, 8, 8));
+    for third in 0..=255u8 {
+        targets.push(Ipv4Addr::new(192, 168, third, 1));
+    }
+    for second in 16..=31u8 {
+        targets.push(Ipv4Addr::new(172, second, 0, 1));
+    }
+    targets.push(Ipv4Addr::new(10, 0, 0, 1));
+    targets
+}
+
+/// 枚举所有可用的本机 IPv4 地址（不含回环与未指定地址）
+pub(crate) fn get_all_local_ips() -> Vec<String> {
+    let mut ips: Vec<String> = Vec::new();
+    for target in ip_probe_targets() {
+        if let Some(ip) = probe_local_ip(target) {
+            if !ips.contains(&ip) {
+                ips.push(ip);
+            }
+        }
+    }
+    ips
+}
+
+/// 默认地址取组播路由的出口（UDP 发现实际使用的那张卡），列表为空时返回 None
+fn default_local_ip(all_ips: &[String]) -> Option<String> {
+    probe_local_ip(Ipv4Addr::new(224, 0, 0, 167))
+        .filter(|ip| all_ips.contains(ip))
+        .or_else(|| all_ips.first().cloned())
+}
+
+/// 后台重扫时的取舍：手动选的地址还在就保留，没了才回落到默认
+pub(crate) fn keep_or_reselect(current: Option<&str>, all_ips: &[String]) -> Option<String> {
+    match current {
+        Some(ip) if all_ips.iter().any(|candidate| candidate == ip) => Some(ip.to_string()),
+        _ => default_local_ip(all_ips),
+    }
+}
+
+/// 重新探测本机 IP 列表，并把当前 IP 重置为默认出口（设置页手动刷新用）
+pub(crate) fn refresh_local_ips() -> Vec<String> {
+    let all_ips = get_all_local_ips();
+    let preferred = default_local_ip(&all_ips);
+
+    *ALL_LOCAL_IPS.write().unwrap() = all_ips.clone();
+    *LOCAL_IP_ADDRESS.write().unwrap() = Some(preferred.clone());
+
+    println!("[IP] 刷新本机 IP: 当前 {:?}，可用 {:?}", preferred, all_ips);
+    all_ips
+}
+
+/// 心跳循环里的周期性重扫：更新可用列表，但不覆盖用户手动选的地址
+pub(crate) fn rescan_local_ips() -> Vec<String> {
+    let all_ips = get_all_local_ips();
+    let current = LOCAL_IP_ADDRESS.read().unwrap().clone().flatten();
+    let preferred = keep_or_reselect(current.as_deref(), &all_ips);
+
+    *ALL_LOCAL_IPS.write().unwrap() = all_ips.clone();
+    *LOCAL_IP_ADDRESS.write().unwrap() = Some(preferred);
+
+    all_ips
+}
+
 pub(crate) fn local_ip_address() -> Option<String> {
-    LOCAL_IP_ADDRESS
-        .get_or_init(|| {
-            let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
-            socket
-                .connect((Ipv4Addr::new(224, 0, 0, 167), 8888))
-                .ok()?;
-            let address = socket.local_addr().ok()?.ip();
-            (!address.is_unspecified() && !address.is_loopback()).then(|| address.to_string())
-        })
-        .clone()
+    if let Some(cached) = LOCAL_IP_ADDRESS.read().unwrap().clone() {
+        return cached;
+    }
+    refresh_local_ips();
+    LOCAL_IP_ADDRESS.read().unwrap().clone().flatten()
+}
+
+/// 从已探测到的列表中手动切换当前 IP
+#[cfg(feature = "desktop")]
+pub(crate) fn set_local_ip(ip: String) -> bool {
+    if !ALL_LOCAL_IPS.read().unwrap().contains(&ip) {
+        eprintln!("[IP] 目标地址不在可用列表中: {}", ip);
+        return false;
+    }
+    *LOCAL_IP_ADDRESS.write().unwrap() = Some(Some(ip.clone()));
+    println!("[IP] 手动切换本机 IP 为: {}", ip);
+    true
+}
+
+/// 读取缓存的 IP 列表；若尚未探测过则先探测一次
+pub(crate) fn get_all_cached_ips() -> Vec<String> {
+    {
+        let cached = ALL_LOCAL_IPS.read().unwrap();
+        if !cached.is_empty() {
+            return cached.clone();
+        }
+    }
+    refresh_local_ips()
 }
 
 fn local_announcement(
@@ -181,14 +279,51 @@ fn create_discovery_socket(
 
     if is_listener {
         let multi_addr: Ipv4Addr = MULTICAST_IP.parse().unwrap();
-        let interface: Ipv4Addr = "0.0.0.0".parse().unwrap();
-        let _ = std_socket.join_multicast_v4(&multi_addr, &interface);
+        // 先按默认接口加入，保证单网卡与 Android（读不到网卡列表）场景不退化
+        let _ = std_socket.join_multicast_v4(&multi_addr, &Ipv4Addr::UNSPECIFIED);
+        // 再对每张探测到的网卡各加入一次，多网卡才不会只收到默认卡的组播
+        for ip in get_all_cached_ips() {
+            if let Ok(interface) = ip.parse::<Ipv4Addr>() {
+                let _ = std_socket.join_multicast_v4(&multi_addr, &interface);
+            }
+        }
     } else {
         std_socket.set_broadcast(true)?;
         let _ = std_socket.set_multicast_ttl_v4(1);
     }
 
     Ok(std_socket)
+}
+
+/// 把发送 socket 绑到某张网卡的地址上。
+/// 绑定源地址会强制包从这张卡出去，因此不需要知道子网掩码：
+/// 受限广播 255.255.255.255 与组播都是链路本地的，不经过路由器。
+fn bind_interface_socket(local_ip: Ipv4Addr) -> Result<UdpSocket, std::io::Error> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    let addr = std::net::SocketAddr::from((local_ip, 0));
+    socket.bind(&addr.into())?;
+    socket.set_broadcast(true)?;
+    let _ = socket.set_multicast_ttl_v4(1);
+    // IP_MULTICAST_IF：仅靠绑定源地址在部分平台不足以决定组播出口，必须显式指定
+    let _ = socket.set_multicast_if_v4(&local_ip);
+    Ok(socket.into())
+}
+
+/// 为每个探测到的本机地址建一个发送 socket；绑不上的地址（已失效）直接跳过
+fn interface_sockets(local_ips: &[String]) -> Vec<(Ipv4Addr, UdpSocket)> {
+    local_ips
+        .iter()
+        .filter_map(|ip| ip.parse::<Ipv4Addr>().ok())
+        .filter_map(|ip| bind_interface_socket(ip).ok().map(|socket| (ip, socket)))
+        .collect()
+}
+
+/// 每张网卡都要发的目标：受限广播 + 组播。绑定源地址后二者都只走本网卡。
+fn per_interface_targets(port: u16) -> Vec<std::net::SocketAddr> {
+    vec![
+        std::net::SocketAddr::from((Ipv4Addr::BROADCAST, port)),
+        std::net::SocketAddr::from((MULTICAST_IP.parse::<Ipv4Addr>().unwrap(), port)),
+    ]
 }
 
 // 核心黑科技：生成全网段广播地址（绕过 Android 网卡读取限制）
@@ -213,6 +348,9 @@ fn get_smart_broadcast_addresses(port: u16) -> Vec<String> {
     addrs
 }
 
+/// 每隔多少个心跳周期重扫一次网卡（2 秒一拍，约 30 秒）
+const IP_RESCAN_TICKS: u32 = 15;
+
 pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx::Sqlite>) {
     let socket = match create_discovery_socket("0.0.0.0:0", false) {
         Ok(s) => s,
@@ -230,6 +368,13 @@ pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx:
     let mut sys = System::new();
     let target_addrs = get_smart_broadcast_addresses(port);
     let (hostname, mac_address) = local_device_metadata();
+
+    // 逐网卡发送：绑定源地址强制包从每张卡出去，多网卡/多网段才不会漏
+    let interface_targets = per_interface_targets(port);
+    let mut known_ips = get_all_cached_ips();
+    let mut nic_sockets = interface_sockets(&known_ips);
+    println!("[UDP] 逐网卡心跳已就绪: {:?}", known_ips);
+    let mut tick: u32 = 0;
 
     // DNS 缓存：hostname → (解析结果, 过期时间)，TTL 60 秒
     let mut dns_cache: HashMap<String, (Vec<std::net::SocketAddr>, Instant)> = HashMap::new();
@@ -255,7 +400,15 @@ pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx:
         )
         .encode();
 
-        // 核心：遍历所有可能地址，仅路由存在的网卡能发送成功
+        // 逐网卡发一遍受限广播与组播：不依赖子网掩码，多网卡都能覆盖
+        for (_ip, nic_socket) in &nic_sockets {
+            for target in &interface_targets {
+                let _ = nic_socket.send_to(msg.as_bytes(), target);
+            }
+        }
+
+        // 兜底：遍历所有可能地址，仅路由存在的网卡能发送成功
+        // （Android 读不到网卡列表时，这条路径仍然有效）
         for addr in &target_addrs {
             let _ = socket.send_to(msg.as_bytes(), addr);
         }
@@ -310,6 +463,17 @@ pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx:
                 for addr in &addrs {
                     let _ = socket.send_to(msg.as_bytes(), addr);
                 }
+            }
+        }
+
+        // 周期性重扫网卡：插拔网线、连断 VPN 后自动跟上，不覆盖手动选择
+        tick = tick.wrapping_add(1);
+        if tick % IP_RESCAN_TICKS == 0 {
+            let latest = rescan_local_ips();
+            if latest != known_ips {
+                println!("[UDP] 网卡变化 {:?} -> {:?}，重建逐网卡心跳", known_ips, latest);
+                nic_sockets = interface_sockets(&latest);
+                known_ips = latest;
             }
         }
 
@@ -670,6 +834,62 @@ mod tests {
 
         assert!(capable.has_authoritative_metadata());
         assert!(!legacy.has_authoritative_metadata());
+    }
+
+    #[test]
+    fn manual_ip_choice_survives_a_background_rescan() {
+        let available = vec!["192.168.10.178".to_string(), "198.18.0.1".to_string()];
+        assert_eq!(
+            keep_or_reselect(Some("192.168.10.178"), &available).as_deref(),
+            Some("192.168.10.178"),
+        );
+    }
+
+    #[test]
+    fn vanished_ip_falls_back_instead_of_sticking_to_a_dead_address() {
+        // 拔掉网线/断开 VPN 后原地址消失，必须回落而不是继续显示失效地址
+        let available = vec!["192.168.10.178".to_string()];
+        let chosen = keep_or_reselect(Some("192.168.20.139"), &available);
+        assert_ne!(chosen.as_deref(), Some("192.168.20.139"));
+        assert_eq!(chosen.as_deref(), Some("192.168.10.178"));
+    }
+
+    #[test]
+    fn empty_ip_list_selects_nothing_rather_than_panicking() {
+        assert_eq!(keep_or_reselect(Some("192.168.10.178"), &[]), None);
+        assert_eq!(keep_or_reselect(None, &[]), None);
+    }
+
+    #[test]
+    fn interface_sockets_skip_addresses_that_are_not_local() {
+        // 203.0.113.7 是 RFC 5737 文档网段，本机不可能持有 → 必须被跳过
+        let sockets = interface_sockets(&[
+            "127.0.0.1".to_string(),
+            "203.0.113.7".to_string(),
+            "not-an-ip".to_string(),
+        ]);
+        assert_eq!(sockets.len(), 1);
+        assert_eq!(sockets[0].0, Ipv4Addr::LOCALHOST);
+    }
+
+    #[test]
+    fn per_interface_targets_cover_limited_broadcast_and_multicast() {
+        // 绑定源地址后这两个目标都只走本网卡，因此无需知道子网掩码
+        let targets = per_interface_targets(8888);
+        let ips: Vec<_> = targets.iter().map(|target| target.ip().to_string()).collect();
+        assert!(ips.contains(&"255.255.255.255".to_string()));
+        assert!(ips.contains(&MULTICAST_IP.to_string()));
+        assert!(targets.iter().all(|target| target.port() == 8888));
+    }
+
+    #[test]
+    fn brute_force_fallback_still_covers_android_hotspot_ranges() {
+        // 逐网卡发送是新增路径，不能顺手削弱 Android 的兜底覆盖
+        let addrs = get_smart_broadcast_addresses(8888);
+        assert!(addrs.contains(&"255.255.255.255:8888".to_string()));
+        assert!(addrs.contains(&"172.20.10.15:8888".to_string()));
+        assert!(addrs.contains(&"192.168.0.255:8888".to_string()));
+        assert!(addrs.contains(&"192.168.255.255:8888".to_string()));
     }
 
     #[test]

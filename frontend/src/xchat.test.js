@@ -32,6 +32,7 @@ import {
   mentionToken,
   nativeClipboardPaths,
   nativeDragDropTarget,
+  retainInFlightMessages,
   nativeCaptureShortcutAvailable,
   normalizeConversation,
   normalizeDraftAttachment,
@@ -224,6 +225,77 @@ test("message merge replaces optimistic rows and never regresses receipts", () =
   assert.equal(merged[0].id, 42);
   assert.equal(merged[0].status, "read");
   assert.equal(merged[0].read_count, 2);
+});
+
+test("first-page reload keeps unacknowledged local messages visible", () => {
+  const optimistic = normalizeMessage(
+    {
+      client_message_id: "client-1",
+      sender_id: "self",
+      content: "刚发出的消息",
+      timestamp: 20,
+      status: "pending",
+    },
+    "self",
+    "conversation-1",
+  );
+  const persisted = normalizeMessage(
+    { id: 7, client_message_id: "client-0", sender_id: "self", content: "旧消息", timestamp: 10 },
+    "self",
+    "conversation-1",
+  );
+
+  const retained = retainInFlightMessages([persisted, optimistic], [persisted]);
+  assert.deepEqual(
+    retained.map((message) => message.client_message_id),
+    ["client-1"],
+  );
+
+  const reloaded = mergeMessages(retained, [persisted]);
+  assert.deepEqual(
+    reloaded.map((message) => message.client_message_id),
+    ["client-0", "client-1"],
+  );
+});
+
+test("first-page reload drops local rows the backend has confirmed or removed", () => {
+  const acknowledged = normalizeMessage(
+    { id: 7, client_message_id: "client-1", sender_id: "self", content: "已确认", timestamp: 10 },
+    "self",
+    "conversation-1",
+  );
+  const recalledLocally = normalizeMessage(
+    { id: 8, client_message_id: "client-2", sender_id: "self", content: "被撤回", timestamp: 11 },
+    "self",
+    "conversation-1",
+  );
+  const fromPeer = normalizeMessage(
+    { id: 9, client_message_id: "client-3", sender_id: "peer", content: "对方消息", timestamp: 12 },
+    "self",
+    "conversation-1",
+  );
+
+  // 后端这一页只剩 acknowledged：已送达的本机消息、被撤回的消息、对方消息都不应被保留
+  assert.deepEqual(
+    retainInFlightMessages([acknowledged, recalledLocally, fromPeer], [acknowledged]),
+    [],
+  );
+});
+
+test("failed sends survive a first-page reload so retry stays reachable", () => {
+  const failed = normalizeMessage(
+    {
+      client_message_id: "client-9",
+      sender_id: "self",
+      content: "发送失败",
+      timestamp: 30,
+      status: "failed",
+    },
+    "self",
+    "conversation-1",
+  );
+
+  assert.deepEqual(retainInFlightMessages([failed], []), [failed]);
 });
 
 test("message normalization preserves mention target IDs", () => {

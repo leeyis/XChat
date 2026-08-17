@@ -86,6 +86,9 @@
     "allow-stage-image-attachment",
     "allow-discard-staged-attachment",
     "allow-read-workspace-media",
+    "allow-refresh-local-ips",
+    "allow-get-all-local-ips",
+    "allow-set-local-ip",
     {
       "identifier": "fs:scope",
       "allow": [

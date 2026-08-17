@@ -2846,6 +2846,28 @@ pub async fn reveal_workspace_file(
     }
 }
 
+/// 重新探测本机 IP 列表（网络切换后手动刷新用）
+#[tauri::command]
+pub fn refresh_local_ips() -> Vec<String> {
+    crate::network::discovery::refresh_local_ips()
+}
+
+/// 获取所有可用的本机 IP 地址
+#[tauri::command]
+pub fn get_all_local_ips() -> Vec<String> {
+    crate::network::discovery::get_all_cached_ips()
+}
+
+/// 设置当前使用的本地IP地址
+#[tauri::command]
+pub fn set_local_ip(ip: String) -> Result<(), String> {
+    if crate::network::discovery::set_local_ip(ip) {
+        Ok(())
+    } else {
+        Err("IP地址不在可用列表中".to_string())
+    }
+}
+
 #[cfg(all(test, not(target_os = "android")))]
 mod desktop_attention_tests {
     use super::{

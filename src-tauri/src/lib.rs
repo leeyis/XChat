@@ -130,6 +130,9 @@ pub fn run() {
             commands::read_workspace_media,
             commands::pick_workspace_directory,
             commands::copy_file_message_content,
+            commands::refresh_local_ips,
+            commands::get_all_local_ips,
+            commands::set_local_ip,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
