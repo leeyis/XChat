@@ -9,6 +9,7 @@ const EVENT_NAMES = [
   "settings-changed",
   "new-peer",
   "peer-online",
+  "peer-offline",
   "new-message",
   "message-reaction",
   "strong-reminder",

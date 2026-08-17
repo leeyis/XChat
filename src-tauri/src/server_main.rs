@@ -88,6 +88,17 @@ async fn main() {
         lanchat::network::discovery::start_announcing(port, announce_id, announce_pool).await;
     });
 
+    // 4. 启动离线看门狗：离线状态是上线补发的触发条件，必须主动扫描
+    let peer_manager_for_watchdog = peer_manager.clone();
+    let pool_for_watchdog = pool.clone();
+    tokio::spawn(async move {
+        lanchat::network::discovery::start_offline_watchdog(
+            peer_manager_for_watchdog,
+            pool_for_watchdog,
+        )
+        .await;
+    });
+
     println!("[Server Main] ========================================");
     println!("[Server Main] Web 服务器: http://localhost:{}", port);
     println!("[Server Main] WebSocket: ws://localhost:{}/ws", port);

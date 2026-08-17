@@ -1009,6 +1009,18 @@ async fn send_message_control(
     Ok(reaction.map(|(_, active)| active))
 }
 
+/// 消息落库时的初始状态。
+/// 单聊先落 pending，等后台真的发出去再升到 sent —— 状态阶梯不允许 sent 退回 pending，
+/// 所以只能先低后高，否则「已发送」在对方收不到时也照样显示。
+/// 群聊维持原状：多收件人下 sent 表示已进网络，单个成员的送达由 message_receipts 单独追踪。
+fn initial_send_status(kind: &str, no_one_online: bool) -> &'static str {
+    if kind == "group" && !no_one_online {
+        "sent"
+    } else {
+        "pending"
+    }
+}
+
 pub async fn send_message(
     pool: &Pool<Sqlite>,
     peer_manager: &PeerManager,
@@ -1071,6 +1083,7 @@ pub async fn send_message(
         .filter(|peer| !peer.is_offline)
         .cloned()
         .collect::<Vec<_>>();
+    let initial_status = initial_send_status(&conversation.kind, online.is_empty());
     let message = db::save_conversation_message(
         pool,
         conversation_id,
@@ -1079,7 +1092,7 @@ pub async fn send_message(
         content,
         msg_type,
         now(),
-        "sent",
+        initial_status,
         client_message_id,
     )
     .await?;
@@ -1131,19 +1144,35 @@ pub async fn send_message(
             let msg_type = msg_type.to_string();
             let sender_id = self_id.clone();
             let sender_name = self_name.clone();
+            let pool = pool.clone();
+            let peer_manager = peer_manager.clone();
             tokio::spawn(async move {
-                if let Err(error) = messaging::send_direct_message(
+                match messaging::send_direct_message(
                     &peer.addr,
                     sender_id,
                     sender_name,
                     conversation_id,
-                    client_message_id,
+                    client_message_id.clone(),
                     content,
                     msg_type,
                 )
                 .await
                 {
-                    eprintln!("[Workspace] 单聊消息发送失败: {error}");
+                    // 只有真的发出去了才升到 sent，界面上的「已发送」从此有实际含义
+                    Ok(()) => {
+                        if let Err(error) =
+                            db::mark_message_status_by_client_id(&pool, &client_message_id, "sent")
+                                .await
+                        {
+                            eprintln!("[Workspace] 回写 sent 失败: {error}");
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("[Workspace] 单聊消息发送失败: {error}");
+                        // 立刻判对方离线：补发靠「离线→上线」跳变触发，
+                        // 不标记的话对方回来时不会走补发分支，消息就永久卡住了。
+                        peer_manager.force_mark_offline(&peer.id);
+                    }
                 }
             });
         }
@@ -1334,16 +1363,21 @@ pub async fn resend_for_peer(
 ) -> Result<(), String> {
     let self_id = db::get_user_id(pool).await?;
     let self_name = db::get_username(pool).await?;
+    // 下面每一段都逐条容错：任何一条发失败都不能 `?` 早退，
+    // 否则排在后面的待发消息会被一条失败的群同步整段跳过。
     for group in db::list_groups_for_member(pool, peer_id).await? {
         let members = db::get_conversation_members(pool, &group.id).await?;
-        crate::network::protocol::send_protocol_message(
+        if let Err(error) = crate::network::protocol::send_protocol_message(
             peer_addr,
             &group_sync_message(&group, &members),
         )
-        .await?;
+        .await
+        {
+            eprintln!("[Workspace] 群同步补发失败 {}: {error}", group.id);
+        }
     }
     for pending in db::get_pending_recalls_for_peer(pool, peer_id).await? {
-        crate::network::protocol::send_protocol_message(
+        match crate::network::protocol::send_protocol_message(
             peer_addr,
             &ProtocolMessage::MessageRecall {
                 conversation_id: pending.conversation_id,
@@ -1352,8 +1386,17 @@ pub async fn resend_for_peer(
                 timestamp: pending.recall_requested_at.max(0) as u64,
             },
         )
-        .await?;
-        db::mark_recall_sent(pool, &pending.message_client_id, peer_id).await?;
+        .await
+        {
+            // 只有确认发出去了才记 sent，失败的下次上线再试
+            Ok(()) => db::mark_recall_sent(pool, &pending.message_client_id, peer_id).await?,
+            Err(error) => {
+                eprintln!(
+                    "[Workspace] 撤回补发失败 {}: {error}",
+                    pending.message_client_id
+                );
+            }
+        }
     }
     for receipt in db::get_pending_receipts_for_peer(pool, peer_id).await? {
         if receipt.delivered_at.is_some() && receipt.delivery_ack_sent_at.is_none() {
@@ -1363,14 +1406,18 @@ pub async fn resend_for_peer(
                 message_ids: vec![receipt.message_client_id.clone()],
                 timestamp: now() as u64,
             };
-            crate::network::protocol::send_protocol_message(peer_addr, &ack).await?;
-            db::mark_receipt_ack_sent(
-                pool,
-                &receipt.message_client_id,
-                &receipt.reader_id,
-                "delivery",
-            )
-            .await?;
+            if crate::network::protocol::send_protocol_message(peer_addr, &ack)
+                .await
+                .is_ok()
+            {
+                db::mark_receipt_ack_sent(
+                    pool,
+                    &receipt.message_client_id,
+                    &receipt.reader_id,
+                    "delivery",
+                )
+                .await?;
+            }
         }
         if receipt.read_at.is_some() && receipt.read_ack_sent_at.is_none() {
             let ack = ProtocolMessage::ReadAck {
@@ -1379,9 +1426,18 @@ pub async fn resend_for_peer(
                 message_ids: vec![receipt.message_client_id.clone()],
                 timestamp: now() as u64,
             };
-            crate::network::protocol::send_protocol_message(peer_addr, &ack).await?;
-            db::mark_receipt_ack_sent(pool, &receipt.message_client_id, &receipt.reader_id, "read")
+            if crate::network::protocol::send_protocol_message(peer_addr, &ack)
+                .await
+                .is_ok()
+            {
+                db::mark_receipt_ack_sent(
+                    pool,
+                    &receipt.message_client_id,
+                    &receipt.reader_id,
+                    "read",
+                )
                 .await?;
+            }
         }
     }
     for message in db::get_undelivered_messages_for_peer(pool, peer_id).await? {
@@ -1394,9 +1450,10 @@ pub async fn resend_for_peer(
         let Some(client_message_id) = message.client_message_id.clone() else {
             continue;
         };
-        let conversation = db::get_conversation(pool, &conversation_id)
-            .await?
-            .ok_or_else(|| "conversation not found".to_string())?;
+        // 会话被删掉的历史消息不该让整轮补发失败，跳过即可
+        let Some(conversation) = db::get_conversation(pool, &conversation_id).await? else {
+            continue;
+        };
         if conversation.kind == "group" {
             let mention_ids = db::get_message_receipts(pool, &client_message_id)
                 .await?
@@ -1414,27 +1471,47 @@ pub async fn resend_for_peer(
                 mention_ids,
                 timestamp: message.timestamp as u64,
             };
-            crate::network::protocol::send_protocol_message(peer_addr, &outgoing).await?;
+            if let Err(error) =
+                crate::network::protocol::send_protocol_message(peer_addr, &outgoing).await
+            {
+                eprintln!("[Workspace] 群消息补发失败: {error}");
+            }
         } else {
-            messaging::send_direct_message(
+            let sent = messaging::send_direct_message(
                 peer_addr,
                 self_id.clone(),
                 self_name.clone(),
                 conversation_id,
-                client_message_id,
+                client_message_id.clone(),
                 message.content,
                 message.msg_type,
             )
-            .await?;
+            .await;
+            match sent {
+                // 补发成功后把 pending 升到 sent，界面不再一直显示未发送
+                Ok(()) => {
+                    if let Err(error) =
+                        db::mark_message_status_by_client_id(pool, &client_message_id, "sent").await
+                    {
+                        eprintln!("[Workspace] 补发后回写 sent 失败: {error}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("[Workspace] 单聊消息补发失败 {client_message_id}: {error}");
+                }
+            }
         }
     }
-    crate::network::conversation_file::resume_waiting_for_peer(
+    if let Err(error) = crate::network::conversation_file::resume_waiting_for_peer(
         pool,
         peer_manager,
         peer_id,
         peer_addr,
     )
-    .await?;
+    .await
+    {
+        eprintln!("[Workspace] 文件续传恢复失败: {error}");
+    }
     Ok(())
 }
 
@@ -1728,6 +1805,131 @@ pub async fn update_preference(pool: &Pool<Sqlite>, key: &str, value: &str) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn one_failed_send_does_not_abort_the_rest_of_the_resend_queue() {
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-resend-test-{}", uuid::Uuid::new_v4()));
+        let pool = db::init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        let self_id = db::get_user_id(&pool).await.unwrap();
+        let peer_id = "peer-offline";
+
+        // 一个含该成员的群：群同步是补发的第一段，以前它一失败就 `?` 早退，
+        // 后面排队的单聊消息永远发不出去。
+        db::create_group_conversation(
+            &pool,
+            Some("group-1"),
+            "测试群",
+            &self_id,
+            &[
+                db::NewConversationMember {
+                    peer_id: self_id.clone(),
+                    display_name: "我".into(),
+                    role: "owner".into(),
+                },
+                db::NewConversationMember {
+                    peer_id: peer_id.into(),
+                    display_name: "对方".into(),
+                    role: "member".into(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let direct = db::ensure_direct_conversation(&pool, peer_id).await.unwrap();
+        for client_message_id in ["queued-1", "queued-2"] {
+            db::save_conversation_message(
+                &pool,
+                &direct.id,
+                &self_id,
+                Some(peer_id),
+                "离线期间发的消息",
+                "text",
+                now(),
+                "pending",
+                client_message_id,
+            )
+            .await
+            .unwrap();
+            db::ensure_message_recipients(&pool, client_message_id, &[peer_id.to_string()])
+                .await
+                .unwrap();
+        }
+
+        // 再排一条待撤回，验证撤回段也逐条容错
+        db::save_conversation_message(
+            &pool,
+            &direct.id,
+            &self_id,
+            Some(peer_id),
+            "要撤回的消息",
+            "text",
+            now(),
+            "pending",
+            "recalled-1",
+        )
+        .await
+        .unwrap();
+        db::recall_message_for_recipients(
+            &pool,
+            &direct.id,
+            "recalled-1",
+            &self_id,
+            &[peer_id.to_string()],
+        )
+        .await
+        .unwrap();
+
+        // 127.0.0.1:9 上没人监听，每一次发送都会失败
+        let result = resend_for_peer(&pool, &PeerManager::new(), peer_id, "127.0.0.1:9").await;
+        assert!(result.is_ok(), "整轮补发不能因为单条发送失败而报错");
+
+        // 全部发送都失败，所以队列必须原样留着，下次上线再试
+        assert_eq!(
+            db::get_undelivered_messages_for_peer(&pool, peer_id)
+                .await
+                .unwrap()
+                .len(),
+            2,
+            "发送失败的消息不能被当成已送达"
+        );
+        for client_message_id in ["queued-1", "queued-2"] {
+            let message = db::get_message_by_client_id(&pool, client_message_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                message.status.as_deref(),
+                Some("pending"),
+                "没发出去就不能显示已发送"
+            );
+        }
+        assert_eq!(
+            db::get_pending_recalls_for_peer(&pool, peer_id)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "撤回没发出去就不能记成已发送"
+        );
+
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
+
+    #[test]
+    fn direct_messages_only_claim_sent_after_the_network_succeeds() {
+        // 单聊必须先 pending：状态阶梯不允许 sent 退回 pending，
+        // 一开始就写 sent 的话，发送失败时界面永远停在「已发送」。
+        assert_eq!(initial_send_status("direct", false), "pending");
+        assert_eq!(initial_send_status("direct", true), "pending");
+
+        // 群聊有在线成员就算已进网络，单个成员的送达交给 message_receipts
+        assert_eq!(initial_send_status("group", false), "sent");
+        // 全员离线的群聊没发出去任何东西，同样只能是 pending
+        assert_eq!(initial_send_status("group", true), "pending");
+    }
 
     #[test]
     fn capabilities_match_the_frontend_contract() {

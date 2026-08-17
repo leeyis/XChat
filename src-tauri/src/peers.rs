@@ -4,8 +4,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// 局域网UDP发现会有网络抖动、延迟和丢包，90秒超时更合理（原30秒过于严格）
-const PEER_OFFLINE_TIMEOUT_SECS: u64 = 90;
+// 局域网UDP发现会有网络抖动、延迟和丢包，心跳 2 秒一次，45 秒足够吸收抖动。
+// 发送失败会立即 force_mark_offline，不必再靠长超时兜底。
+const PEER_OFFLINE_TIMEOUT_SECS: u64 = 45;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Peer {
@@ -28,6 +29,8 @@ pub struct Peer {
 }
 
 // 全局在线用户列表
+// Clone 共享同一份 Arc，克隆出来的 manager 看到的是同一张表（后台任务里要用）
+#[derive(Clone)]
 pub struct PeerManager {
     peers: Arc<RwLock<HashMap<String, Peer>>>, // key 是 UUID
 }
@@ -189,7 +192,8 @@ impl PeerManager {
         }
     }
 
-    pub fn force_mark_offline(&self, id: &str) {
+    /// 发送失败时立即判离线；返回是否发生了状态翻转，供调用方决定要不要通知。
+    pub fn force_mark_offline(&self, id: &str) -> bool {
         let mut peers = self.peers.write().unwrap();
         if let Some(peer) = peers.get_mut(id) {
             if !peer.is_offline {
@@ -198,22 +202,26 @@ impl PeerManager {
                     peer.name, peer.id
                 );
                 peer.is_offline = true;
+                return true;
             }
         }
+        false
     }
 
-    // 标记所有用户为"待确认"状态,然后检查哪些用户离线
-    pub fn mark_stale_as_offline(&self) {
+    /// 标记超时未见的用户为离线，返回本次刚刚翻转的用户。
+    /// 返回值让调用方只对「刚离线」的用户发一次通知，不会每轮重复提醒。
+    pub fn mark_stale_as_offline(&self) -> Vec<Peer> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
 
-        self.mark_stale_as_offline_at(now);
+        self.mark_stale_as_offline_at(now)
     }
 
-    fn mark_stale_as_offline_at(&self, now: u64) {
+    fn mark_stale_as_offline_at(&self, now: u64) -> Vec<Peer> {
         let mut peers = self.peers.write().unwrap();
+        let mut newly_offline = Vec::new();
 
         // 局域网广播会受休眠、调度和 Wi-Fi 抖动影响；给 2 秒心跳留出足够余量。
         for peer in peers.values_mut() {
@@ -224,14 +232,17 @@ impl PeerManager {
                     peer.name, peer.id, time_since_seen
                 );
                 peer.is_offline = true;
+                newly_offline.push(peer.clone());
             }
         }
+
+        newly_offline
     }
 
     // 获取所有用户（包括离线的）
     pub fn get_all_peers(&self) -> Vec<Peer> {
-        // 先标记离线用户
-        self.mark_stale_as_offline();
+        // 先标记离线用户；通知由离线看门狗负责，这里只要状态最新
+        let _ = self.mark_stale_as_offline();
 
         let peers = self.peers.read().unwrap();
         peers.values().cloned().collect()
@@ -370,6 +381,62 @@ mod tests {
         assert!(!manager.peers.read().unwrap()["peer-1"].is_offline);
 
         manager.mark_stale_as_offline_at(1_001 + PEER_OFFLINE_TIMEOUT_SECS);
+        assert!(manager.peers.read().unwrap()["peer-1"].is_offline);
+    }
+
+    #[test]
+    fn going_offline_is_reported_once_so_notifications_do_not_repeat() {
+        let manager = PeerManager::new();
+        manager.add_or_update("peer-1".into(), "Alice".into(), "127.0.0.1:8888".into());
+        {
+            let mut peers = manager.peers.write().unwrap();
+            peers.get_mut("peer-1").unwrap().last_seen = 1_000;
+        }
+
+        // 还没超时：没有人刚离线，不该发通知
+        assert!(manager
+            .mark_stale_as_offline_at(1_000 + PEER_OFFLINE_TIMEOUT_SECS)
+            .is_empty());
+
+        // 刚跨过超时：返回这一位，调用方据此发一次离线通知
+        let newly_offline = manager.mark_stale_as_offline_at(1_001 + PEER_OFFLINE_TIMEOUT_SECS);
+        assert_eq!(newly_offline.len(), 1);
+        assert_eq!(newly_offline[0].id, "peer-1");
+        assert_eq!(newly_offline[0].name, "Alice");
+
+        // 继续离线：已经报过了，不能每轮扫描都再提醒一次
+        assert!(manager
+            .mark_stale_as_offline_at(9_999 + PEER_OFFLINE_TIMEOUT_SECS)
+            .is_empty());
+    }
+
+    #[test]
+    fn failed_send_marks_peer_offline_once_so_reconnect_triggers_resend() {
+        let manager = PeerManager::new();
+        manager.add_or_update("peer-1".into(), "Alice".into(), "127.0.0.1:8888".into());
+
+        // 发送失败 -> 判离线，返回 true 表示发生了跳变
+        assert!(manager.force_mark_offline("peer-1"));
+        assert!(manager.peers.read().unwrap()["peer-1"].is_offline);
+        // 重复调用不再跳变，避免重复通知
+        assert!(!manager.force_mark_offline("peer-1"));
+        // 不存在的用户也不能 panic
+        assert!(!manager.force_mark_offline("peer-missing"));
+
+        // 对方回来时必须被认作「重新上线」，补发链路才会启动
+        let reconnected =
+            manager.add_or_update("peer-1".into(), "Alice".into(), "127.0.0.1:8888".into());
+        assert!(reconnected);
+    }
+
+    #[test]
+    fn cloned_manager_shares_one_peer_table() {
+        let manager = PeerManager::new();
+        // 后台任务持有的是克隆体，若不共享同一张表，离线标记就会丢
+        let background = manager.clone();
+        manager.add_or_update("peer-1".into(), "Alice".into(), "127.0.0.1:8888".into());
+
+        assert!(background.force_mark_offline("peer-1"));
         assert!(manager.peers.read().unwrap()["peer-1"].is_offline);
     }
 }

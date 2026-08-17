@@ -349,6 +349,19 @@ fn main() {
                     lanchat::network::discovery::start_announcing(port, id2, pool2).await;
                 });
 
+                let peer_manager_for_watchdog = peer_manager.clone();
+                let pool_for_watchdog = pool.clone();
+                let handle_for_watchdog = handle.clone();
+                tokio::spawn(async move {
+                    println!("[Main] 开启离线看门狗...");
+                    lanchat::network::discovery::start_offline_watchdog(
+                        peer_manager_for_watchdog,
+                        pool_for_watchdog,
+                        Some(handle_for_watchdog),
+                    )
+                    .await;
+                });
+
                 let pool_clone = pool.clone();
                 let peer_manager_clone = peer_manager.clone();
                 let handle_clone = handle.clone();

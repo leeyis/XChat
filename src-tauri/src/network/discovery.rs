@@ -759,6 +759,87 @@ pub async fn start_listening(
     }
 }
 
+/// 离线看门狗的扫描间隔。原先离线判定只在前端拉快照时顺带发生，
+/// 没人拉就永远不翻转，于是既没有离线通知、也不会触发上线补发。
+const OFFLINE_SCAN_INTERVAL: Duration = Duration::from_secs(5);
+
+/// 主动扫描超时未见的用户并广播离线事件。
+/// 必须独立于前端轮询运行：`is_offline` 是补发链路的触发条件，
+/// 不能依赖界面是否恰好在拉数据。
+/// 每隔多少次扫描顺带清一次在线用户的待发队列（5 秒一拍，约 30 秒）。
+/// 补发本来只靠「离线→上线」跳变触发，跳变一旦错过消息就永久卡住；
+/// 这条兜底保证队列最终一定会被清掉。
+const RESEND_SWEEP_TICKS: u32 = 6;
+
+/// 扫描一轮：把超时未见的用户标离线，并周期性重试在线用户的待发队列
+async fn offline_scan_tick(
+    peer_manager: &Arc<PeerManager>,
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    tick: u32,
+) -> Vec<crate::peers::Peer> {
+    let newly_offline = peer_manager.mark_stale_as_offline();
+
+    if tick % RESEND_SWEEP_TICKS == 0 {
+        for peer in peer_manager.get_active_peers() {
+            if let Err(error) =
+                crate::workspace::resend_for_peer(pool, peer_manager, &peer.id, &peer.addr).await
+            {
+                eprintln!("[UDP] 队列兜底补发失败 {}: {error}", peer.id);
+            }
+        }
+    }
+
+    newly_offline
+}
+
+#[cfg(feature = "desktop")]
+pub async fn start_offline_watchdog(
+    peer_manager: Arc<PeerManager>,
+    pool: sqlx::Pool<sqlx::Sqlite>,
+    app: Option<AppHandle>,
+) {
+    println!(
+        "[UDP] 离线看门狗已启动，每 {:?} 扫描一次",
+        OFFLINE_SCAN_INTERVAL
+    );
+    let mut tick: u32 = 0;
+    loop {
+        tokio::time::sleep(OFFLINE_SCAN_INTERVAL).await;
+        tick = tick.wrapping_add(1);
+
+        for peer in offline_scan_tick(&peer_manager, &pool, tick).await {
+            if let Some(app_handle) = &app {
+                let _ = app_handle.emit(
+                    "peer-offline",
+                    serde_json::json!({
+                        "id": peer.id,
+                        "name": peer.name,
+                        "addr": peer.addr,
+                    }),
+                );
+            }
+        }
+    }
+}
+
+// Web 端版本 - 没有 AppHandle 可以 emit，只做状态翻转与队列兜底
+#[cfg(all(feature = "web", not(feature = "desktop")))]
+pub async fn start_offline_watchdog(
+    peer_manager: Arc<PeerManager>,
+    pool: sqlx::Pool<sqlx::Sqlite>,
+) {
+    println!(
+        "[UDP] 离线看门狗已启动，每 {:?} 扫描一次",
+        OFFLINE_SCAN_INTERVAL
+    );
+    let mut tick: u32 = 0;
+    loop {
+        tokio::time::sleep(OFFLINE_SCAN_INTERVAL).await;
+        tick = tick.wrapping_add(1);
+        let _ = offline_scan_tick(&peer_manager, &pool, tick).await;
+    }
+}
+
 // 发送单次广播
 pub async fn send_single_broadcast(
     port: u16,
