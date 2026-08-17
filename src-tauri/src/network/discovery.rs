@@ -761,15 +761,17 @@ pub async fn start_listening(
 
 /// 离线看门狗的扫描间隔。原先离线判定只在前端拉快照时顺带发生，
 /// 没人拉就永远不翻转，于是既没有离线通知、也不会触发上线补发。
-const OFFLINE_SCAN_INTERVAL: Duration = Duration::from_secs(5);
+/// 必须明显小于 PEER_OFFLINE_TIMEOUT_SECS(10s)，否则实际感知延迟是
+/// 超时 + 扫描间隔。2 秒一扫，最坏 12 秒内出提示。
+const OFFLINE_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 
 /// 主动扫描超时未见的用户并广播离线事件。
 /// 必须独立于前端轮询运行：`is_offline` 是补发链路的触发条件，
 /// 不能依赖界面是否恰好在拉数据。
-/// 每隔多少次扫描顺带清一次在线用户的待发队列（5 秒一拍，约 30 秒）。
+/// 每隔多少次扫描顺带清一次在线用户的待发队列（2 秒一拍，约 30 秒）。
 /// 补发本来只靠「离线→上线」跳变触发，跳变一旦错过消息就永久卡住；
 /// 这条兜底保证队列最终一定会被清掉。
-const RESEND_SWEEP_TICKS: u32 = 6;
+const RESEND_SWEEP_TICKS: u32 = 15;
 
 /// 扫描一轮：把超时未见的用户标离线，并周期性重试在线用户的待发队列
 async fn offline_scan_tick(
@@ -778,6 +780,13 @@ async fn offline_scan_tick(
     tick: u32,
 ) -> Vec<crate::peers::Peer> {
     let newly_offline = peer_manager.mark_stale_as_offline();
+
+    // 落库，否则重启后这人又会显示在线（内存表是从 users 表重建的）
+    for peer in &newly_offline {
+        if let Err(error) = crate::db::mark_user_offline(pool, &peer.id).await {
+            eprintln!("[UDP] 持久化离线状态失败 {}: {error}", peer.id);
+        }
+    }
 
     if tick % RESEND_SWEEP_TICKS == 0 {
         for peer in peer_manager.get_active_peers() {
@@ -863,6 +872,25 @@ pub async fn send_single_broadcast(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offline_is_noticed_within_a_couple_seconds_of_the_timeout() {
+        // 实际感知延迟 = 离线超时 + 扫描间隔。扫描间隔一旦接近甚至超过超时，
+        // 「10 秒判离线」在用户看来就变成 15 秒以上。
+        let timeout = crate::peers::PEER_OFFLINE_TIMEOUT_SECS;
+        let scan = OFFLINE_SCAN_INTERVAL.as_secs();
+        assert!(
+            scan * 4 <= timeout,
+            "扫描间隔 {scan}s 相对离线超时 {timeout}s 太粗，感知会明显滞后"
+        );
+
+        // 兜底补发是网络开销，不能因为扫描变快就跟着变频繁；保持 30 秒左右
+        let sweep = scan * u64::from(RESEND_SWEEP_TICKS);
+        assert!(
+            (20..=40).contains(&sweep),
+            "队列兜底补发间隔 {sweep}s 偏离预期的 30 秒"
+        );
+    }
 
     #[test]
     fn discovery_parser_accepts_legacy_frames() {

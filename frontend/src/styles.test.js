@@ -277,6 +277,26 @@ test("about card uses the application logo and the group snapshot exposes its cr
   assert.match(workspace, /created_by:\s*record\.created_by/);
 });
 
+test("pending messages to an offline peer say they are waiting, not sending", async () => {
+  const app = await readFile(new URL("./App.jsx", import.meta.url), "utf8");
+  const body = app.match(/function statusLabel\([^)]*\)\s*\{([\s\S]*?)\n\}/)?.[1];
+
+  assert.ok(body, "statusLabel is missing");
+  // 对方离线时 pending 会一直挂着，"发送中"看着像卡死；必须先于群聊分支判断
+  assert.match(body, /peerOffline\s*&&\s*message\.status\s*===\s*"pending"/);
+  assert.match(body, /labels\.status\.waiting_peer/);
+  // 调用点必须真的把离线状态传进来，否则这条分支永远走不到
+  assert.match(app, /statusLabel\(message,[^)]*peer\?\.is_offline\)/);
+});
+
+test("offline toasts do not render as errors", async () => {
+  const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+  const rule = css.match(/\.toast\.warning i\s*\{([^}]*)\}/)?.[1];
+
+  assert.ok(rule, ".toast.warning rule is missing");
+  assert.match(rule, /var\(--warning\)/);
+});
+
 test("every prop passed to Icon is actually destructured by Icon", async () => {
   const app = await readFile(new URL("./App.jsx", import.meta.url), "utf8");
   const accepted = app.match(/function Icon\(\{([^}]*)\}/)?.[1];

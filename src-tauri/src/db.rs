@@ -1140,6 +1140,21 @@ pub async fn save_or_update_user(
     Ok(())
 }
 
+/// 只翻转离线标记，不动 last_seen。
+/// save_or_update_user 会把 last_seen 刷成当前时间，用它标离线等于告诉
+/// 下一轮扫描「刚刚才见过」，重启后这人又会显示在线。
+pub async fn mark_user_offline(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    id: &str,
+) -> Result<(), String> {
+    sqlx::query("UPDATE users SET is_offline = 1 WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("标记用户离线失败: {e}"))?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn save_or_update_discovered_user(
     pool: &sqlx::Pool<sqlx::Sqlite>,
@@ -1195,8 +1210,13 @@ pub async fn get_pending_messages(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     receiver_id: &str,
 ) -> Result<Vec<(i64, String, String, i64, Option<String>, Option<i64>)>, String> {
+    // 只取旧管线自己的消息（client_message_id IS NULL）。
+    // 带 client_message_id 的属于 message_receipts 那套补发管线（workspace::resend_for_peer），
+    // 两边都发就会让对方收到两条一样的消息。
     let rows = sqlx::query_as::<_, (i64, String, String, i64, Option<String>, Option<i64>)>(
-        "SELECT id, content, msg_type, timestamp, file_path, file_size FROM messages WHERE receiver_id = ? AND status = 'pending' ORDER BY timestamp ASC"
+        "SELECT id, content, msg_type, timestamp, file_path, file_size FROM messages
+         WHERE receiver_id = ? AND status = 'pending' AND client_message_id IS NULL
+         ORDER BY timestamp ASC"
     )
     .bind(receiver_id)
     .fetch_all(pool)
@@ -3452,6 +3472,77 @@ mod tests {
             .await
             .unwrap();
         assert!(get_message_reactions(&pool, "message-1").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn legacy_resend_queue_ignores_messages_owned_by_the_receipt_pipeline() {
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-legacy-queue-{}", uuid::Uuid::new_v4()));
+        let pool = init_db_standalone(Some(app_dir.clone())).await.unwrap();
+
+        // 旧管线自己的消息：没有 client_message_id
+        sqlx::query(
+            "INSERT INTO messages (sender_id, receiver_id, content, msg_type, timestamp, status)
+             VALUES ('me', 'peer-1', '旧管线消息', 'text', 1, 'pending')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // 新管线的消息：带 client_message_id，由 workspace::resend_for_peer 负责。
+        // 两条管线都补发就会让对方收到两条一样的消息。
+        sqlx::query(
+            "INSERT INTO messages
+                (sender_id, receiver_id, content, msg_type, timestamp, status, client_message_id)
+             VALUES ('me', 'peer-1', '新管线消息', 'text', 2, 'pending', 'client-1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let queued = get_pending_messages(&pool, "peer-1").await.unwrap();
+        let contents: Vec<String> = queued.into_iter().map(|row| row.1).collect();
+        assert_eq!(contents, vec!["旧管线消息"]);
+
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn marking_a_user_offline_keeps_last_seen_untouched() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE users (
+                id TEXT PRIMARY KEY, name TEXT, addr TEXT, last_seen INTEGER,
+                is_offline INTEGER DEFAULT 0, available_memory_mb INTEGER DEFAULT 0
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO users (id, name, addr, last_seen, is_offline)
+             VALUES ('peer-1', 'Alice', '127.0.0.1:8888', 1000, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        mark_user_offline(&pool, "peer-1").await.unwrap();
+
+        let (last_seen, is_offline) =
+            sqlx::query_as::<_, (i64, i64)>("SELECT last_seen, is_offline FROM users WHERE id = ?")
+                .bind("peer-1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(is_offline, 1);
+        // last_seen 被刷新的话，重启后下一轮扫描会以为「刚刚才见过」，这人又变在线
+        assert_eq!(last_seen, 1000, "标离线不能顺手刷新 last_seen");
     }
 
     #[tokio::test]

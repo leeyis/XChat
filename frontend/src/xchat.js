@@ -2226,6 +2226,21 @@ export function createXChatModule() {
       scheduleRefresh();
       return;
     }
+    if (eventType === "peer.offline") {
+      const name = payload?.name || payload?.hostname || uiCopy("局域网主机", "LAN host");
+      addNotice(uiCopy(`${name} 已下线`, `${name} went offline`), "warning");
+      if (snapshot.settings.notifications_enabled && snapshot.capabilities.notifications) {
+        Promise.resolve(
+          adapter.showAlert(
+            uiCopy("局域网主机下线", "LAN host offline"),
+            uiCopy(`${name} 已下线`, `${name} went offline`),
+            payload?.id || "",
+          ),
+        ).catch(() => {});
+      }
+      scheduleRefresh();
+      return;
+    }
     if (
       eventType.includes("capture.finished") ||
       eventType.includes("capture.ready") ||

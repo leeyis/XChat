@@ -2259,6 +2259,11 @@ input[type="checkbox"]:disabled { cursor: not-allowed; opacity: .42; }
   background: var(--accent);
 }
 
+/* 下线提示不是错误，别用红点 */
+.toast.warning i {
+  background: var(--warning);
+}
+
 @keyframes toast-enter {
   from {
     opacity: 0;

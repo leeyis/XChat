@@ -853,6 +853,70 @@ async function withTauriCaptureWorkspace(capture, run) {
   }
 }
 
+test("a peer going offline raises a warning notice, not an error", async () => {
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const listeners = new Map();
+  const alerts = [];
+  let workspace;
+  try {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        __TAURI__: {
+          core: {
+            invoke(command) {
+              if (command === "get_workspace_snapshot") {
+                return Promise.resolve({
+                  self: { id: "self", name: "Me", hostname: "pc", addr: "" },
+                  devices: [],
+                  conversations: [],
+                  files: [],
+                  transfers: [],
+                  settings: { language: "zh-CN", notifications_enabled: true },
+                  capabilities: { notifications: true },
+                });
+              }
+              if (command === "show_alert") {
+                alerts.push(command);
+              }
+              return Promise.resolve([]);
+            },
+          },
+          event: {
+            listen(name, handler) {
+              listeners.set(name, handler);
+              return Promise.resolve(() => {});
+            },
+          },
+        },
+      },
+    });
+
+    workspace = createXChatModule();
+    assert.equal((await workspace.dispatch({ type: "bootstrap" })).ok, true);
+
+    // 后端 emit 的事件名必须真的有人接：加进 EVENT_NAMES 但没写 handler
+    // 就是「下线了却毫无提示」的原因。
+    const handler = listeners.get("peer-offline");
+    assert.ok(handler, "peer-offline 没有被订阅");
+
+    handler({ payload: { id: "peer-1", name: "Alice", addr: "127.0.0.1:8888" } });
+
+    const notice = workspace.getSnapshot().notices.at(-1);
+    assert.match(notice.message, /Alice/);
+    assert.match(notice.message, /下线/);
+    // 下线是正常事件，不该按错误红点渲染
+    assert.equal(notice.kind, "warning");
+  } finally {
+    await workspace?.dispatch({ type: "shutdown" });
+    if (windowDescriptor) {
+      Object.defineProperty(globalThis, "window", windowDescriptor);
+    } else {
+      delete globalThis.window;
+    }
+  }
+});
+
 test("Tauri capture starts without a discovered conversation", async () => {
   await withTauriCaptureWorkspace(true, async ({ workspace, calls }) => {
     const result = await workspace.dispatch({ type: "capture.start" });

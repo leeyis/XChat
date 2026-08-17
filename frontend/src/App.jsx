@@ -1031,9 +1031,14 @@ function sourceText(source, labels) {
   return labels.sources[source] || source || labels.unknown;
 }
 
-function statusLabel(message, group, labels) {
+function statusLabel(message, group, labels, peerOffline = false) {
   if (!message.own) return "";
   if (message.status === "failed") return labels.sendFailed;
+  // 对方离线时 pending 会一直挂着，"发送中"看着像卡死了。
+  // 说清楚在等对方上线，用户才知道消息没丢、也不用等。
+  if (!group && peerOffline && message.status === "pending") {
+    return labels.status.waiting_peer;
+  }
   if (group && message.recipient_count) {
     return `${labels.deliveredCount(
       message.delivered_count || 0,
@@ -2637,9 +2642,9 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
                   ><Icon name="more" size={16} /></button>
                 </div>
               </div>
-              {statusLabel(message, conversation.kind === "group", labels) && (
+              {statusLabel(message, conversation.kind === "group", labels, peer?.is_offline) && (
                 <span className={`message-meta ${message.status === "failed" ? "danger-text" : ""}`}>
-                  <i>{statusLabel(message, conversation.kind === "group", labels)}</i>
+                  <i>{statusLabel(message, conversation.kind === "group", labels, peer?.is_offline)}</i>
                 </span>
               )}
             </div>

@@ -4,9 +4,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// 局域网UDP发现会有网络抖动、延迟和丢包，心跳 2 秒一次，45 秒足够吸收抖动。
-// 发送失败会立即 force_mark_offline，不必再靠长超时兜底。
-const PEER_OFFLINE_TIMEOUT_SECS: u64 = 45;
+// 心跳 2 秒一次，10 秒即连丢 5 拍才判离线 —— 用户要的是及时反馈，
+// 长超时会让「对方已经关了程序」这件事迟迟不显示。
+// 代价是 Wi-Fi 抖动可能偶发误判，但对方一有心跳就立刻恢复在线，
+// 且发送失败会 force_mark_offline 兜底，误判的成本只是提示闪一下。
+pub(crate) const PEER_OFFLINE_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Peer {
@@ -223,7 +225,7 @@ impl PeerManager {
         let mut peers = self.peers.write().unwrap();
         let mut newly_offline = Vec::new();
 
-        // 局域网广播会受休眠、调度和 Wi-Fi 抖动影响；给 2 秒心跳留出足够余量。
+        // 2 秒心跳连丢 5 拍才判离线，短时抖动不会立刻翻转。
         for peer in peers.values_mut() {
             let time_since_seen = now.saturating_sub(peer.last_seen);
             if time_since_seen > PEER_OFFLINE_TIMEOUT_SECS && !peer.is_offline {
