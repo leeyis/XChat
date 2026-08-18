@@ -553,6 +553,7 @@ pub async fn start_listening(
                     announcement.hostname.as_deref(),
                     announcement.mac_address.as_deref(),
                     Some("lan"),
+                    announcement.app_version.as_deref(),
                     announcement.has_authoritative_metadata(),
                 )
                 .await;
@@ -706,6 +707,7 @@ pub async fn start_listening(
                     announcement.hostname.as_deref(),
                     announcement.mac_address.as_deref(),
                     Some("lan"),
+                    announcement.app_version.as_deref(),
                     announcement.has_authoritative_metadata(),
                 )
                 .await;

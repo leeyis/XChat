@@ -131,6 +131,7 @@ pub struct UserRecord {
     pub mac_address: Option<String>,
     pub remark: Option<String>,
     pub discovery_source: Option<String>,
+    pub app_version: Option<String>,
 }
 
 fn unix_timestamp() -> i64 {
@@ -428,6 +429,9 @@ async fn init_db_with_path_and_machine_name(
         .execute(&pool)
         .await;
     let _ = sqlx::query("ALTER TABLE users ADD COLUMN discovery_source TEXT")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN app_version TEXT")
         .execute(&pool)
         .await;
 
@@ -1165,6 +1169,7 @@ pub async fn save_or_update_discovered_user(
     hostname: Option<&str>,
     mac_address: Option<&str>,
     discovery_source: Option<&str>,
+    app_version: Option<&str>,
     authoritative: bool,
 ) -> Result<(), String> {
     save_or_update_user(
@@ -1181,7 +1186,7 @@ pub async fn save_or_update_discovered_user(
     )
     .await?;
     if authoritative {
-        update_user_metadata(pool, id, hostname, mac_address, discovery_source).await?;
+        update_user_metadata(pool, id, hostname, mac_address, discovery_source, app_version).await?;
     }
     Ok(())
 }
@@ -3311,6 +3316,7 @@ pub async fn update_user_metadata(
     hostname: Option<&str>,
     mac_address: Option<&str>,
     discovery_source: Option<&str>,
+    app_version: Option<&str>,
 ) -> Result<UserRecord, String> {
     if user_id.trim().is_empty() {
         return Err("user id is required".to_string());
@@ -3319,12 +3325,13 @@ pub async fn update_user_metadata(
     sqlx::query(
         "INSERT INTO users
             (id, name, addr, last_seen, is_offline, available_memory_mb,
-             hostname, mac_address, discovery_source)
-         VALUES (?, ?, '', ?, 1, 0, ?, ?, ?)
+             hostname, mac_address, discovery_source, app_version)
+         VALUES (?, ?, '', ?, 1, 0, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
             hostname = COALESCE(excluded.hostname, users.hostname),
             mac_address = COALESCE(excluded.mac_address, users.mac_address),
-            discovery_source = COALESCE(excluded.discovery_source, users.discovery_source)",
+            discovery_source = COALESCE(excluded.discovery_source, users.discovery_source),
+            app_version = COALESCE(excluded.app_version, users.app_version)",
     )
     .bind(user_id)
     .bind(user_id)
@@ -3333,6 +3340,11 @@ pub async fn update_user_metadata(
     .bind(mac_address.map(str::trim).filter(|value| !value.is_empty()))
     .bind(
         discovery_source
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+    )
+    .bind(
+        app_version
             .map(str::trim)
             .filter(|value| !value.is_empty()),
     )
@@ -3380,7 +3392,7 @@ pub async fn get_user_metadata(
 ) -> Result<Option<UserRecord>, String> {
     sqlx::query_as::<_, UserRecord>(
         "SELECT id, name, addr, last_seen, is_offline, available_memory_mb,
-                hostname, mac_address, remark, discovery_source
+                hostname, mac_address, remark, discovery_source, app_version
          FROM users WHERE id = ?",
     )
     .bind(user_id)
@@ -3394,7 +3406,7 @@ pub async fn list_users_with_metadata(
 ) -> Result<Vec<UserRecord>, String> {
     sqlx::query_as::<_, UserRecord>(
         "SELECT id, name, addr, last_seen, is_offline, available_memory_mb,
-                hostname, mac_address, remark, discovery_source
+                hostname, mac_address, remark, discovery_source, app_version
          FROM users ORDER BY last_seen DESC",
     )
     .fetch_all(pool)
@@ -3563,7 +3575,8 @@ mod tests {
                 hostname TEXT,
                 mac_address TEXT,
                 remark TEXT,
-                discovery_source TEXT
+                discovery_source TEXT,
+                app_version TEXT
             )",
         )
         .execute(&pool)
@@ -3579,6 +3592,7 @@ mod tests {
             Some("reply-host"),
             Some("ac:de:48:00:11:22"),
             Some("lan"),
+            None,
             false,
         )
         .await
@@ -3600,6 +3614,7 @@ mod tests {
             Some("alice-mac"),
             Some("82:ae:17:28:c4:04"),
             Some("lan"),
+            Some("0.1.5"),
             true,
         )
         .await
@@ -3613,6 +3628,7 @@ mod tests {
             Some("reply-host"),
             Some("ac:de:48:00:11:22"),
             Some("lan"),
+            None,
             false,
         )
         .await
@@ -3626,6 +3642,7 @@ mod tests {
             Some("alice-mac"),
             Some("82:ae:17:28:c4:04"),
             Some("lan"),
+            Some("0.1.5"),
             true,
         )
         .await
@@ -3633,6 +3650,7 @@ mod tests {
 
         let peer = get_user_metadata(&pool, "peer-1").await.unwrap().unwrap();
         assert_eq!(peer.available_memory_mb, 2356);
+        assert_eq!(peer.app_version.as_deref(), Some("0.1.5"));
         assert_eq!(peer.hostname.as_deref(), Some("alice-mac"));
         assert_eq!(peer.mac_address.as_deref(), Some("82:ae:17:28:c4:04"));
     }
@@ -4239,6 +4257,7 @@ mod tests {
             Some("peer-host"),
             Some("aa:bb:cc:dd:ee:ff"),
             Some("udp"),
+            Some("0.1.5"),
         )
         .await
         .unwrap();
