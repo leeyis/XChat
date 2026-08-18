@@ -61,7 +61,16 @@
 - `get_user_metadata` / `list_users_with_metadata` 的 SELECT 增加 `app_version` 列。
 - 更新上述签名变更涉及的所有调用点。
 
-### 4.4 发现流程接线（`src-tauri/src/network/discovery.rs`）
+### 4.4 WorkspaceDevice 桥接层（`src-tauri/src/workspace.rs`）
+
+前端拿到的设备对象是 `WorkspaceDevice`（而非直接序列化 `Peer`），经 `device_from_peer`
+与 `devices()` 两条路径构造。需为其增加 `app_version` 字段并映射：
+
+- `WorkspaceDevice` 新增 `app_version: Option<String>`。
+- `device_from_peer` 映射 `app_version: peer.app_version`。
+- `devices()` 直接构造映射 `app_version: user.app_version`。
+
+### 4.5 发现流程接线（`src-tauri/src/network/discovery.rs`）
 
 announce 响应与 reply 响应两处处理循环中：
 
@@ -69,7 +78,7 @@ announce 响应与 reply 响应两处处理循环中：
 - `save_or_update_discovered_user(...)` 传入 `announcement.app_version.as_deref()`。
 - `emit("new-peer", ...)` 的 JSON 增加 `"app_version"` 字段。
 
-### 4.5 前端展示（`frontend/src/App.jsx`）
+### 4.6 前端展示（`frontend/src/App.jsx`）
 
 - 设备身份面板「可用内存」一行改为「版本」，显示
   `device.app_version || labels.notProvided`。
@@ -88,7 +97,8 @@ announce 响应与 reply 响应两处处理循环中：
   -> DiscoveryAnnouncement::parse 取 parts[11] 为 app_version
   -> add_or_update_with_details(..., app_version) 更新 Peer
   -> save_or_update_discovered_user(..., app_version) 持久化到 users 表
-  -> emit("new-peer", { ..., app_version }) 推送前端
+  -> devices() 经 WorkspaceDevice 映射 app_version 供前端拉取
+  -> emit("new-peer", { ..., app_version }) 增量推送前端
   -> 设备身份面板显示 device.app_version 或「未提供」
 ```
 
