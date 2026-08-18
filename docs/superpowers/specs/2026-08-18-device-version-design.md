@@ -22,7 +22,7 @@
 
 - 不做自动的「版本过低」警告或版本比较逻辑，仅展示版本号。
 - 不删除协议与数据库中的 `available_memory_mb` 字段，仅停止展示。
-- 不改变发现协议的前 10 段结构，仅在末尾追加新字段。
+- 不改变发现协议的前 11 段结构，仅在末尾追加新字段。
 - 不为 Android 或 headless Web 增加额外行为（协议改动天然覆盖三端）。
 
 ## 4. 方案
@@ -30,16 +30,16 @@
 ### 4.1 网络协议层（`src-tauri/src/network/discovery.rs`）
 
 发现协议是 `|` 分隔字符串，历史上 `hostname`、`mac_address`、`capabilities` 均以
-在末尾追加字段的方式扩展。本次沿用该模式，在第 11 段追加 `app_version`：
+在末尾追加字段的方式扩展。本次沿用该模式，在第 12 段追加 `app_version`：
 
 - `DiscoveryAnnouncement` 新增字段 `app_version: Option<String>`。
 - `encode()` 格式串末尾追加一段 `{}`，输出
   `LANChat|ONLINE|...|capabilities|app_version`。
-- `parse()` 用 `optional_part(parts.get(11))` 读取；旧消息只有 10 段时解析为 `None`。
+- `parse()` 用 `optional_part(parts.get(11))` 读取；旧消息只有 11 段时解析为 `None`。
 - `local_announcement()` 增加 `app_version` 参数；announce 时传入本机版本，
   来源为编译期常量 `env!("CARGO_PKG_VERSION")`（即 `Cargo.toml` 的 `0.1.5`）。
 
-向后兼容性：旧版本对方只读前 10 段，收到 11 段消息无感；本端收到旧版本 10 段消息，
+向后兼容性：旧版本对方只读前 11 段，收到 12 段消息无感；本端收到旧版本 11 段消息，
 `app_version` 为 `None`，显示「未提供」。
 
 ### 4.2 Peer 内存结构（`src-tauri/src/peers.rs`）
@@ -90,7 +90,7 @@ announce 响应与 reply 响应两处处理循环中：
 ```text
 本端 announce
   -> local_announcement(app_version = CARGO_PKG_VERSION)
-  -> encode 追加第 11 段
+  -> encode 追加第 12 段
   -> UDP 广播
 
 对端收到 announce
@@ -105,13 +105,13 @@ announce 响应与 reply 响应两处处理循环中：
 ## 6. 兼容性
 
 - 协议变更：在末尾追加字段，`DISCOVERY_PROTOCOL_VERSION` 保持不变（仍是 2），
-  因为旧版本可安全忽略新增的第 11 段，不存在解析歧义。
+  因为旧版本可安全忽略新增的第 12 段，不存在解析歧义。
 - 数据库变更：仅新增可空列，旧库经 `ALTER TABLE` 平滑升级，历史数据保留。
 - 旧版本对方在本端显示「未提供」；本端版本对新旧对方均正常。
 
 ## 7. 测试
 
 - `discovery.rs`：现有 `DiscoveryAnnouncement` 构造补 `app_version` 字段；新增
-  round-trip 测试验证 `app_version` 的编码/解析，以及缺少第 11 段时的 `None` 回退。
+  round-trip 测试验证 `app_version` 的编码/解析，以及缺少第 12 段时的 `None` 回退。
 - `peers.rs`：现有测试补 `app_version` 断言，验证 authoritative 传播与持久化读取。
 - `db.rs`：现有测试补 `app_version` 断言，验证迁移列与首次权威值保留。

@@ -4,7 +4,7 @@
 
 **Goal:** 设备身份面板用「版本」替换「可用内存」，显示对方的真实应用版本号。
 
-**Architecture:** 在局域网发现协议的 `|` 分隔字符串末尾追加第 11 段 `app_version`，本端用编译期常量 `CARGO_PKG_VERSION` 发送；对端解析后存入 `Peer` 结构并持久化到 `users` 表新列，前端展示 `device.app_version`，缺失时显示「未提供」。旧设备只发 10 段，降级为「未提供」。
+**Architecture:** 在局域网发现协议的 `|` 分隔字符串末尾追加第 12 段 `app_version`，本端用编译期常量 `CARGO_PKG_VERSION` 发送；对端解析后存入 `Peer` 结构并持久化到 `users` 表新列，前端展示 `device.app_version`，缺失时显示「未提供」。旧设备只发 11 段，降级为「未提供」。
 
 **Tech Stack:** Rust（Tauri 2 后端）、SQLite（sqlx）、React（Vite 前端）
 
