@@ -21,7 +21,7 @@
 **Files:**
 - Modify: `src-tauri/src/network/discovery.rs`
 
-本任务只改协议层：`DiscoveryAnnouncement` 结构体、`parse()`、`encode()`、`local_announcement()` 及其两处调用点。完成后协议测试通过，其余模块尚未消费该字段。
+本任务只改协议层：`DiscoveryAnnouncement` 结构体、`parse()`、`encode()`、`local_announcement()` 及其四处调用点。完成后协议测试通过，其余模块尚未消费该字段。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -36,7 +36,7 @@ fn app_version_round_trips_and_defaults_to_none() {
     .unwrap()
     .unwrap();
     assert_eq!(with_version.app_version.as_deref(), Some("0.1.5"));
-    assert_eq!(with_version.encode().split('|').count(), 11);
+    assert_eq!(with_version.encode().split('|').count(), 12);
 
     let legacy = DiscoveryAnnouncement::parse(
         "LANChat|ONLINE|peer-1|Alice|8888|512|0|2|alice-mac|01:02:03:04:05:06|group_chat",
@@ -87,7 +87,7 @@ Expected: 编译失败，报 `no field 'app_version' on type 'DiscoveryAnnouncem
     }
 ```
 
-- [ ] **Step 4: 实现 `local_announcement` 及两处调用点**
+- [ ] **Step 4: 实现 `local_announcement` 及四处调用点**
 
 将 `local_announcement()`（约 232-253 行）签名与结构体构造改为：
 
@@ -151,6 +151,13 @@ fn local_announcement(
                     )
                     .encode();
 ```
+
+同样在另外两处调用点追加 `Some(env!("CARGO_PKG_VERSION").to_string())` 作为最后一个参数：
+
+- web 版 reply（约 751 行）：与桌面版 reply 结构相同，`is_reply = true`。
+- `send_single_broadcast`（约 870 行）：`is_reply = false`，实参为 `user_id, username, port, 0, false, hostname, mac_address`。
+
+（`local_announcement` 共 4 处调用点：心跳、桌面版 reply、web 版 reply、`send_single_broadcast`，签名加了必填参数后需全部更新才能编译。）
 
 - [ ] **Step 5: 修现有构造测试**
 
