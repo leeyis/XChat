@@ -540,6 +540,7 @@ pub async fn start_listening(
                     announcement.mac_address.clone(),
                     Some("lan".to_string()),
                     announcement.capabilities.clone(),
+                    announcement.app_version.clone(),
                     announcement.has_authoritative_metadata(),
                 );
 
@@ -694,6 +695,7 @@ pub async fn start_listening(
                     announcement.mac_address.clone(),
                     Some("lan".to_string()),
                     announcement.capabilities.clone(),
+                    announcement.app_version.clone(),
                     announcement.has_authoritative_metadata(),
                 );
 

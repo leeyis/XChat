@@ -28,6 +28,8 @@ pub struct Peer {
     pub discovery_source: Option<String>,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
 }
 
 // 全局在线用户列表
@@ -71,6 +73,7 @@ impl PeerManager {
                 remark: user.remark,
                 discovery_source: user.discovery_source,
                 capabilities: Vec::new(),
+                app_version: user.app_version,
             };
             peers.insert(user.id, peer);
         }
@@ -102,6 +105,7 @@ impl PeerManager {
             None,
             Some("lan".to_string()),
             Vec::new(),
+            None,
             false,
         )
     }
@@ -117,6 +121,7 @@ impl PeerManager {
         mac_address: Option<String>,
         discovery_source: Option<String>,
         capabilities: Vec<String>,
+        app_version: Option<String>,
         authoritative: bool,
     ) -> bool {
         let now = SystemTime::now()
@@ -147,6 +152,9 @@ impl PeerManager {
                     peer.discovery_source = discovery_source;
                 }
                 peer.capabilities = capabilities;
+                if app_version.is_some() {
+                    peer.app_version = app_version;
+                }
             }
 
             // 只在用户重新上线时打印日志
@@ -184,6 +192,7 @@ impl PeerManager {
                 } else {
                     Vec::new()
                 },
+                app_version: if authoritative { app_version } else { None },
             };
             println!(
                 "[PeerManager] 添加新用户: {} ({}) - 可用内存: {} MB",
@@ -279,6 +288,7 @@ mod tests {
             Some("ac:de:48:00:11:22".into()),
             Some("lan".into()),
             vec!["reply-capability".into()],
+            None,
             false,
         );
         manager.add_or_update_with_details(
@@ -290,6 +300,7 @@ mod tests {
             Some("82:ae:17:28:c4:04".into()),
             Some("lan".into()),
             vec!["groups_v1".into()],
+            Some("0.1.5".into()),
             true,
         );
         manager.add_or_update_with_details(
@@ -301,6 +312,7 @@ mod tests {
             Some("ac:de:48:00:11:22".into()),
             Some("lan".into()),
             vec!["reply-capability".into()],
+            None,
             false,
         );
         manager.add_or_update_with_details(
@@ -312,6 +324,7 @@ mod tests {
             Some("82:ae:17:28:c4:04".into()),
             Some("lan".into()),
             vec!["groups_v1".into()],
+            Some("0.1.5".into()),
             true,
         );
         manager.add_or_update_with_details(
@@ -323,6 +336,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            None,
             false,
         );
 
@@ -331,6 +345,7 @@ mod tests {
         assert_eq!(peer.hostname.as_deref(), Some("alice-mac"));
         assert_eq!(peer.mac_address.as_deref(), Some("82:ae:17:28:c4:04"));
         assert_eq!(peer.capabilities, vec!["groups_v1"]);
+        assert_eq!(peer.app_version.as_deref(), Some("0.1.5"));
     }
 
     #[test]
@@ -345,6 +360,7 @@ mod tests {
             Some("82:ae:17:28:c4:04".into()),
             Some("lan".into()),
             vec!["parallel_file_v2".into()],
+            Some("0.1.5".into()),
             true,
         );
         manager.add_or_update_with_details(
@@ -356,6 +372,7 @@ mod tests {
             Some("82:ae:17:28:c4:04".into()),
             Some("lan".into()),
             Vec::new(),
+            Some("0.1.5".into()),
             true,
         );
 
