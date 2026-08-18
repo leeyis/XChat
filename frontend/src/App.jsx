@@ -169,7 +169,6 @@ const copy = {
     deviceId: "设备 ID",
     discoveryMethod: "发现方式",
     lastOnline: "最后在线",
-    availableMemory: "可用内存",
     notProvided: "未提供",
     unknown: "未知",
     deleteLocalContact: "删除本地联系人",
@@ -419,7 +418,6 @@ const copy = {
     deviceId: "Device ID",
     discoveryMethod: "Discovery method",
     lastOnline: "Last online",
-    availableMemory: "Available memory",
     notProvided: "Not provided",
     unknown: "Unknown",
     deleteLocalContact: "Delete local contact",
@@ -2862,12 +2860,8 @@ function HostWorkspace({
               <dd>{formatTime(device.last_seen, labels.locale) || labels.unknown}</dd>
             </div>
             <div>
-              <dt>{labels.availableMemory}</dt>
-              <dd>
-                {device.available_memory_mb
-                  ? `${device.available_memory_mb} MB`
-                  : labels.notProvided}
-              </dd>
+              <dt>{labels.version}</dt>
+              <dd>{device.app_version || labels.notProvided}</dd>
             </div>
           </dl>
         </section>
