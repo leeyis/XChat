@@ -177,139 +177,7 @@ git commit -m "feat(protocol): 发现协议新增 app_version 字段"
 
 ---
 
-### Task 2: Peer 结构新增 `app_version` 并传播
-
-**Files:**
-- Modify: `src-tauri/src/peers.rs`
-- Modify: `src-tauri/src/network/discovery.rs`（两处 `add_or_update_with_details` 调用点补参数）
-
-本任务改 `Peer` 结构、`load_from_db` 映射、`add_or_update_with_details` 签名与传播，并同步 `discovery.rs` 两处调用点。
-
-- [ ] **Step 1: 写失败测试**
-
-在 `peers.rs` 的测试 `replies_do_not_replace_authoritative_discovery_metadata`（约 270-334 行）中，为每个 `add_or_update_with_details(...)` 调用补一个新参数（在 `capabilities` 之后、`authoritative` 之前）：
-
-- 第一处（273-283，reply，`false`）：`None,`
-- 第二处（284-294，authoritative，`true`）：`Some("0.1.5".into()),`
-- 第三处（295-305，reply，`false`）：`None,`
-- 第四处（306-316，authoritative，`true`）：`Some("0.1.5".into()),`
-- 第五处（317-327，非权威清空，`false`）：`None,`
-
-在断言区（330-333 行）追加：
-
-```rust
-        assert_eq!(peer.app_version.as_deref(), Some("0.1.5"));
-```
-
-在测试 `authoritative_empty_capabilities_clear_stale_parallel_v2`（约 336-364 行）中，为两处 `add_or_update_with_details(...)`（339-349、350-360）在 `capabilities` 之后、`authoritative` 之前各补 `Some("0.1.5".into()),`。
-
-- [ ] **Step 2: 跑测试确认失败**
-
-Run: `cargo test --manifest-path src-tauri/Cargo.toml --lib`
-Expected: 编译失败，报 `this function takes 9 arguments but 8 were supplied` / `no field 'app_version' on type 'Peer'`。
-
-- [ ] **Step 3: 实现 `Peer` 字段**
-
-在 `peers.rs` 的 `Peer` 结构体（约 13-31 行）`capabilities` 字段后追加：
-
-```rust
-    #[serde(default)]
-    pub capabilities: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub app_version: Option<String>,
-```
-
-- [ ] **Step 4: 实现 `load_from_db` 映射**
-
-在 `load_from_db`（约 62-74 行）的 `Peer { ... }` 构造中，`capabilities: Vec::new(),` 之后追加：
-
-```rust
-                app_version: user.app_version,
-```
-
-- [ ] **Step 5: 实现 `add_or_update_with_details` 传播**
-
-将 `add_or_update_with_details` 签名（约 110-121 行）改为在 `capabilities` 与 `authoritative` 之间插入 `app_version: Option<String>`：
-
-```rust
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_or_update_with_details(
-        &self,
-        id: String,
-        name: String,
-        addr: String,
-        available_memory_mb: u64,
-        hostname: Option<String>,
-        mac_address: Option<String>,
-        discovery_source: Option<String>,
-        capabilities: Vec<String>,
-        app_version: Option<String>,
-        authoritative: bool,
-    ) -> bool {
-```
-
-在已存在 peer 的更新分支（约 139-150 行）的 `if authoritative { ... }` 块内，`peer.capabilities = capabilities;` 之后追加：
-
-```rust
-                if app_version.is_some() {
-                    peer.app_version = app_version;
-                }
-```
-
-在新用户构造（约 163-187 行）的 `capabilities: if authoritative { capabilities } else { Vec::new() },` 之后追加：
-
-```rust
-                app_version: if authoritative { app_version } else { None },
-```
-
-- [ ] **Step 6: 实现 `add_or_update_with_memory` 传递 `None`**
-
-在 `add_or_update_with_memory`（约 89-107 行）调用 `add_or_update_with_details` 的参数列表中，`Vec::new(),` 之后、`false,` 之前补 `None,`：
-
-```rust
-        self.add_or_update_with_details(
-            id,
-            name,
-            addr,
-            available_memory_mb,
-            None,
-            None,
-            Some("lan".to_string()),
-            Vec::new(),
-            None,
-            false,
-        )
-```
-
-- [ ] **Step 7: 同步 `discovery.rs` 两处调用点**
-
-在 `discovery.rs` 第一处（约 527-537 行）`add_or_update_with_details(...)` 中，`announcement.capabilities.clone(),` 之后、`announcement.has_authoritative_metadata(),` 之前补：
-
-```rust
-                    announcement.app_version.clone(),
-```
-
-在第二处（约 679-689 行）同样位置补：
-
-```rust
-                    announcement.app_version.clone(),
-```
-
-- [ ] **Step 8: 跑测试确认通过**
-
-Run: `cargo test --manifest-path src-tauri/Cargo.toml --lib`
-Expected: 全部通过（peers 测试断言 `app_version == Some("0.1.5")`）。
-
-- [ ] **Step 9: 提交**
-
-```bash
-git add src-tauri/src/peers.rs src-tauri/src/network/discovery.rs
-git commit -m "feat(peers): Peer 结构新增 app_version 并传播"
-```
-
----
-
-### Task 3: 数据库层新增 `app_version` 列并持久化
+### Task 2: 数据库层新增 `app_version` 列并持久化
 
 **Files:**
 - Modify: `src-tauri/src/db.rs`
@@ -491,6 +359,138 @@ Expected: 全部通过（db 测试断言 `app_version == Some("0.1.5")`）。
 ```bash
 git add src-tauri/src/db.rs src-tauri/src/network/discovery.rs
 git commit -m "feat(db): users 表新增 app_version 列并持久化"
+```
+
+---
+
+### Task 3: Peer 结构新增 `app_version` 并传播
+
+**Files:**
+- Modify: `src-tauri/src/peers.rs`
+- Modify: `src-tauri/src/network/discovery.rs`（两处 `add_or_update_with_details` 调用点补参数）
+
+本任务改 `Peer` 结构、`load_from_db` 映射、`add_or_update_with_details` 签名与传播，并同步 `discovery.rs` 两处调用点。（`load_from_db` 映射依赖 Task 2 已加的 `UserRecord.app_version` 字段。）
+
+- [ ] **Step 1: 写失败测试**
+
+在 `peers.rs` 的测试 `replies_do_not_replace_authoritative_discovery_metadata`（约 270-334 行）中，为每个 `add_or_update_with_details(...)` 调用补一个新参数（在 `capabilities` 之后、`authoritative` 之前）：
+
+- 第一处（273-283，reply，`false`）：`None,`
+- 第二处（284-294，authoritative，`true`）：`Some("0.1.5".into()),`
+- 第三处（295-305，reply，`false`）：`None,`
+- 第四处（306-316，authoritative，`true`）：`Some("0.1.5".into()),`
+- 第五处（317-327，非权威清空，`false`）：`None,`
+
+在断言区（330-333 行）追加：
+
+```rust
+        assert_eq!(peer.app_version.as_deref(), Some("0.1.5"));
+```
+
+在测试 `authoritative_empty_capabilities_clear_stale_parallel_v2`（约 336-364 行）中，为两处 `add_or_update_with_details(...)`（339-349、350-360）在 `capabilities` 之后、`authoritative` 之前各补 `Some("0.1.5".into()),`。
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `cargo test --manifest-path src-tauri/Cargo.toml --lib`
+Expected: 编译失败，报 `this function takes 9 arguments but 8 were supplied` / `no field 'app_version' on type 'Peer'`。
+
+- [ ] **Step 3: 实现 `Peer` 字段**
+
+在 `peers.rs` 的 `Peer` 结构体（约 13-31 行）`capabilities` 字段后追加：
+
+```rust
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
+```
+
+- [ ] **Step 4: 实现 `load_from_db` 映射**
+
+在 `load_from_db`（约 62-74 行）的 `Peer { ... }` 构造中，`capabilities: Vec::new(),` 之后追加：
+
+```rust
+                app_version: user.app_version,
+```
+
+- [ ] **Step 5: 实现 `add_or_update_with_details` 传播**
+
+将 `add_or_update_with_details` 签名（约 110-121 行）改为在 `capabilities` 与 `authoritative` 之间插入 `app_version: Option<String>`：
+
+```rust
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_or_update_with_details(
+        &self,
+        id: String,
+        name: String,
+        addr: String,
+        available_memory_mb: u64,
+        hostname: Option<String>,
+        mac_address: Option<String>,
+        discovery_source: Option<String>,
+        capabilities: Vec<String>,
+        app_version: Option<String>,
+        authoritative: bool,
+    ) -> bool {
+```
+
+在已存在 peer 的更新分支（约 139-150 行）的 `if authoritative { ... }` 块内，`peer.capabilities = capabilities;` 之后追加：
+
+```rust
+                if app_version.is_some() {
+                    peer.app_version = app_version;
+                }
+```
+
+在新用户构造（约 163-187 行）的 `capabilities: if authoritative { capabilities } else { Vec::new() },` 之后追加：
+
+```rust
+                app_version: if authoritative { app_version } else { None },
+```
+
+- [ ] **Step 6: 实现 `add_or_update_with_memory` 传递 `None`**
+
+在 `add_or_update_with_memory`（约 89-107 行）调用 `add_or_update_with_details` 的参数列表中，`Vec::new(),` 之后、`false,` 之前补 `None,`：
+
+```rust
+        self.add_or_update_with_details(
+            id,
+            name,
+            addr,
+            available_memory_mb,
+            None,
+            None,
+            Some("lan".to_string()),
+            Vec::new(),
+            None,
+            false,
+        )
+```
+
+- [ ] **Step 7: 同步 `discovery.rs` 两处调用点**
+
+在 `discovery.rs` 第一处（约 527-537 行）`add_or_update_with_details(...)` 中，`announcement.capabilities.clone(),` 之后、`announcement.has_authoritative_metadata(),` 之前补：
+
+```rust
+                    announcement.app_version.clone(),
+```
+
+在第二处（约 679-689 行）同样位置补：
+
+```rust
+                    announcement.app_version.clone(),
+```
+
+- [ ] **Step 8: 跑测试确认通过**
+
+Run: `cargo test --manifest-path src-tauri/Cargo.toml --lib`
+Expected: 全部通过（peers 测试断言 `app_version == Some("0.1.5")`）。
+
+- [ ] **Step 9: 提交**
+
+```bash
+git add src-tauri/src/peers.rs src-tauri/src/network/discovery.rs
+git commit -m "feat(peers): Peer 结构新增 app_version 并传播"
 ```
 
 ---
