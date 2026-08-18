@@ -232,6 +232,7 @@ pub(crate) fn get_all_cached_ips() -> Vec<String> {
     refresh_local_ips()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn local_announcement(
     peer_id: String,
     name: String,
@@ -965,6 +966,14 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(legacy.app_version, None);
+
+        // 12 段帧但末尾 app_version 为空字符串 → 应回落为 None
+        let empty_version = DiscoveryAnnouncement::parse(
+            "LANChat|ONLINE|peer-1|Alice|8888|512|0|2|alice-mac|01:02:03:04:05:06|group_chat|",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(empty_version.app_version, None);
     }
 
     #[test]
