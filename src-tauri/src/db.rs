@@ -3653,6 +3653,24 @@ mod tests {
         assert_eq!(peer.app_version.as_deref(), Some("0.1.5"));
         assert_eq!(peer.hostname.as_deref(), Some("alice-mac"));
         assert_eq!(peer.mac_address.as_deref(), Some("82:ae:17:28:c4:04"));
+
+        // 权威路径带 None（旧设备心跳无 app_version）不应覆盖已存版本
+        save_or_update_discovered_user(
+            &pool,
+            "peer-1",
+            "Alice",
+            "127.0.0.1:8888",
+            0,
+            Some("alice-mac"),
+            Some("82:ae:17:28:c4:04"),
+            Some("lan"),
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+        let peer = get_user_metadata(&pool, "peer-1").await.unwrap().unwrap();
+        assert_eq!(peer.app_version.as_deref(), Some("0.1.5"));
     }
 
     #[tokio::test]
@@ -4284,6 +4302,7 @@ mod tests {
         let peer = get_user_metadata(&pool, "peer-a").await.unwrap().unwrap();
         assert_eq!(peer.available_memory_mb, 42);
         assert_eq!(peer.hostname.as_deref(), Some("peer-host"));
+        assert_eq!(peer.app_version.as_deref(), Some("0.1.5"));
 
         pool.close().await;
         std::fs::remove_dir_all(app_dir).unwrap();
