@@ -792,6 +792,7 @@ function normalizeDevice(raw = {}) {
     is_offline: Boolean(raw.is_offline ?? raw.offline ?? false),
     last_seen: Number(raw.last_seen ?? 0),
     available_memory_mb: Number(raw.available_memory_mb ?? 0),
+    app_version: raw.app_version ?? undefined,
   };
 }
 
