@@ -617,7 +617,8 @@ pub async fn start_listening(
                             "mac_address": announcement.mac_address,
                             "discovery_source": "lan",
                             "capabilities": announcement.capabilities,
-                            "protocol_version": announcement.protocol_version
+                            "protocol_version": announcement.protocol_version,
+                            "app_version": announcement.app_version
                         }),
                     );
                 }
