@@ -33,6 +33,7 @@ pub struct DiscoveryAnnouncement {
     pub hostname: Option<String>,
     pub mac_address: Option<String>,
     pub capabilities: Vec<String>,
+    pub app_version: Option<String>,
 }
 
 impl DiscoveryAnnouncement {
@@ -82,12 +83,13 @@ impl DiscoveryAnnouncement {
                         .collect()
                 })
                 .unwrap_or_default(),
+            app_version: optional_part(parts.get(11)),
         }))
     }
 
     pub fn encode(&self) -> String {
         format!(
-            "LANChat|ONLINE|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "LANChat|ONLINE|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.peer_id,
             self.name,
             self.port,
@@ -96,7 +98,8 @@ impl DiscoveryAnnouncement {
             self.protocol_version,
             self.hostname.as_deref().unwrap_or_default(),
             self.mac_address.as_deref().unwrap_or_default(),
-            self.capabilities.join(",")
+            self.capabilities.join(","),
+            self.app_version.as_deref().unwrap_or_default()
         )
     }
 }
@@ -237,6 +240,7 @@ fn local_announcement(
     is_reply: bool,
     hostname: Option<String>,
     mac_address: Option<String>,
+    app_version: Option<String>,
 ) -> DiscoveryAnnouncement {
     DiscoveryAnnouncement {
         peer_id,
@@ -251,6 +255,7 @@ fn local_announcement(
             .iter()
             .map(|capability| (*capability).to_string())
             .collect(),
+        app_version,
     }
 }
 
@@ -397,6 +402,7 @@ pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx:
             false,
             hostname.clone(),
             mac_address.clone(),
+            Some(env!("CARGO_PKG_VERSION").to_string()),
         )
         .encode();
 
@@ -627,6 +633,7 @@ pub async fn start_listening(
                         true,
                         hostname.clone(),
                         mac_address.clone(),
+                        Some(env!("CARGO_PKG_VERSION").to_string()),
                     )
                     .encode();
                     let target = format!("{}:{}", addr.ip(), peer_port);
@@ -749,6 +756,7 @@ pub async fn start_listening(
                         true,
                         hostname.clone(),
                         mac_address.clone(),
+                        Some(env!("CARGO_PKG_VERSION").to_string()),
                     )
                     .encode();
                     let target = format!("{}:{}", addr.ip(), peer_port);
@@ -859,7 +867,17 @@ pub async fn send_single_broadcast(
         .map_err(|e| format!("创建发送socket失败: {}", e))?;
 
     let (hostname, mac_address) = local_device_metadata();
-    let msg = local_announcement(user_id, username, port, 0, false, hostname, mac_address).encode();
+    let msg = local_announcement(
+        user_id,
+        username,
+        port,
+        0,
+        false,
+        hostname,
+        mac_address,
+        Some(env!("CARGO_PKG_VERSION").to_string()),
+    )
+    .encode();
     let target_addrs = get_smart_broadcast_addresses(port);
 
     for addr in target_addrs {
@@ -920,6 +938,7 @@ mod tests {
             hostname: Some("alice-mac".into()),
             mac_address: Some("01:02:03:04:05:06".into()),
             capabilities: vec!["group_chat".into(), "receipts".into()],
+            app_version: Some("0.1.5".into()),
         };
 
         let encoded = announcement.encode();
@@ -928,6 +947,24 @@ mod tests {
             DiscoveryAnnouncement::parse(&encoded).unwrap(),
             Some(announcement)
         );
+    }
+
+    #[test]
+    fn app_version_round_trips_and_defaults_to_none() {
+        let with_version = DiscoveryAnnouncement::parse(
+            "LANChat|ONLINE|peer-1|Alice|8888|512|0|2|alice-mac|01:02:03:04:05:06|group_chat|0.1.5",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(with_version.app_version.as_deref(), Some("0.1.5"));
+        assert_eq!(with_version.encode().split('|').count(), 12);
+
+        let legacy = DiscoveryAnnouncement::parse(
+            "LANChat|ONLINE|peer-1|Alice|8888|512|0|2|alice-mac|01:02:03:04:05:06|group_chat",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(legacy.app_version, None);
     }
 
     #[test]
