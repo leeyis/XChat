@@ -152,6 +152,7 @@ impl PeerManager {
                     peer.discovery_source = discovery_source;
                 }
                 peer.capabilities = capabilities;
+                // capabilities 描述当前特性集，权威空包应清掉陈旧标记；app_version 是标量身份，首次权威值一旦已知就保留
                 if app_version.is_some() {
                     peer.app_version = app_version;
                 }
@@ -345,6 +346,23 @@ mod tests {
         assert_eq!(peer.hostname.as_deref(), Some("alice-mac"));
         assert_eq!(peer.mac_address.as_deref(), Some("82:ae:17:28:c4:04"));
         assert_eq!(peer.capabilities, vec!["groups_v1"]);
+        assert_eq!(peer.app_version.as_deref(), Some("0.1.5"));
+
+        // 权威心跳但缺 app_version（旧设备）不应覆盖已存版本
+        manager.add_or_update_with_details(
+            "peer-1".into(),
+            "Alice".into(),
+            "127.0.0.1:8888".into(),
+            0,
+            Some("alice-mac".into()),
+            Some("82:ae:17:28:c4:04".into()),
+            Some("lan".into()),
+            vec!["groups_v1".into()],
+            None,
+            true,
+        );
+
+        let peer = manager.get_all_peers().pop().unwrap();
         assert_eq!(peer.app_version.as_deref(), Some("0.1.5"));
     }
 
