@@ -99,6 +99,7 @@ pub struct WorkspaceDevice {
     pub last_seen: i64,
     pub available_memory_mb: i64,
     pub capabilities: Vec<String>,
+    pub app_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -219,6 +220,7 @@ fn device_from_peer(peer: Peer) -> WorkspaceDevice {
         last_seen: peer.last_seen as i64,
         available_memory_mb: peer.available_memory_mb as i64,
         capabilities: peer.capabilities,
+        app_version: peer.app_version,
     }
 }
 
@@ -246,6 +248,7 @@ async fn devices(
                 last_seen: user.last_seen,
                 available_memory_mb: user.available_memory_mb,
                 capabilities: Vec::new(),
+                app_version: user.app_version,
             },
         );
     }
