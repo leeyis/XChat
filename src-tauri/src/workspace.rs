@@ -265,6 +265,7 @@ async fn devices(
             device.discovery_source = device
                 .discovery_source
                 .or_else(|| stored.discovery_source.clone());
+            device.app_version = device.app_version.or_else(|| stored.app_version.clone());
         }
         merged.insert(device.id.clone(), device);
     }
