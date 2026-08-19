@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.webkit.JavascriptInterface
@@ -30,6 +31,7 @@ class MainActivity : TauriActivity() {
     private var webView: WebView? = null
     private var shareReceiver: BroadcastReceiver? = null
     private var lastNotificationFromId: String? = null
+    private var discoveryMulticastLock: WifiManager.MulticastLock? = null
 
     // ─── SAF 文件选择器（持久化权限） ───
     private val safPickerLauncher = registerForActivityResult(
@@ -59,6 +61,16 @@ class MainActivity : TauriActivity() {
         
         // 检测冷启动是否来自通知点击
         checkNotificationLaunch(intent)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        acquireDiscoveryMulticastLock()
+    }
+
+    override fun onStop() {
+        releaseDiscoveryMulticastLock()
+        super.onStop()
     }
 
     /**
@@ -196,12 +208,39 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onDestroy() {
+        releaseDiscoveryMulticastLock()
         super.onDestroy()
         // 注销广播接收器
         shareReceiver?.let {
             unregisterReceiver(it)
             println("[MainActivity] 广播接收器已注销")
         }
+    }
+
+    private fun acquireDiscoveryMulticastLock() {
+        if (discoveryMulticastLock?.isHeld == true) return
+        runCatching {
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            discoveryMulticastLock = wifiManager.createMulticastLock(
+                "$packageName:xchat-discovery"
+            ).apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+            println("[MainActivity] 局域网发现 multicast lock 已获取")
+        }.onFailure { error ->
+            println("[MainActivity] 获取 multicast lock 失败: ${error.message}")
+            discoveryMulticastLock = null
+        }
+    }
+
+    private fun releaseDiscoveryMulticastLock() {
+        runCatching {
+            discoveryMulticastLock?.takeIf { it.isHeld }?.release()
+        }.onFailure { error ->
+            println("[MainActivity] 释放 multicast lock 失败: ${error.message}")
+        }
+        discoveryMulticastLock = null
     }
 
     private fun findWebView(view: android.view.View): WebView? {

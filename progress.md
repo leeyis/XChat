@@ -1,5 +1,51 @@
 # 进度日志
 
+## 会话：2026-08-19 Windows A0/A1 收敛
+
+### 阶段 16：范围确认与短设计
+- **状态：** in_progress
+- 执行的操作：
+  - 用户确认 Windows 必须优化、Android 暂缓、无需旧版兼容。
+  - 通过代码知识图确认 Windows listener 目前没有 ingress index，发送路径会过滤 75 秒后离线的普通已知 peer。
+  - 确认旧版 128 台保障来自独立兼容心跳调度器，可整体删除。
+  - 核对 Microsoft Winsock 官方文档，确认 `IP_PKTINFO + WSARecvMsg/WSASendMsg` 能提供严格 ingress index 与原接口/源地址回复。
+  - 核对 Cargo 依赖，Windows 尚无直接 Win32 API 依赖，后续采用 target-only `windows-sys`。
+  - 用户指出历史 IP 可能被 DHCP 分配给其他设备；确认保留离线硬发送门禁，不实现历史地址试发，并准备修正原型/生产文案。
+  - 用户要求进一步简化关闭发现文案，并为手工添加设备增加测试功能。
+  - 核对现状：手工添加目前只保存地址字符串；推荐改为真实 XChat 握手，展示并绑定返回的设备身份。
+  - 开始只读追踪设备身份、会话 ID、最新地址和接收校验；一次组合图查询因局部变量覆盖输出 helper 失败，已改名后继续。
+- 下一步：
+  - 核对 Windows 官方 packet-info API 与当前依赖，提交短设计供用户确认。
+
+## 会话：2026-08-19 网络与消息可靠性优化
+
+### 阶段 15：设计、原型与工程现状审计
+- **状态：** in_progress
+- 执行的操作：
+  - 完整恢复并读取现有 `task_plan.md`、`findings.md`、`progress.md`。
+  - 阅读网络发现、Presence、消息可靠性设计与最新原型的网络设置、连接横幅和消息状态交互。
+  - 确认代码知识图 `XChat` 可用，当前约 1,980 个节点、7,376 条边。
+  - 记录工作树保护边界：`main` 领先远端 1 个提交，`src/index.html` 存在用户修改。
+  - 通过代码图定位发现流量入口、PeerManager 多状态写入入口和可复用的补发/回执基础。
+  - 发现知识图源码路径仍指向旧工作目录，决定刷新当前仓库索引后继续审计。
+  - 使用当前路径重建中等深度代码图（2,280 节点、8,864 条边）并取得精确源码。
+  - 确认现有测试固化了 256 地址兜底，且接口模型缺少前缀、稳定 ID、分类和选择状态。
+  - 确认本机 IP 通过默认路由探针推断而非真实接口枚举，单次广播入口同样复用 260 目标列表。
+  - 调用链确认发现循环覆盖桌面、移动库与 Web，发送失败又从三条消息路径直接修改离线状态。
+  - 审计设置 seam 与依赖，确认结构化接口配置需要共享模型，当前无可直接复用的接口枚举依赖。
+  - 使用本地无网络浏览器实际渲染并检查设置页和完整网络卡片；无控制台错误。
+  - 实际选择离线设备并发送消息，核对连接横幅、文件暂停和“等待对方上线后发送”状态的一致表现。
+  - 审计生产前端的消息单调合并、状态文案、事件处理与递归轮询，确认可复用边界。
+  - 依据官方 Rust 文档比较接口枚举依赖，暂定 `getifaddrs` 为桌面阶段 A 的最小推荐。
+  - 确认通用 settings KV 足以保存发现配置，无需数据库 schema 迁移。
+  - 只读检查 `src/index.html` 用户 diff，确认是换行格式变化，并将其列为前端构建保护边界。
+- 下一步：
+  - 向用户提交阶段 A 工程切片与依赖选型，等待明确确认后进入测试优先实现。
+- 创建/修改的文件：
+  - `task_plan.md`
+  - `findings.md`
+  - `progress.md`
+
 ## 会话：2026-07-29
 
 ### 阶段 12：测试反馈二次收敛
@@ -239,3 +285,62 @@
 - 遇到的错误：
   - `browse eval/js` 执行异步复现脚本时无结果输出；没有重复同一路径，改为分步哈希采样和 Node 红灯测试。
   - 浏览器 Web mock 的 `capture.pin` 只会新开图片窗口，不能验证原位覆盖；真实路径由 Rust 状态测试覆盖。
+
+### 阶段 15：A0/A1 网络发现优化
+- **状态：** complete
+- 用户已批准在当前 `main` 分支按 A0 → A1 顺序实施；不创建 worktree，不提交或覆盖现有用户改动。
+- 已加载 `writing-plans`、`executing-plans` 与 TDD 流程，并完整阅读测试质量约束。
+- 已用代码知识图定位桌面/Web 监听器、公告循环、Tauri/Web 设置入口、前端设置归一化与 `SettingsWorkspace`。
+- 已确认 A0 不升级 discovery wire protocol；先用短 TTL 帧去重止住重复 reply，再把发送目标收敛为用户允许的真实接口与固定地址。
+- 下一步：写入可执行实施计划，然后逐项执行红灯、最小实现与回归。
+- 已写入并自审 `docs/superpowers/plans/2026-08-19-xchat-discovery-traffic-and-interface-settings.md`。
+- A0 policy 红灯产生 40 个缺失符号错误，证明测试先于实现；补入最小策略后 6 项通过。
+- netmask 连续性测试先因 `prefix_length` 缺失失败；实现真实 `getifaddrs` adapter 与 Android 窄 fallback 后，policy 7/7 通过。
+- cadence/dedupe/backoff 测试先出现 6 个缺失符号错误；最小状态机实现后 discovery 聚焦测试 13/13 通过。
+- metrics 测试先因窗口类型缺失失败；实现每接口/目标类型计数、接收/去重/reply 与排除原因报告后通过。
+- 已删除 256 地址目标生成器、未绑定 limited-broadcast fallback、默认路由 IP 探针与 2 秒公告循环；单次发送也复用同一 policy 计划。
+- A0 回归：Rust lib 87/87；desktop lib 编译通过（移除唯一 dead-code warning）；web bin 编译通过。
+- A1 设置红灯因缺失 key/load/save 共出现 10 个编译错误；实现版本化 KV、校验和损坏回落后 3/3 通过。
+- workspace、Tauri command 与 HTTP handler 已接入同一发现快照/保存 seam；Rust lib 90/90、desktop lib 与 web bin 编译通过。
+- 前端发现配置先以缺失导出形成红灯，再完成快照归一化、Tauri/Web payload 与共享选择 helper；聚焦测试 49/49、全量前端测试 92/92。
+- 生产设置页已接入主类别开关、接口清单、代理 TUN 风险确认、恢复推荐、网络刷新与现有固定地址 modal；临时及正式 Vite bundle 均构建通过并更新 `src/` 生成资源。
+- 独立首轮审查指出低频公告与旧版 10 秒离线阈值冲突、监听器仍接收禁用接口、socket 绑定与 DNS 退避等边界；已逐项修正并补回归测试。
+- A0 兼容桥把离线阈值提高到 75 秒；reply 形态兼容心跳每批最多 32 台，并按在线规模从 3 秒自适应到 750ms，测试锁定 128 台全覆盖且丢一轮加 2 秒阻塞仍低于旧版 10 秒阈值，新客户端不会触发回复风暴。
+- Unix listener 通过 `IP_PKTINFO`/`IP_RECVIF` 读取真实 ingress interface，动态加入/离开启用接口的组播成员；回复 socket 绑定批准的源 IP，Apple 平台同时绑定 interface index。
+- 固定地址 DNS 改为并发、单项 2 秒超时、60 秒缓存与独立退避；网络/设置变化会清缓存并重置退避。socket 配置错误不再被忽略，缓存键包含稳定接口 ID 与源 IP。
+- 稳定接口 ID 改为 `if:name:<system-name>`，不含易变 index 或当前 IP；开发期 index+name override 自动迁移，旧的 index-only override 安全丢弃。`/1` 不再生成 limited broadcast。
+- listener 固定地址解析增加 16 个/轮轮转、独立退避和同网络 last-good IP，并在网络指纹变化时清空旧地址；公告端固定地址与旧版兼容心跳也轮转覆盖预算外设备，避免稳定排序导致长期饥饿。
+- Android Activity 增加前台生命周期 `WifiManager.MulticastLock`，为 prefixless fallback 的组播收包补齐平台前提；Android target/真机仍需在具备 SDK/设备的环境验证。
+- 接口枚举失败时 API 返回保留设置的空清单，运行时保留 last-good snapshot 或 fail closed；本机显示 IP 只从有效启用接口选择。
+- 前端补齐 1–65535 端口校验、错误提示、恢复原值后清除 dirty、暂停接口计数和 TUN 确认的可访问语义。
+- 最终验证：`rtk npm test` 93/93；`rtk cargo test --manifest-path src-tauri/Cargo.toml --lib` 105/105；desktop lib 与 web bin 编译无警告通过；生产 Vite bundle 构建通过；`rtk git diff --check` 通过。
+- 隔离 Tauri 实例实测保存全关后发送计划立即从 2 个目标降到 0、workspace 本机地址 fail-closed，恢复设置后目标回到 2；另以真实 `en0` 源地址向 headless Web listener 注入 v2 公告，验证 ingress 接受、reply、设备元数据持久化与 workspace 输出。
+- Android Kotlin 编译未执行：本机没有 Java Runtime/`kotlinc`，Rust Android target 也未安装；`MulticastLock` 仍需 Android 构建环境和真机验证。Windows target 仍受本机缺少 MSVC C 工具链阻塞。
+- 隔离 Tauri 与 headless Web 均成功启动：en0 生成 2 个接口目标，utun4 默认排除，发送预算为接口 48 + 固定地址 16；运行中关闭/恢复本地发现分别立即切换为 0/2 个接口目标。
+- 浏览器在 1440×900 与 720×900 验证网络设置、TUN 风险确认、全关 warning、固定地址 modal、端口错误、保存/恢复和无横向溢出；控制台无错误。
+- Windows web target 交叉检查在 `libsqlite3-sys` C 构建前置阶段因本机缺少 MSVC C 工具链/`stdlib.h` 失败；Android target 未安装。本机 macOS desktop/web 均已覆盖。
+- Native Computer Use 调试桥无法连接未打包 Tauri 窗口；使用真实 Tauri 启动日志、HTTP 快照和同一生产 bundle 的浏览器交互完成替代验证。
+
+### 阶段 16：Windows ingress、设备身份与动态 IP 安全收敛
+- **状态：** complete
+- 用户最终确认离线状态统一为“等待对方上线”；Windows 纳入本轮，Android 暂缓，不保留旧版协议兼容。
+- 删除 128 台预算相关的旧版兼容心跳、deadline、metrics 与测试；75 秒只保留为 Presence 过期阈值，显示离线后消息/文件只落本地 pending，不尝试旧地址。
+- Windows UDP listener 开启 `IP_PKTINFO`，通过 `WSAIoctl` 获取并缓存 `WSARecvMsg`，解析真实 ingress interface index 后复用严格接口过滤与回复源地址选择。
+- Windows MSVC target 首次真实编译捕获并修复 `RawSocket(u64)`/WinSock `SOCKET(usize)` 和 std/Tokio UDP socket 泛型边界；最终 `x86_64-pc-windows-msvc` desktop lib 检查通过。
+- peer WebSocket 在 upgrade 前校验 `target_id`，握手响应返回本机 UUID；客户端确认响应 UUID 后才写正文，缺失/不符/超时均停止，旧 TCP fallback 已删除。消息、控制帧、群组、重发和文件发送链路均传递预期设备 ID。
+- 固定地址改为结构化记录；旧裸地址保留为“需重新测试”但不参与自动发现。新增只读身份 endpoint、Tauri/Web“测试连接”、后端保存前二次探测，以及固定来源 IP 对已绑定 UUID 的 announcement 门禁。
+- 正式 React UI 已实现测试/成功/不可达/身份不一致状态，只有当前输入的成功结果能保存；设备详情区分设备 ID、当前地址和辅助网卡地址，离线横幅明确不会发往旧地址。
+- 前端 `rtk npm test` 96/96、Rust `cargo test --lib` 111/111、macOS desktop lib、Web bin、Windows desktop lib target、Vite production build 与 `git diff --check` 均通过。
+- Tauri debug binary 成功构建并执行，但被本机既有 Xchat 单实例接管；隔离 Web 实例实测身份查询、连接测试、错误 UUID 保存返回 400、正确 UUID 保存并回读结构化记录，测试数据库随后删除。
+- Windows 编译仅为交叉 target 类型检查，不等同 Windows 真机运行；Android 本轮未继续优化，保留此前 A0 的前台组播锁改动。
+- 磁盘空间不足时只删除了本轮临时目录、Windows target debug 缓存和数个明确属于 XChat 的旧 Rust incremental 缓存；均为可再生构建产物，未删除源码、用户数据或应用数据库。
+
+### 阶段 17：设备身份与动态 IP 风险诊断
+- **状态：** complete
+- 通过代码知识图核对用户 ID 生成、PeerManager 更新、发现落库、稳定单聊 ID、发送与接收校验链路。
+- 结论：正常 DHCP 变更后会按持久 UUID 更新地址并沿用原会话，现有实现不是按 IP 识别用户。
+- 确认一个窄但真实的错投窗口：75 秒在线租约内可能向旧 IP 写出正文；错误设备会因稳定会话 ID 不匹配而拒绝入库，但发送前无目标身份握手，无法阻止载荷先到达错误进程。
+- 确认 MAC 只适合作为辅助网络证据，不适合作为唯一用户或设备主键；后续设计应以持久设备身份绑定短期地址，并让手工测试与发送前检查复用同一身份握手。
+- 已更新 `ui-ref/xchat-desktop-prototype.html`：重写发现关闭与离线文案，增加设备 ID/辅助网卡地址/身份核验信息，并补齐手工地址测试、成功、不可达、身份不一致和保存状态。
+- 浏览器实测 `192.168.10.111:8888` 核验成功后才启用保存；`10.8.0.13:8888` 身份不一致时明确阻断且保存保持禁用；离线会话新消息显示“仅保存在本机 · 尚未发送”。控制台无错误。
+- 原型 5 段脚本语法检查通过，`rtk npm test` 93/93，`rtk git diff --check` 通过；等待用户审批原型后再改生产 UI/协议。

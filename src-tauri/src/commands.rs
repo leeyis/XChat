@@ -151,11 +151,15 @@ async fn upload_file_internal<R: tokio::io::AsyncRead + Unpin>(
     }
 
     if !is_online {
-        println!("[Command] 对方离线，文件保存为待上线");
+        println!("[Command] 对方离线，等待对方上线");
         return Ok(serde_json::json!({
             "success": true, "file_name": file_name, "file_size": file_size,
         }));
     }
+
+    crate::network::peer_identity::require_peer_identity(&peer_addr, &peer_id)
+        .await
+        .map_err(|error| format!("发送文件前核对设备身份失败: {error}"))?;
 
     // 获取自己的 ID（发送者 ID）
     let my_id = crate::db::get_user_id(&state.pool).await?;
@@ -406,12 +410,15 @@ pub async fn get_settings(state: State<'_, DbState>) -> Result<serde_json::Value
     let cfg = crate::config_file::read_config();
     let db_path = cfg.db_path.unwrap_or_else(crate::config_file::get_default_db_path);
     let auto_download = crate::db::get_auto_download(&state.pool).await;
+    let discovery = crate::network::discovery_policy::network_snapshot(&state.pool).await?;
 
     Ok(serde_json::json!({
         "download_path": download_path,
         "port": port,
         "db_path": db_path,
         "auto_download": auto_download,
+        "discovery_settings": discovery.settings,
+        "network_interfaces": discovery.interfaces,
     }))
 }
 
@@ -422,12 +429,13 @@ pub async fn update_settings(
     port: Option<String>,
     db_path: Option<String>,
     auto_download: Option<bool>,
+    discovery_settings: Option<crate::network::discovery_policy::DiscoverySettings>,
 ) -> Result<(), String> {
     if let Some(path) = download_path {
         crate::db::update_download_path(&state.pool, path).await?;
     }
     if let Some(ref p) = port {
-        let port_num: u16 = p.parse().map_err(|_| "Invalid port".to_string())?;
+        let port_num = crate::config_file::parse_server_port(p)?;
         #[cfg(target_os = "android")]
         {
             crate::db::set_port(&state.pool, port_num).await?;
@@ -450,6 +458,9 @@ pub async fn update_settings(
     }
     if let Some(enabled) = auto_download {
         crate::db::set_auto_download(&state.pool, enabled).await?;
+    }
+    if let Some(settings) = discovery_settings {
+        crate::network::discovery_policy::save_settings(&state.pool, settings).await?;
     }
 
     Ok(())
@@ -549,8 +560,14 @@ pub async fn send_message(
 
     // 3. 尝试发送（这同时也是一种探测）
     println!("[Command] 尝试发送消息给 {}({})...", peer_name, peer_addr);
-    match crate::network::messaging::send_text_message(&peer_addr, my_id, my_name, content.clone())
-        .await
+    match crate::network::messaging::send_text_message(
+        &peer_addr,
+        &peer_id,
+        my_id,
+        my_name,
+        content.clone(),
+    )
+    .await
     {
         Ok(_) => {
             // 发送成功
@@ -784,7 +801,12 @@ pub async fn send_file(
             "file_size": file_size,
             "sender_msg_id": sender_msg_id,
         });
-        let _ = crate::network::messaging::send_json_via_ws(&peer_addr, &offer.to_string()).await;
+        let _ = crate::network::messaging::send_json_via_ws(
+            &peer_addr,
+            &peer_id,
+            &offer.to_string(),
+        )
+        .await;
 
         return Ok(serde_json::json!({
             "success": true,
@@ -1314,7 +1336,12 @@ pub async fn send_file_from_fd(
                 "file_size": fileSize,
                 "sender_msg_id": sender_msg_id,
             });
-            let _ = crate::network::messaging::send_json_via_ws(&peerAddr, &offer.to_string()).await;
+            let _ = crate::network::messaging::send_json_via_ws(
+                &peerAddr,
+                &peerId,
+                &offer.to_string(),
+            )
+            .await;
 
             return Ok(serde_json::json!({
                 "success": true,
@@ -1719,18 +1746,45 @@ pub async fn delete_user_complete(
 // ── 自定义 IP 命令 ──
 
 #[tauri::command]
-pub async fn get_custom_peers(state: tauri::State<'_, crate::db::DbState>) -> Result<Vec<String>, String> {
-    Ok(crate::db::get_custom_peers(&state.pool).await)
+pub async fn get_custom_peers(
+    state: tauri::State<'_, crate::db::DbState>,
+) -> Result<Vec<crate::db::CustomPeerRecord>, String> {
+    Ok(crate::db::get_custom_peer_records(&state.pool).await)
 }
 
 #[tauri::command]
-pub async fn add_custom_peer(state: tauri::State<'_, crate::db::DbState>, peer: String) -> Result<(), String> {
-    crate::db::add_custom_peer(&state.pool, &peer).await
+pub async fn test_custom_peer(
+    state: tauri::State<'_, crate::db::DbState>,
+    peer: String,
+    expected_device_id: Option<String>,
+) -> Result<crate::network::peer_identity::PeerIdentityTestResult, String> {
+    crate::network::peer_identity::test_custom_peer(
+        &state.pool,
+        &peer,
+        expected_device_id.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn add_custom_peer(
+    state: tauri::State<'_, crate::db::DbState>,
+    peer: String,
+    expected_device_id: String,
+) -> Result<crate::db::CustomPeerRecord, String> {
+    crate::network::peer_identity::verify_and_save_custom_peer(
+        &state.pool,
+        &peer,
+        &expected_device_id,
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn remove_custom_peer(state: tauri::State<'_, crate::db::DbState>, peer: String) -> Result<(), String> {
-    crate::db::remove_custom_peer(&state.pool, &peer).await
+    crate::db::remove_custom_peer(&state.pool, &peer).await?;
+    crate::network::discovery_policy::notify_settings_changed();
+    Ok(())
 }
 
 #[tauri::command]
@@ -2848,14 +2902,18 @@ pub async fn reveal_workspace_file(
 
 /// 重新探测本机 IP 列表（网络切换后手动刷新用）
 #[tauri::command]
-pub fn refresh_local_ips() -> Vec<String> {
-    crate::network::discovery::refresh_local_ips()
+pub async fn refresh_local_ips(state: State<'_, DbState>) -> Result<Vec<String>, String> {
+    let snapshot = crate::network::discovery_policy::network_snapshot(&state.pool).await?;
+    Ok(crate::network::discovery::refresh_local_ips(&snapshot))
 }
 
 /// 获取所有可用的本机 IP 地址
 #[tauri::command]
-pub fn get_all_local_ips() -> Vec<String> {
-    crate::network::discovery::get_all_cached_ips()
+pub async fn get_all_local_ips(state: State<'_, DbState>) -> Result<Vec<String>, String> {
+    let snapshot = crate::network::discovery_policy::network_snapshot(&state.pool).await?;
+    Ok(crate::network::discovery::update_local_ip_cache(
+        &snapshot,
+    ))
 }
 
 /// 设置当前使用的本地IP地址

@@ -31,7 +31,43 @@ pub struct HandshakeMessage {
 
 #[cfg(test)]
 mod message_tests {
-    use super::TextMessage;
+    use super::{send_json_via_ws, TextMessage};
+    use futures_util::StreamExt;
+
+    async fn spawn_identity_websocket(
+        response_device_id: Option<&str>,
+    ) -> (String, tokio::task::JoinHandle<Option<String>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let response_device_id = response_device_id.map(str::to_string);
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                      mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    assert_eq!(request.uri().query(), Some("target_id=peer-expected"));
+                    if let Some(device_id) = response_device_id.as_deref() {
+                        response.headers_mut().insert(
+                            "x-xchat-device-id",
+                            device_id.parse().unwrap(),
+                        );
+                    }
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
+
+            match tokio::time::timeout(std::time::Duration::from_millis(500), socket.next()).await {
+                Ok(Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text)))) => {
+                    Some(text.to_string())
+                }
+                _ => None,
+            }
+        });
+        (address.to_string(), task)
+    }
 
     #[test]
     fn text_message_optional_ids_keep_legacy_wire_compatible() {
@@ -46,10 +82,38 @@ mod message_tests {
         assert!(encoded.get("conversation_id").is_none());
         assert!(encoded.get("client_message_id").is_none());
     }
+
+    #[tokio::test]
+    async fn verified_websocket_sends_only_after_identity_matches() {
+        let (address, received) = spawn_identity_websocket(Some("peer-expected")).await;
+        send_json_via_ws(&address, "peer-expected", r#"{"secret":"hello"}"#)
+            .await
+            .unwrap();
+        assert_eq!(received.await.unwrap().as_deref(), Some(r#"{"secret":"hello"}"#));
+
+        let (address, received) = spawn_identity_websocket(Some("different-device")).await;
+        let error = send_json_via_ws(&address, "peer-expected", r#"{"secret":"blocked"}"#)
+            .await
+            .unwrap_err();
+        assert!(error.contains("身份不匹配"));
+        assert_eq!(received.await.unwrap(), None);
+
+        let (address, received) = spawn_identity_websocket(None).await;
+        let error = send_json_via_ws(&address, "peer-expected", r#"{"secret":"blocked"}"#)
+            .await
+            .unwrap_err();
+        assert!(error.contains("缺少设备身份"));
+        assert_eq!(received.await.unwrap(), None);
+    }
 }
 
 // 发送握手消息（询问对方是否准备好接收）
-pub async fn send_handshake(peer_addr: &str, from_id: String, action: &str) -> Result<(), String> {
+pub async fn send_handshake(
+    peer_addr: &str,
+    expected_peer_id: &str,
+    from_id: String,
+    action: &str,
+) -> Result<(), String> {
     let handshake = HandshakeMessage {
         protocol: "handshake".to_string(),
         action: action.to_string(),
@@ -58,59 +122,13 @@ pub async fn send_handshake(peer_addr: &str, from_id: String, action: &str) -> R
 
     let json = serde_json::to_string(&handshake).map_err(|e| format!("序列化失败: {}", e))?;
 
-    // 尝试通过 WebSocket 发送
-    let ws_url = format!("ws://{}/ws", peer_addr);
-
-    match tokio_tungstenite::connect_async(&ws_url).await {
-        Ok((mut ws_stream, _)) => {
-            use futures_util::SinkExt;
-            use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
-
-            ws_stream
-                .send(WsMessage::Text(json))
-                .await
-                .map_err(|e| format!("发送握手失败: {}", e))?;
-
-            let _ = ws_stream.close(None).await;
-            Ok(())
-        }
-        Err(e) => {
-            eprintln!("[Messaging] 握手 WebSocket 连接失败: {}, 尝试 TCP", e);
-            send_handshake_via_tcp(peer_addr, handshake).await
-        }
-    }
-}
-
-// 通过 TCP 发送握手消息
-async fn send_handshake_via_tcp(
-    peer_addr: &str,
-    handshake: HandshakeMessage,
-) -> Result<(), String> {
-    use tokio::net::TcpStream;
-
-    let mut stream = TcpStream::connect(peer_addr)
-        .await
-        .map_err(|e| format!("TCP 连接失败: {}", e))?;
-
-    let json = serde_json::to_string(&handshake).map_err(|e| format!("序列化失败: {}", e))?;
-
-    let len = json.len() as u32;
-    stream
-        .write_all(&len.to_be_bytes())
-        .await
-        .map_err(|e| format!("发送长度失败: {}", e))?;
-
-    stream
-        .write_all(json.as_bytes())
-        .await
-        .map_err(|e| format!("发送握手失败: {}", e))?;
-
-    Ok(())
+    send_json_via_ws(peer_addr, expected_peer_id, &json).await
 }
 
 // 发送文本消息
 pub async fn send_text_message(
     peer_addr: &str,
+    expected_peer_id: &str,
     from_id: String,
     from_name: String,
     content: String,
@@ -134,37 +152,12 @@ pub async fn send_text_message(
     // 序列化为 JSON
     let json = serde_json::to_string(&message).map_err(|e| format!("序列化失败: {}", e))?;
 
-    // 尝试通过 WebSocket 发送
-    let ws_url = format!("ws://{}/ws", peer_addr);
-
-    match tokio_tungstenite::connect_async(&ws_url).await {
-        Ok((mut ws_stream, _)) => {
-            println!("[Messaging] WebSocket 连接成功");
-
-            use futures_util::SinkExt;
-            use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
-
-            ws_stream
-                .send(WsMessage::Text(json))
-                .await
-                .map_err(|e| format!("发送失败: {}", e))?;
-
-            // 优雅地关闭连接
-            let _ = ws_stream.close(None).await;
-
-            println!("[Messaging] 消息发送成功");
-            Ok(())
-        }
-        Err(e) => {
-            eprintln!("[Messaging] WebSocket 连接失败: {}, 尝试 TCP", e);
-            // 回退到 TCP
-            send_via_tcp(peer_addr, message).await
-        }
-    }
+    send_json_via_ws(peer_addr, expected_peer_id, &json).await
 }
 
 pub async fn send_direct_message(
     peer_addr: &str,
+    expected_peer_id: &str,
     from_id: String,
     from_name: String,
     conversation_id: String,
@@ -193,11 +186,12 @@ pub async fn send_direct_message(
     };
     let json =
         serde_json::to_string(&message).map_err(|error| format!("serialize message: {error}"))?;
-    send_json_via_ws(peer_addr, &json).await
+    send_json_via_ws(peer_addr, expected_peer_id, &json).await
 }
 
 pub async fn send_direct_control(
     peer_addr: &str,
+    expected_peer_id: &str,
     from_id: String,
     from_name: String,
     conversation_id: String,
@@ -219,55 +213,57 @@ pub async fn send_direct_control(
     };
     let json =
         serde_json::to_string(&message).map_err(|error| format!("serialize message: {error}"))?;
-    send_json_via_ws(peer_addr, &json).await
+    send_json_via_ws(peer_addr, expected_peer_id, &json).await
 }
 
-// 通过 TCP 发送(回退方案)
-async fn send_via_tcp(peer_addr: &str, message: TextMessage) -> Result<(), String> {
-    use tokio::net::TcpStream;
+pub const DEVICE_ID_HEADER: &str = "x-xchat-device-id";
+const PEER_WEBSOCKET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-    let mut stream = TcpStream::connect(peer_addr)
-        .await
-        .map_err(|e| format!("TCP 连接失败: {}", e))?;
-
-    let json = serde_json::to_string(&message).map_err(|e| format!("序列化失败: {}", e))?;
-
-    // 发送消息长度(4字节)
-    let len = json.len() as u32;
-    stream
-        .write_all(&len.to_be_bytes())
-        .await
-        .map_err(|e| format!("发送长度失败: {}", e))?;
-
-    // 发送消息内容
-    stream
-        .write_all(json.as_bytes())
-        .await
-        .map_err(|e| format!("发送消息失败: {}", e))?;
-
-    println!("[Messaging] TCP 消息发送成功");
-    Ok(())
-}
-
-/// 发送任意 JSON 负载到对方的 WebSocket（用于 file_offer / file_request 等自定义协议）
-pub async fn send_json_via_ws(peer_addr: &str, json: &str) -> Result<(), String> {
-    let ws_url = format!("ws://{}/ws", peer_addr);
-    match tokio_tungstenite::connect_async(&ws_url).await {
-        Ok((mut ws_stream, _)) => {
-            use futures_util::SinkExt;
-            use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
-            ws_stream
-                .send(WsMessage::Text(json.to_string().into()))
-                .await
-                .map_err(|e| format!("发送 WS 消息失败: {}", e))?;
-            let _ = ws_stream.close(None).await;
-            Ok(())
-        }
-        Err(e) => {
-            eprintln!("[Messaging] 发送 JSON via WS 失败: {}", e);
-            Err(format!("WS 连接失败: {}", e))
-        }
+/// 在写入正文前核对远端设备 UUID，避免动态 IP 被其他设备复用时错投。
+pub async fn send_json_via_ws(
+    peer_addr: &str,
+    expected_peer_id: &str,
+    json: &str,
+) -> Result<(), String> {
+    if expected_peer_id.trim().is_empty() {
+        return Err("目标设备 ID 不能为空".to_string());
     }
+    let ws_url = format!(
+        "ws://{}/ws?target_id={}",
+        peer_addr.trim_end_matches('/'),
+        urlencoding::encode(expected_peer_id),
+    );
+    let connection = tokio::time::timeout(
+        PEER_WEBSOCKET_TIMEOUT,
+        tokio_tungstenite::connect_async(&ws_url),
+    )
+    .await
+    .map_err(|_| "WS 连接超时".to_string())?
+    .map_err(|error| format!("WS 连接失败: {error}"))?;
+    let (mut ws_stream, response) = connection;
+    let actual_peer_id = response
+        .headers()
+        .get(DEVICE_ID_HEADER)
+        .ok_or_else(|| "对方响应缺少设备身份，已停止发送".to_string())?
+        .to_str()
+        .map_err(|_| "对方设备身份格式无效，已停止发送".to_string())?;
+    if actual_peer_id != expected_peer_id {
+        return Err(format!(
+            "设备身份不匹配，期望 {expected_peer_id}，实际 {actual_peer_id}；已停止发送"
+        ));
+    }
+
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
+    tokio::time::timeout(
+        PEER_WEBSOCKET_TIMEOUT,
+        ws_stream.send(WsMessage::Text(json.to_string().into())),
+    )
+    .await
+    .map_err(|_| "发送 WS 消息超时".to_string())?
+    .map_err(|error| format!("发送 WS 消息失败: {error}"))?;
+    let _ = ws_stream.close(None).await;
+    Ok(())
 }
 
 // 启动消息接收服务器
@@ -512,12 +508,17 @@ pub async fn get_chat_history_with_offset(
 // ======================================
 async fn resend_file_background(
     my_id: &str,
+    peer_id: &str,
     peer_addr: &str,
     file_name: &str,
     file_path: &str,
     file_size: i64,
 ) -> Result<(), String> {
     println!("[Messaging] 正在后台补发文件: {}", file_name);
+
+    crate::network::peer_identity::require_peer_identity(peer_addr, peer_id)
+        .await
+        .map_err(|error| format!("补发文件前核对设备身份失败: {error}"))?;
 
     // 区分 Android content URI 和普通文件路径
     #[cfg(target_os = "android")]
@@ -632,7 +633,7 @@ pub async fn resend_pending_messages(
     );
     let my_id = crate::db::get_user_id(pool).await?;
 
-    match send_handshake(peer_addr, my_id.clone(), "ready_to_receive").await {
+    match send_handshake(peer_addr, peer_id, my_id.clone(), "ready_to_receive").await {
         Ok(_) => {
             println!("[UDP] ✓ 握手请求已发送");
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -643,6 +644,7 @@ pub async fn resend_pending_messages(
                     // 补发文本消息
                     match send_text_message(
                         peer_addr,
+                        peer_id,
                         my_id.clone(),
                         "System".to_string(),
                         content.clone(),
@@ -680,7 +682,7 @@ pub async fn resend_pending_messages(
                             if auto_enabled {
                                 // 自动下载开启 → 直接上传（原行为）
                                 match resend_file_background(
-                                    &my_id, peer_addr, &content, path, size,
+                                    &my_id, peer_id, peer_addr, &content, path, size,
                                 )
                                 .await
                                 {
@@ -704,15 +706,10 @@ pub async fn resend_pending_messages(
                                     "file_size": size,
                                     "sender_msg_id": msg_id,
                                 });
-                                let ws_url = format!("ws://{}/ws", peer_addr);
-                                if let Ok((mut ws_stream, _)) =
-                                    tokio_tungstenite::connect_async(&ws_url).await
+                                if send_json_via_ws(peer_addr, peer_id, &offer.to_string())
+                                    .await
+                                    .is_ok()
                                 {
-                                    use futures_util::SinkExt;
-                                    use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
-                                    let _ =
-                                        ws_stream.send(WsMessage::Text(offer.to_string())).await;
-                                    let _ = ws_stream.close(None).await;
                                     // 更新发送端 status 为 offering，前端显示「等待对方接收」
                                     let _ = crate::db::update_file_status_by_id(
                                         pool, msg_id, "offering",
@@ -754,15 +751,10 @@ pub async fn resend_pending_messages(
                                     "file_size": size,
                                     "sender_msg_id": msg_id,
                                 });
-                                let ws_url = format!("ws://{}/ws", peer_addr);
-                                if let Ok((mut ws_stream, _)) =
-                                    tokio_tungstenite::connect_async(&ws_url).await
+                                if send_json_via_ws(peer_addr, peer_id, &offer.to_string())
+                                    .await
+                                    .is_ok()
                                 {
-                                    use futures_util::SinkExt;
-                                    use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
-                                    let _ =
-                                        ws_stream.send(WsMessage::Text(offer.to_string())).await;
-                                    let _ = ws_stream.close(None).await;
                                     // 更新发送端 status 为 offering，前端显示「等待对方接收」
                                     let _ = crate::db::update_file_status_by_id(
                                         pool, msg_id, "offering",

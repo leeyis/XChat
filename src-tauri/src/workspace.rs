@@ -83,7 +83,9 @@ pub struct WorkspaceSettings {
     pub port: u16,
     pub db_path: String,
     pub capture_shortcut: String,
-    pub custom_peers: Vec<String>,
+    pub custom_peers: Vec<db::CustomPeerRecord>,
+    pub discovery_settings: crate::network::discovery_policy::DiscoverySettings,
+    pub network_interfaces: Vec<crate::network::discovery_policy::NetworkInterfaceView>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -500,6 +502,8 @@ pub async fn get_snapshot(
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "Ctrl/⌘ ⇧ A".to_string());
     let (hostname, mac_address) = crate::network::discovery::local_device_metadata();
+    let discovery = crate::network::discovery_policy::network_snapshot(pool).await?;
+    crate::network::discovery::update_local_ip_cache(&discovery);
     let settings = WorkspaceSettings {
         name: self_name.clone(),
         avatar: avatar.clone(),
@@ -513,7 +517,9 @@ pub async fn get_snapshot(
             .db_path
             .unwrap_or_else(crate::config_file::get_default_db_path),
         capture_shortcut,
-        custom_peers: db::get_custom_peers(pool).await,
+        custom_peers: db::get_custom_peer_records(pool).await,
+        discovery_settings: discovery.settings,
+        network_interfaces: discovery.interfaces,
     };
 
     Ok(WorkspaceSnapshot {
@@ -638,9 +644,12 @@ async fn send_group_sync_to(
             continue;
         }
         let addr = peer.addr.clone();
+        let expected_peer_id = peer.id.clone();
         let sync = sync.clone();
         tokio::spawn(async move {
-            if let Err(error) = crate::network::protocol::send_protocol_message(&addr, &sync).await
+            if let Err(error) =
+                crate::network::protocol::send_protocol_message(&addr, &expected_peer_id, &sync)
+                    .await
             {
                 eprintln!("[Workspace] 群同步发送失败: {error}");
             }
@@ -849,7 +858,7 @@ pub async fn recall_message(
     .await?;
     for recipient in recipients {
         if let Some(peer) = peers.get(&recipient).filter(|peer| !peer.is_offline) {
-            if crate::network::protocol::send_protocol_message(&peer.addr, &recall)
+            if crate::network::protocol::send_protocol_message(&peer.addr, &peer.id, &recall)
                 .await
                 .is_ok()
             {
@@ -976,7 +985,7 @@ async fn send_message_control(
                     timestamp: now() as u64,
                 }
             };
-            crate::network::protocol::send_protocol_message(&peer.addr, &control).await
+            crate::network::protocol::send_protocol_message(&peer.addr, &peer.id, &control).await
         } else {
             let (msg_type, content) = if let Some((emoji, active)) = reaction {
                 (
@@ -991,6 +1000,7 @@ async fn send_message_control(
             };
             messaging::send_direct_control(
                 &peer.addr,
+                &peer.id,
                 self_id.clone(),
                 self_name.clone(),
                 conversation_id.to_string(),
@@ -1120,6 +1130,7 @@ pub async fn send_message(
         let sync = group_sync_message(&conversation, members.as_deref().unwrap_or_default());
         for peer in online {
             let addr = peer.addr;
+            let expected_peer_id = peer.id;
             let sync = sync.clone();
             let outgoing = ProtocolMessage::GroupMessage {
                 group_id: conversation_id.to_string(),
@@ -1132,9 +1143,18 @@ pub async fn send_message(
                 timestamp: message.timestamp as u64,
             };
             tokio::spawn(async move {
-                let _ = crate::network::protocol::send_protocol_message(&addr, &sync).await;
-                if let Err(error) =
-                    crate::network::protocol::send_protocol_message(&addr, &outgoing).await
+                let _ = crate::network::protocol::send_protocol_message(
+                    &addr,
+                    &expected_peer_id,
+                    &sync,
+                )
+                .await;
+                if let Err(error) = crate::network::protocol::send_protocol_message(
+                    &addr,
+                    &expected_peer_id,
+                    &outgoing,
+                )
+                .await
                 {
                     eprintln!("[Workspace] 群消息发送失败: {error}");
                 }
@@ -1153,6 +1173,7 @@ pub async fn send_message(
             tokio::spawn(async move {
                 match messaging::send_direct_message(
                     &peer.addr,
+                    &peer.id,
                     sender_id,
                     sender_name,
                     conversation_id,
@@ -1347,7 +1368,7 @@ pub async fn mark_messages_read(
             message_ids: ids.clone(),
             timestamp: now() as u64,
         };
-        if crate::network::protocol::send_protocol_message(&peer.addr, &ack)
+        if crate::network::protocol::send_protocol_message(&peer.addr, &peer.id, &ack)
             .await
             .is_ok()
         {
@@ -1373,6 +1394,7 @@ pub async fn resend_for_peer(
         let members = db::get_conversation_members(pool, &group.id).await?;
         if let Err(error) = crate::network::protocol::send_protocol_message(
             peer_addr,
+            peer_id,
             &group_sync_message(&group, &members),
         )
         .await
@@ -1383,6 +1405,7 @@ pub async fn resend_for_peer(
     for pending in db::get_pending_recalls_for_peer(pool, peer_id).await? {
         match crate::network::protocol::send_protocol_message(
             peer_addr,
+            peer_id,
             &ProtocolMessage::MessageRecall {
                 conversation_id: pending.conversation_id,
                 client_message_id: pending.message_client_id.clone(),
@@ -1410,7 +1433,7 @@ pub async fn resend_for_peer(
                 message_ids: vec![receipt.message_client_id.clone()],
                 timestamp: now() as u64,
             };
-            if crate::network::protocol::send_protocol_message(peer_addr, &ack)
+            if crate::network::protocol::send_protocol_message(peer_addr, peer_id, &ack)
                 .await
                 .is_ok()
             {
@@ -1430,7 +1453,7 @@ pub async fn resend_for_peer(
                 message_ids: vec![receipt.message_client_id.clone()],
                 timestamp: now() as u64,
             };
-            if crate::network::protocol::send_protocol_message(peer_addr, &ack)
+            if crate::network::protocol::send_protocol_message(peer_addr, peer_id, &ack)
                 .await
                 .is_ok()
             {
@@ -1475,14 +1498,19 @@ pub async fn resend_for_peer(
                 mention_ids,
                 timestamp: message.timestamp as u64,
             };
-            if let Err(error) =
-                crate::network::protocol::send_protocol_message(peer_addr, &outgoing).await
+            if let Err(error) = crate::network::protocol::send_protocol_message(
+                peer_addr,
+                peer_id,
+                &outgoing,
+            )
+            .await
             {
                 eprintln!("[Workspace] 群消息补发失败: {error}");
             }
         } else {
             let sent = messaging::send_direct_message(
                 peer_addr,
+                peer_id,
                 self_id.clone(),
                 self_name.clone(),
                 conversation_id,
@@ -1594,6 +1622,7 @@ pub async fn trusted_file_path(
 
 struct IncomingFileRequestContext {
     self_id: String,
+    sender_id: String,
     sender_addr: String,
     client_message_id: String,
     message_id: i64,
@@ -1662,13 +1691,15 @@ async fn prepare_incoming_file_request(
     )
     .await?
     .ok_or_else(|| "该文件传输已被处理".to_string())?;
-    let sender = db::get_user_metadata(pool, &message.sender_id)
+    let sender_id = message.sender_id.clone();
+    let sender = db::get_user_metadata(pool, &sender_id)
         .await?
         .filter(|peer| !peer.addr.trim().is_empty())
         .ok_or_else(|| "发送设备地址不可用".to_string())?;
     db::update_file_status_by_id(pool, message.id, "downloading").await?;
     Ok(IncomingFileRequestContext {
         self_id,
+        sender_id,
         sender_addr: sender.addr,
         client_message_id: message.client_message_id.unwrap(),
         message_id: message.id,
@@ -1688,8 +1719,12 @@ pub async fn request_incoming_file(
         "from_id": context.self_id,
         "client_message_id": context.client_message_id,
     });
-    if let Err(error) =
-        messaging::send_json_via_ws(&context.sender_addr, &request.to_string()).await
+    if let Err(error) = messaging::send_json_via_ws(
+        &context.sender_addr,
+        &context.sender_id,
+        &request.to_string(),
+    )
+    .await
     {
         let _ = db::transition_transfer_status(
             pool,

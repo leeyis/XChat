@@ -1549,20 +1549,101 @@ pub async fn delete_conversation(
 
 const CUSTOM_PEER_KEY_PREFIX: &str = "custom_peer_";
 
-/// 获取所有自定义 IP
-pub async fn get_custom_peers(pool: &sqlx::Pool<sqlx::Sqlite>) -> Vec<String> {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CustomPeerRecord {
+    pub endpoint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_verified_at: Option<i64>,
+}
+
+impl CustomPeerRecord {
+    pub fn is_verified(&self) -> bool {
+        self.device_id
+            .as_deref()
+            .is_some_and(|device_id| !device_id.trim().is_empty())
+    }
+}
+
+/// 读取自定义地址记录。旧版纯字符串保留给 UI 重验，但不会激活发现发送。
+pub async fn get_custom_peer_records(pool: &sqlx::Pool<sqlx::Sqlite>) -> Vec<CustomPeerRecord> {
     let pattern = format!("{}%", CUSTOM_PEER_KEY_PREFIX);
-    match sqlx::query_as::<_, (String,)>("SELECT value FROM settings WHERE key LIKE ?")
-        .bind(&pattern)
-        .fetch_all(pool)
-        .await
+    match sqlx::query_as::<_, (String,)>(
+        "SELECT value FROM settings WHERE key LIKE ? ORDER BY key",
+    )
+    .bind(&pattern)
+    .fetch_all(pool)
+    .await
     {
-        Ok(rows) => rows.into_iter().map(|r| r.0).collect(),
-        Err(e) => {
-            eprintln!("[DB] 读取自定义 IP 失败: {}", e);
-            vec![]
+        Ok(rows) => rows
+            .into_iter()
+            .filter_map(|(value,)| {
+                let parsed = serde_json::from_str::<CustomPeerRecord>(&value).unwrap_or_else(|_| {
+                    CustomPeerRecord {
+                        endpoint: value,
+                        device_id: None,
+                        name: None,
+                        hostname: None,
+                        mac_address: None,
+                        app_version: None,
+                        last_verified_at: None,
+                    }
+                });
+                (!parsed.endpoint.trim().is_empty()).then_some(parsed)
+            })
+            .collect(),
+        Err(error) => {
+            eprintln!("[DB] 读取自定义地址失败: {error}");
+            Vec::new()
         }
     }
+}
+
+/// 仅返回已经和设备 UUID 绑定的固定地址，供自动发现使用。
+pub async fn get_custom_peers(pool: &sqlx::Pool<sqlx::Sqlite>) -> Vec<String> {
+    get_custom_peer_records(pool)
+        .await
+        .into_iter()
+        .filter(CustomPeerRecord::is_verified)
+        .map(|record| record.endpoint)
+        .collect()
+}
+
+pub async fn save_custom_peer_record(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    record: &CustomPeerRecord,
+) -> Result<(), String> {
+    let endpoint = record.endpoint.trim();
+    if endpoint.is_empty() {
+        return Err("固定地址不能为空".to_string());
+    }
+    if !record.is_verified() {
+        return Err("固定地址必须先通过设备身份验证".to_string());
+    }
+    let mut record = record.clone();
+    record.endpoint = endpoint.to_string();
+    let value = serde_json::to_string(&record)
+        .map_err(|error| format!("序列化固定地址失败: {error}"))?;
+    let key = format!("{}{}", CUSTOM_PEER_KEY_PREFIX, endpoint);
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(pool)
+    .await
+    .map_err(|error| format!("保存固定地址失败: {error}"))?;
+    Ok(())
 }
 
 /// 添加自定义 IP
@@ -3451,6 +3532,53 @@ pub async fn set_setting(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn custom_peer_records_activate_only_after_identity_verification() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?)")
+            .bind("custom_peer_192.168.10.22:8888")
+            .bind("192.168.10.22:8888")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let legacy = get_custom_peer_records(&pool).await;
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].endpoint, "192.168.10.22:8888");
+        assert_eq!(legacy[0].device_id, None);
+        assert!(get_custom_peers(&pool).await.is_empty());
+
+        let verified = CustomPeerRecord {
+            endpoint: "192.168.10.22:8888".into(),
+            device_id: Some("device-zhangsan".into()),
+            name: Some("张三".into()),
+            hostname: Some("zhangsan-pc".into()),
+            mac_address: Some("AA:BB:CC:DD:EE:FF".into()),
+            app_version: Some("0.1.5".into()),
+            last_verified_at: Some(42),
+        };
+        save_custom_peer_record(&pool, &verified).await.unwrap();
+
+        assert_eq!(get_custom_peer_records(&pool).await, vec![verified]);
+        assert_eq!(
+            get_custom_peers(&pool).await,
+            vec!["192.168.10.22:8888".to_string()],
+        );
+
+        remove_custom_peer(&pool, "192.168.10.22:8888")
+            .await
+            .unwrap();
+        assert!(get_custom_peer_records(&pool).await.is_empty());
+    }
 
     #[tokio::test]
     async fn message_reaction_state_is_idempotent_and_removable() {

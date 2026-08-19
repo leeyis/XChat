@@ -5,6 +5,9 @@ import {
   createXChatModule,
   conversationPreview,
   directConversationId,
+  discoverySettingsEqual,
+  discoveryInterfaceState,
+  discoverySummary,
   encodeQuoteMessage,
   EMOJI_SET,
   fileKind,
@@ -21,6 +24,7 @@ import {
   incomingMessageAlert,
   isMessageAlertControlType,
   applyReactionUpdate,
+  canSaveVerifiedEndpoint,
   localFileAvailable,
   markConversationReadState,
   matchesShortcut,
@@ -34,15 +38,311 @@ import {
   nativeDragDropTarget,
   retainInFlightMessages,
   nativeCaptureShortcutAvailable,
+  normalizeCustomPeer,
   normalizeConversation,
   normalizeDraftAttachment,
   normalizeMessage,
+  recommendedDiscoverySettings,
   numericMessageId,
   retainedMentionIds,
   runtimeCapabilities,
   shortcutLabelFromEvent,
   TauriAdapter,
+  validServerPort,
+  withDiscoveryInterfaceSelection,
 } from "./xchat.js";
+
+test("fixed addresses stay inactive until the current input passes an identity test", () => {
+  assert.deepEqual(normalizeCustomPeer("192.168.10.22:8888"), {
+    endpoint: "192.168.10.22:8888",
+    device_id: null,
+    name: null,
+    hostname: null,
+    mac_address: null,
+    app_version: null,
+    last_verified_at: null,
+    verified: false,
+  });
+  assert.equal(
+    canSaveVerifiedEndpoint("192.168.10.22", "192.168.10.22", {
+      identity_matches: true,
+      identity: { device_id: "device-zhangsan" },
+    }),
+    true,
+  );
+  assert.equal(
+    canSaveVerifiedEndpoint("192.168.10.111", "192.168.10.22", {
+      identity_matches: true,
+      identity: { device_id: "device-zhangsan" },
+    }),
+    false,
+  );
+  assert.equal(
+    canSaveVerifiedEndpoint("192.168.10.22", "192.168.10.22", {
+      identity_matches: false,
+      identity: { device_id: "device-lisi" },
+    }),
+    false,
+  );
+});
+
+test("desktop and web fixed-address adapters test and save the bound device identity", async () => {
+  const tauriCalls = [];
+  const tauri = new TauriAdapter({
+    core: {
+      invoke(command, payload) {
+        tauriCalls.push([command, payload]);
+        return Promise.resolve();
+      },
+    },
+  });
+  await tauri.testEndpoint("192.168.10.22", null);
+  await tauri.addEndpoint("192.168.10.22:8888", "device-zhangsan");
+  assert.deepEqual(tauriCalls, [
+    ["test_custom_peer", { peer: "192.168.10.22", expectedDeviceId: null }],
+    [
+      "add_custom_peer",
+      { peer: "192.168.10.22:8888", expectedDeviceId: "device-zhangsan" },
+    ],
+  ]);
+
+  const webCalls = [];
+  const web = new HttpWsAdapter();
+  web.json = (...args) => {
+    webCalls.push(args);
+    return Promise.resolve();
+  };
+  await web.testEndpoint("192.168.10.22", null);
+  await web.addEndpoint("192.168.10.22:8888", "device-zhangsan");
+  assert.deepEqual(webCalls, [
+    [
+      "/api/test_custom_peer",
+      "POST",
+      { peer: "192.168.10.22", expected_device_id: null },
+    ],
+    [
+      "/api/add_custom_peer",
+      "POST",
+      { peer: "192.168.10.22:8888", expected_device_id: "device-zhangsan" },
+    ],
+  ]);
+});
+
+test("server port validation accepts only integer ports from 1 through 65535", () => {
+  for (const value of [1, "1", 8888, "65535"]) assert.equal(validServerPort(value), true);
+  for (const value of ["", "0", 0, 65536, "1.5", "1e3", "+1", " 1", "abc", null]) {
+    assert.equal(validServerPort(value), false, String(value));
+  }
+});
+
+test("workspace settings normalize discovery defaults and backend interface facts", async () => {
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  let workspace;
+  try {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        __TAURI__: {
+          core: {
+            invoke(command) {
+              if (command !== "get_workspace_snapshot") return Promise.resolve([]);
+              return Promise.resolve({
+                self: { id: "self", name: "Me", hostname: "mac", addr: "192.168.10.20" },
+                devices: [],
+                conversations: [],
+                files: [],
+                transfers: [],
+                settings: {
+                  language: "zh-CN",
+                  network_interfaces: [
+                    {
+                      id: "if:name:en0",
+                      name: "en0",
+                      index: 7,
+                      addresses: [{ ipv4: "192.168.10.20", prefix_length: 24 }],
+                      category: "physical_lan",
+                      is_up: true,
+                      default_enabled: true,
+                      selected: true,
+                      enabled: true,
+                      exclusion_reason: null,
+                    },
+                  ],
+                },
+                capabilities: {},
+              });
+            },
+          },
+          event: { listen: () => Promise.resolve(() => {}) },
+        },
+      },
+    });
+
+    workspace = createXChatModule();
+    assert.equal((await workspace.dispatch({ type: "bootstrap" })).ok, true);
+    const settings = workspace.getSnapshot().settings;
+    assert.deepEqual(settings.discovery_settings, {
+      local_discovery: true,
+      vpn_discovery: true,
+      interface_overrides: {},
+    });
+    assert.deepEqual(settings.network_interfaces[0].addresses, [
+      { ipv4: "192.168.10.20", prefix_length: 24 },
+    ]);
+    assert.equal(settings.network_interfaces[0].category, "physical_lan");
+  } finally {
+    await workspace?.dispatch({ type: "shutdown" });
+    if (windowDescriptor) {
+      Object.defineProperty(globalThis, "window", windowDescriptor);
+    } else {
+      delete globalThis.window;
+    }
+  }
+});
+
+test("desktop and web settings adapters send the same discovery selection", async () => {
+  const discoverySettings = {
+    local_discovery: false,
+    vpn_discovery: true,
+    interface_overrides: { "if:name:en0": false, "if:name:meta tunnel": true },
+  };
+  const current = {
+    download_path: "/tmp/downloads",
+    port: "8888",
+    db_path: "/tmp/xchat",
+    auto_download: false,
+    discovery_settings: recommendedDiscoverySettings(),
+  };
+
+  const tauriCalls = [];
+  const tauri = new TauriAdapter({
+    core: {
+      invoke(command, payload) {
+        tauriCalls.push([command, payload]);
+        return Promise.resolve();
+      },
+    },
+  });
+  await tauri.patchSettings({ discovery_settings: discoverySettings }, current);
+  assert.deepEqual(tauriCalls, [[
+    "update_settings",
+    {
+      downloadPath: "/tmp/downloads",
+      port: "8888",
+      dbPath: "/tmp/xchat",
+      autoDownload: false,
+      discoverySettings,
+    },
+  ]]);
+
+  const webCalls = [];
+  const web = new HttpWsAdapter();
+  web.json = (...args) => {
+    webCalls.push(args);
+    return Promise.resolve();
+  };
+  await web.patchSettings({ discovery_settings: discoverySettings }, current);
+  assert.deepEqual(webCalls, [[
+    "/api/update_settings",
+    "POST",
+    {
+      download_path: "/tmp/downloads",
+      port: 8888,
+      db_path: "/tmp/xchat",
+      auto_download: false,
+      discovery_settings: discoverySettings,
+    },
+  ]]);
+});
+
+test("discovery interface state preserves overrides behind category master switches", () => {
+  const physical = {
+    id: "if:name:en0",
+    category: "physical_lan",
+    is_up: true,
+    default_enabled: true,
+  };
+  const proxy = {
+    id: "if:name:meta tunnel",
+    category: "proxy_tun",
+    is_up: true,
+    default_enabled: false,
+  };
+  const settings = {
+    local_discovery: false,
+    vpn_discovery: true,
+    interface_overrides: { "if:name:en0": true, "if:name:meta tunnel": true },
+  };
+
+  assert.deepEqual(
+    discoveryInterfaceState(physical, settings),
+    { selected: true, enabled: false, category_disabled: true },
+  );
+  assert.deepEqual(
+    discoveryInterfaceState(proxy, settings),
+    { selected: true, enabled: true, category_disabled: false },
+  );
+  assert.deepEqual(recommendedDiscoverySettings(), {
+    local_discovery: true,
+    vpn_discovery: true,
+    interface_overrides: {},
+  });
+  assert.deepEqual(discoverySummary([physical, proxy], settings), {
+    enabled: 1,
+    paused: 1,
+    excluded: 0,
+    all_off: false,
+  });
+
+  const defaults = recommendedDiscoverySettings();
+  const physicalOff = withDiscoveryInterfaceSelection(defaults, physical, false);
+  assert.deepEqual(physicalOff.interface_overrides, { "if:name:en0": false });
+  assert.deepEqual(
+    withDiscoveryInterfaceSelection(physicalOff, physical, true),
+    defaults,
+  );
+  const proxyOn = withDiscoveryInterfaceSelection(defaults, proxy, true);
+  assert.deepEqual(proxyOn.interface_overrides, { "if:name:meta tunnel": true });
+  assert.deepEqual(withDiscoveryInterfaceSelection(proxyOn, proxy, false), defaults);
+
+  const reordered = withDiscoveryInterfaceSelection(
+    withDiscoveryInterfaceSelection(
+      {
+        ...defaults,
+        interface_overrides: {
+          [physical.id]: false,
+          [proxy.id]: true,
+        },
+      },
+      physical,
+      true,
+    ),
+    physical,
+    false,
+  );
+  assert.equal(
+    discoverySettingsEqual(
+      reordered,
+      {
+        ...defaults,
+        interface_overrides: {
+          [physical.id]: false,
+          [proxy.id]: true,
+        },
+      },
+      [physical, proxy],
+    ),
+    true,
+  );
+  assert.equal(
+    discoverySettingsEqual(
+      { ...defaults, interface_overrides: { [physical.id]: true } },
+      defaults,
+      [physical, proxy],
+    ),
+    true,
+  );
+});
 
 test("message reactions are idempotent and toggle per user", () => {
   const messages = [{ client_message_id: "message-1", reactions: [] }];

@@ -10,6 +10,7 @@ import {
   ACTIVE_TRANSFER_STATES,
   EMOJI_SET,
   avatarText,
+  canSaveVerifiedEndpoint,
   fileKind,
   fileStatus,
   groupMentionCandidates,
@@ -26,10 +27,16 @@ import {
   nativeClipboardPaths,
   nativeCaptureShortcutAvailable,
   nativeDragDropTarget,
+  discoveryInterfaceState,
+  discoverySettingsEqual,
+  discoverySummary,
   formatMessageTime,
   messageTimeDividerIndices,
+  recommendedDiscoverySettings,
   retainedMentionIds,
   shortcutLabelFromEvent,
+  validServerPort,
+  withDiscoveryInterfaceSelection,
 } from "./xchat.js";
 import CaptureEditor from "./CaptureEditor.jsx";
 
@@ -165,8 +172,11 @@ const copy = {
     deviceIdentity: "设备身份",
     hostname: "主机名",
     currentAddress: "当前地址",
-    macAddress: "MAC 地址",
+    macAddress: "网卡地址（辅助）",
     deviceId: "设备 ID",
+    identityVerification: "身份核验",
+    identityVerifiedCurrentAddress: "当前地址已确认属于此设备",
+    identityOfflineStopped: "离线，未向旧地址发送",
     discoveryMethod: "发现方式",
     lastOnline: "最后在线",
     notProvided: "未提供",
@@ -241,8 +251,48 @@ const copy = {
     autoReceiveFilesHint: "关闭后文件停在待接收状态",
     network: "网络",
     serverPort: "服务端口",
+    invalidServerPort: "请输入 1–65535 之间的整数端口",
     restartRequired: "重启后生效",
     databasePath: "数据库路径",
+    deviceDiscovery: "设备发现",
+    deviceDiscoverySubtitle: "选择 Xchat 用哪些网络自动发现和探测设备",
+    discoveryNote: "这里只控制主动发现和在线探测，不会修改系统路由或代理设置。主动发现仅发送到已勾选的网络接口，不会沿默认路由或连续扫描地址段。代理 TUN 与虚拟网卡默认排除；已知设备消息仍按系统路由通信。",
+    localDiscovery: "本地局域网发现",
+    localDiscoveryHint: "通过 Wi-Fi 和有线网络发现同网段设备",
+    vpnDiscovery: "异地组网 VPN 发现",
+    vpnDiscoveryHint: "通过 WireGuard 等组网网络发现远端设备",
+    vpnFixedHelper: "部分 VPN 不转发广播，可用固定地址完成首次连接。目标网段由 VPN 接管时，消息会按系统路由进入 VPN。",
+    manageFixedPeers: "管理固定地址",
+    discoveryNetworks: "参与设备发现的网络",
+    discoverySummary: (enabled, paused, excluded) =>
+      `已启用 ${enabled} 个${paused ? `，已暂停 ${paused} 个` : ""}，已排除 ${excluded} 个`,
+    expand: "展开",
+    collapse: "收起",
+    adapterManagerHint: "物理网络与组网 VPN 默认开启，代理和虚拟接口默认排除。",
+    refreshNetworkList: "刷新网络列表",
+    refreshingNetworkList: "正在刷新网络列表",
+    networkListUpdatedNow: "网络列表刚刚更新",
+    networkListNotRefreshed: "网络列表来自当前设置快照",
+    restoreRecommended: "恢复推荐设置",
+    discoveryAllOff: "自动发现已暂停。已添加设备仍可通信；新设备需要手动添加。",
+    noNetworkInterfaces: "暂未发现可用于设备发现的网络接口。",
+    interfaceConnected: "接口已连接",
+    interfaceDisconnected: "接口未连接",
+    interfaceNoAddress: "暂无 IPv4 地址",
+    discoveryCategories: {
+      physical_lan: "物理局域网",
+      mesh_vpn: "组网 VPN",
+      proxy_tun: "代理 TUN",
+      virtual_machine: "虚拟网卡",
+      unknown: "未知接口",
+    },
+    recommended: "推荐",
+    defaultExcluded: "默认排除",
+    enableDiscoveryOn: (name) => `使用 ${name} 进行设备发现`,
+    tunRiskTitle: (name) => `在 ${name} 上启用设备发现？`,
+    tunRiskText: "这可能让发现流量进入代理网络。只有确认该接口用于设备互联时才开启。",
+    keepOff: "保持关闭",
+    enableAnyway: "仍然开启",
     shortcuts: "快捷键",
     captureShortcut: "截屏快捷键",
     captureShortcutHint: "点击输入框后按下字母或数字组合键",
@@ -263,7 +313,21 @@ const copy = {
     groupHelper: "至少选择两台支持群聊的远端设备。",
     deviceAddress: "设备地址",
     endpointPlaceholder: "192.168.1.100:8888 或 myhost.local",
-    endpointHelper: "适用于跨 VLAN 或 WireGuard。保存后会立即尝试连接。",
+    endpointHelper: "测试只核对设备身份，不会发送聊天内容。适用于跨 VLAN、WireGuard 或无法自动发现的设备。",
+    endpointSubtitle: "先确认地址对应哪台 Xchat 设备，再保存",
+    testConnection: "测试连接",
+    testingConnection: "正在核对设备身份…",
+    endpointTestSuccess: "身份确认成功，可以安全保存。",
+    endpointTestMismatch: "此地址上的设备身份与已保存记录不一致，已停止使用该地址。",
+    endpointTestFailed: "无法确认此地址上的 Xchat 设备。",
+    savedFixedAddresses: "已保存的固定地址",
+    fixedAddressSafety: "地址变化或身份不一致时会停止发送",
+    identityConfirmed: "身份已确认",
+    identityNeedsTest: "需要重新测试",
+    retest: "重新测试",
+    saveDevice: "保存设备",
+    offlineSafetyTitle: "已停止发送，防止发错设备",
+    offlineSafetyText: "新消息只保存在本机。确认同一设备重新上线后才会发出。",
     saveRemark: "保存备注",
     remarkHelper: "备注绑定设备 UUID，不受 IP 地址变化影响。",
     connecting: "正在连接 Xchat…",
@@ -274,7 +338,7 @@ const copy = {
     readCount: (read, total) => `已读 ${read}/${total}`,
     status: {
       pending: "发送中",
-      sent: "已发送",
+      sent: "已发出",
       delivered: "已送达",
       read: "已读",
       received: "已接收",
@@ -414,8 +478,11 @@ const copy = {
     deviceIdentity: "Device identity",
     hostname: "Hostname",
     currentAddress: "Current address",
-    macAddress: "MAC address",
+    macAddress: "Network address (auxiliary)",
     deviceId: "Device ID",
+    identityVerification: "Identity verification",
+    identityVerifiedCurrentAddress: "The current address is verified for this device",
+    identityOfflineStopped: "Offline; nothing was sent to the old address",
     discoveryMethod: "Discovery method",
     lastOnline: "Last online",
     notProvided: "Not provided",
@@ -493,8 +560,48 @@ const copy = {
     autoReceiveFilesHint: "When off, files wait for manual acceptance",
     network: "Network",
     serverPort: "Server port",
+    invalidServerPort: "Enter an integer port from 1 to 65535",
     restartRequired: "Takes effect after restart",
     databasePath: "Database path",
+    deviceDiscovery: "Device discovery",
+    deviceDiscoverySubtitle: "Choose which networks Xchat uses to discover and probe devices",
+    discoveryNote: "These controls affect only active discovery and presence probes; they do not change system routes or proxy settings. Discovery traffic is sent only through selected interfaces, never through a default route or a sequential address scan. Proxy TUN and virtual adapters are excluded by default; messages to known devices still follow system routing.",
+    localDiscovery: "Local network discovery",
+    localDiscoveryHint: "Discover devices on the same Wi-Fi or wired network",
+    vpnDiscovery: "Mesh VPN discovery",
+    vpnDiscoveryHint: "Discover remote devices through mesh networks such as WireGuard",
+    vpnFixedHelper: "Some VPNs do not forward broadcasts. Use a fixed address for the first connection; messages follow system routing when the VPN owns the target network.",
+    manageFixedPeers: "Manage fixed addresses",
+    discoveryNetworks: "Networks used for discovery",
+    discoverySummary: (enabled, paused, excluded) =>
+      `${enabled} enabled${paused ? `, ${paused} paused` : ""}, ${excluded} excluded`,
+    expand: "Expand",
+    collapse: "Collapse",
+    adapterManagerHint: "Physical networks and mesh VPNs are enabled by default; proxy and virtual adapters are excluded.",
+    refreshNetworkList: "Refresh network list",
+    refreshingNetworkList: "Refreshing network list",
+    networkListUpdatedNow: "Network list updated just now",
+    networkListNotRefreshed: "Network list is from the current settings snapshot",
+    restoreRecommended: "Restore recommended settings",
+    discoveryAllOff: "Automatic discovery is paused. Added devices can still communicate; add new devices manually.",
+    noNetworkInterfaces: "No network interfaces are currently available for device discovery.",
+    interfaceConnected: "Interface connected",
+    interfaceDisconnected: "Interface disconnected",
+    interfaceNoAddress: "No IPv4 address",
+    discoveryCategories: {
+      physical_lan: "Physical LAN",
+      mesh_vpn: "Mesh VPN",
+      proxy_tun: "Proxy TUN",
+      virtual_machine: "Virtual adapter",
+      unknown: "Unknown interface",
+    },
+    recommended: "Recommended",
+    defaultExcluded: "Excluded by default",
+    enableDiscoveryOn: (name) => `Use ${name} for device discovery`,
+    tunRiskTitle: (name) => `Enable discovery on ${name}?`,
+    tunRiskText: "Discovery traffic may enter the proxy network. Enable this only when the interface is intended for device-to-device connectivity.",
+    keepOff: "Keep off",
+    enableAnyway: "Enable anyway",
     shortcuts: "Shortcuts",
     captureShortcut: "Capture shortcut",
     captureShortcutHint: "Focus this field, then press a letter or number shortcut",
@@ -515,7 +622,21 @@ const copy = {
     groupHelper: "Select at least two remote devices that support group chat.",
     deviceAddress: "Device address",
     endpointPlaceholder: "192.168.1.100:8888 or myhost.local",
-    endpointHelper: "For cross-VLAN or WireGuard connections. Xchat tries to connect immediately after saving.",
+    endpointHelper: "The test verifies device identity only and sends no chat content. Use it across VLANs, WireGuard, or when automatic discovery is unavailable.",
+    endpointSubtitle: "Verify which Xchat device is at this address before saving",
+    testConnection: "Test connection",
+    testingConnection: "Verifying device identity…",
+    endpointTestSuccess: "Identity verified. This address is safe to save.",
+    endpointTestMismatch: "The device at this address no longer matches the saved identity. This address has been disabled.",
+    endpointTestFailed: "Could not verify an Xchat device at this address.",
+    savedFixedAddresses: "Saved fixed addresses",
+    fixedAddressSafety: "Sending stops if the address changes or identity does not match",
+    identityConfirmed: "Identity verified",
+    identityNeedsTest: "Needs another test",
+    retest: "Test again",
+    saveDevice: "Save device",
+    offlineSafetyTitle: "Sending stopped to prevent reaching the wrong device",
+    offlineSafetyText: "New messages stay on this device until the same peer identity comes online again.",
     saveRemark: "Save remark",
     remarkHelper: "The remark is linked to the device UUID and is unaffected by IP address changes.",
     connecting: "Connecting to Xchat…",
@@ -910,7 +1031,7 @@ function formatTime(timestamp, locale) {
 function appVersion() {
   return typeof globalThis.__XCHAT_VERSION__ === "string" && globalThis.__XCHAT_VERSION__
     ? globalThis.__XCHAT_VERSION__
-    : "0.1.5";
+    : "0.1.6";
 }
 
 function formatSize(bytes) {
@@ -2518,6 +2639,15 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
           <span className="announcement-arrow">›</span>
         </button>
       )}
+      {conversation.kind !== "group" && peer?.is_offline && (
+        <div className="peer-offline-safety-banner" role="status" aria-live="polite">
+          <span className="peer-offline-safety-mark" aria-hidden="true">!</span>
+          <span>
+            <b>{labels.offlineSafetyTitle}</b>
+            <small>{labels.offlineSafetyText}</small>
+          </span>
+        </div>
+      )}
       <div
         className={`message-scroll ${!messages.length ? "has-empty-state" : ""}`}
         ref={scroll}
@@ -2844,12 +2974,24 @@ function HostWorkspace({
           <dl className="detail-grid">
             <div><dt>{labels.hostname}</dt><dd>{device.hostname || labels.notProvided}</dd></div>
             <div>
+              <dt>{labels.deviceId}</dt>
+              <dd className="numeric">{device.id}</dd>
+            </div>
+            <div>
               <dt>{labels.currentAddress}</dt>
               <dd className="numeric">{device.addr || labels.notProvided}</dd>
             </div>
             <div>
-              <dt>{device.mac_address ? labels.macAddress : labels.deviceId}</dt>
-              <dd className="numeric">{device.mac_address || device.id}</dd>
+              <dt>{labels.macAddress}</dt>
+              <dd className="numeric">{device.mac_address || labels.notProvided}</dd>
+            </div>
+            <div>
+              <dt>{labels.identityVerification}</dt>
+              <dd>
+                {device.is_offline
+                  ? labels.identityOfflineStopped
+                  : labels.identityVerifiedCurrentAddress}
+              </dd>
             </div>
             <div>
               <dt>{labels.discoveryMethod}</dt>
@@ -3219,6 +3361,40 @@ function SettingRow({ label, detail, children }) {
   );
 }
 
+const SETTINGS_PATCH_KEYS = [
+  "name",
+  "avatar",
+  "theme",
+  "language",
+  "notifications_enabled",
+  "download_path",
+  "auto_download",
+  "port",
+  "db_path",
+  "discovery_settings",
+  "capture_shortcut",
+];
+
+function settingValueEqual(key, left, right, networkInterfaces = []) {
+  if (key === "port") return String(left ?? "") === String(right ?? "");
+  if (key === "discovery_settings") {
+    return discoverySettingsEqual(left, right, networkInterfaces);
+  }
+  return left === right;
+}
+
+function settingsFormDirty(form, baseline) {
+  return SETTINGS_PATCH_KEYS.some(
+    (key) =>
+      !settingValueEqual(
+        key,
+        form[key],
+        baseline[key],
+        baseline.network_interfaces || [],
+      ),
+  );
+}
+
 function SettingsWorkspace({
   state,
   workspace,
@@ -3226,12 +3402,17 @@ function SettingsWorkspace({
   onBack,
   onLanguagePreview,
   onActiveSection,
+  onManageFixedPeers,
 }) {
   const [form, setForm] = useState(state.settings);
   const [dirty, setDirty] = useState(false);
   const [ipLoading, setIpLoading] = useState(false);
   const [availableIps, setAvailableIps] = useState([]);
   const [ipDropdownOpen, setIpDropdownOpen] = useState(false);
+  const [adaptersExpanded, setAdaptersExpanded] = useState(false);
+  const [networkRefreshing, setNetworkRefreshing] = useState(false);
+  const [networkUpdated, setNetworkUpdated] = useState(false);
+  const [pendingRiskInterfaceId, setPendingRiskInterfaceId] = useState(null);
   const scroll = useRef(null);
   // 进入设置页就读取一次网卡列表，多网卡时下拉框才会直接可见
   useEffect(() => {
@@ -3268,8 +3449,46 @@ function SettingsWorkspace({
     onActiveSection(active);
   };
   const change = (key, value) => {
-    setDirty(true);
-    setForm((current) => ({ ...current, [key]: value }));
+    setForm((current) => {
+      const next = { ...current, [key]: value };
+      setDirty(settingsFormDirty(next, state.settings));
+      return next;
+    });
+  };
+  const discoverySettings = {
+    ...recommendedDiscoverySettings(),
+    ...(form.discovery_settings || {}),
+    interface_overrides: {
+      ...(form.discovery_settings?.interface_overrides || {}),
+    },
+  };
+  const networkInterfaces = state.settings.network_interfaces || [];
+  const adapterSummary = discoverySummary(networkInterfaces, discoverySettings);
+  const portValid = validServerPort(form.port);
+  const applyInterfaceSelection = (interfaceId, enabled) => {
+    const networkInterface = networkInterfaces.find(({ id }) => id === interfaceId);
+    if (!networkInterface) return;
+    change(
+      "discovery_settings",
+      withDiscoveryInterfaceSelection(discoverySettings, networkInterface, enabled),
+    );
+    setPendingRiskInterfaceId(null);
+  };
+  const selectDiscoveryInterface = (networkInterface, enabled) => {
+    if (enabled && networkInterface.category === "proxy_tun") {
+      setPendingRiskInterfaceId(networkInterface.id);
+      return;
+    }
+    applyInterfaceSelection(networkInterface.id, enabled);
+  };
+  const refreshNetworkInterfaces = async () => {
+    setNetworkRefreshing(true);
+    try {
+      const result = await workspace.dispatch({ type: "refresh" });
+      if (result.ok) setNetworkUpdated(true);
+    } finally {
+      setNetworkRefreshing(false);
+    }
   };
   const choosePath = async (key) => {
     const result = await workspace.dispatch({
@@ -3323,25 +3542,22 @@ function SettingsWorkspace({
           className="primary-button"
           onClick={async () => {
             const patch = Object.fromEntries(
-              [
-                "name",
-                "avatar",
-                "theme",
-                "language",
-                "notifications_enabled",
-                "download_path",
-                "auto_download",
-                "port",
-                "db_path",
-                "capture_shortcut",
-              ]
-                .filter((key) => form[key] !== state.settings[key])
+              SETTINGS_PATCH_KEYS
+                .filter(
+                  (key) =>
+                    !settingValueEqual(
+                      key,
+                      form[key],
+                      state.settings[key],
+                      state.settings.network_interfaces || [],
+                    ),
+                )
                 .map((key) => [key, form[key]]),
             );
             const result = await workspace.dispatch({ type: "settings.patch", patch });
             if (result.ok) setDirty(false);
           }}
-          disabled={!dirty}
+          disabled={!dirty || !portValid}
         >
           {labels.saveSettings}
         </button>
@@ -3484,7 +3700,25 @@ function SettingsWorkspace({
         <section className="settings-section" id="settings-network">
           <h2>{labels.network}</h2>
           <SettingRow label={labels.serverPort} detail={labels.restartRequired}>
-            <input className="numeric" inputMode="numeric" value={form.port} onChange={(event) => change("port", event.target.value)} />
+            <span className="setting-field-stack">
+              <input
+                className="numeric"
+                type="number"
+                min="1"
+                max="65535"
+                step="1"
+                inputMode="numeric"
+                value={form.port}
+                aria-invalid={!portValid}
+                aria-describedby={!portValid ? "server-port-error" : undefined}
+                onChange={(event) => change("port", event.target.value)}
+              />
+              {!portValid && (
+                <small id="server-port-error" className="setting-field-error" role="alert">
+                  {labels.invalidServerPort}
+                </small>
+              )}
+            </span>
           </SettingRow>
           <SettingRow label={labels.databasePath} detail={labels.restartRequired}>
             <div className="path-picker-field">
@@ -3492,6 +3726,209 @@ function SettingsWorkspace({
               <button type="button" className="path-picker-button" onClick={() => choosePath("db_path")} aria-label={labels.chooseFolder} title={labels.chooseFolder}><Icon name="folder" size={17} /></button>
             </div>
           </SettingRow>
+          <div className="settings-subtitle">
+            <b>{labels.deviceDiscovery}</b>
+            <span>{labels.deviceDiscoverySubtitle}</span>
+          </div>
+          <div className="settings-note">{labels.discoveryNote}</div>
+          <SettingRow label={labels.localDiscovery} detail={labels.localDiscoveryHint}>
+            <input
+              type="checkbox"
+              checked={discoverySettings.local_discovery}
+              onChange={(event) =>
+                change("discovery_settings", {
+                  ...discoverySettings,
+                  local_discovery: event.target.checked,
+                })
+              }
+            />
+          </SettingRow>
+          <SettingRow label={labels.vpnDiscovery} detail={labels.vpnDiscoveryHint}>
+            <input
+              type="checkbox"
+              checked={discoverySettings.vpn_discovery}
+              onChange={(event) =>
+                change("discovery_settings", {
+                  ...discoverySettings,
+                  vpn_discovery: event.target.checked,
+                })
+              }
+            />
+          </SettingRow>
+          <div className="vpn-helper">
+            <span>{labels.vpnFixedHelper}</span>
+            <button type="button" className="text-button" onClick={onManageFixedPeers}>
+              {labels.manageFixedPeers}
+            </button>
+          </div>
+          <div className="setting-row adapter-summary-row">
+            <span>
+              <b>{labels.discoveryNetworks}</b>
+              <small aria-live="polite">
+                {labels.discoverySummary(
+                  adapterSummary.enabled,
+                  adapterSummary.paused,
+                  adapterSummary.excluded,
+                )}
+              </small>
+            </span>
+            <button
+              type="button"
+              className="secondary-button disclosure-button"
+              aria-expanded={adaptersExpanded}
+              aria-controls="discovery-adapter-manager"
+              onClick={() => setAdaptersExpanded((expanded) => !expanded)}
+            >
+              {adaptersExpanded ? labels.collapse : labels.expand}
+            </button>
+          </div>
+          {adaptersExpanded && (
+            <div className="adapter-manager" id="discovery-adapter-manager">
+              <div className="adapter-manager-head">
+                <span>{labels.adapterManagerHint}</span>
+                <button
+                  type="button"
+                  className="text-button"
+                  disabled={networkRefreshing}
+                  onClick={refreshNetworkInterfaces}
+                >
+                  <Icon name="refresh" size={14} spin={networkRefreshing} />
+                  {networkRefreshing
+                    ? labels.refreshingNetworkList
+                    : labels.refreshNetworkList}
+                </button>
+              </div>
+              <div
+                className="adapter-list"
+                role="group"
+                aria-label={labels.discoveryNetworks}
+              >
+                {networkInterfaces.length === 0 && (
+                  <div className="adapter-empty">{labels.noNetworkInterfaces}</div>
+                )}
+                {networkInterfaces.map((networkInterface) => {
+                  const adapterState = discoveryInterfaceState(
+                    networkInterface,
+                    discoverySettings,
+                  );
+                  const interfaceName = networkInterface.name || networkInterface.id;
+                  const categoryLabel =
+                    labels.discoveryCategories[networkInterface.category] ||
+                    labels.discoveryCategories.unknown;
+                  const addressLabel = networkInterface.addresses.length
+                    ? networkInterface.addresses
+                        .map((address) =>
+                          address.prefix_length === null
+                            ? address.ipv4
+                            : `${address.ipv4}/${address.prefix_length}`,
+                        )
+                        .join(", ")
+                    : labels.interfaceNoAddress;
+                  const riskPending = pendingRiskInterfaceId === networkInterface.id;
+                  return (
+                    <Fragment key={networkInterface.id}>
+                      <div
+                        className={`adapter-row ${
+                          adapterState.category_disabled ? "category-disabled" : ""
+                        }`}
+                      >
+                        <span
+                          className={`adapter-dot ${networkInterface.is_up ? "available" : ""}`}
+                          aria-hidden="true"
+                        />
+                        <span className="adapter-main">
+                          <b>{interfaceName}</b>
+                          <small>
+                            {networkInterface.is_up
+                              ? labels.interfaceConnected
+                              : labels.interfaceDisconnected}
+                            {" · "}
+                            <span className="numeric">{addressLabel}</span>
+                          </small>
+                        </span>
+                        <span className="adapter-labels">
+                          <span className="adapter-tag">{categoryLabel}</span>
+                          <span
+                            className={`adapter-tag ${
+                              networkInterface.default_enabled ? "recommended" : "excluded"
+                            }`}
+                          >
+                            {networkInterface.default_enabled
+                              ? labels.recommended
+                              : labels.defaultExcluded}
+                          </span>
+                        </span>
+                        <label className="discovery-switch">
+                          <input
+                            type="checkbox"
+                            checked={adapterState.selected}
+                            disabled={adapterState.category_disabled}
+                            aria-label={labels.enableDiscoveryOn(interfaceName)}
+                            onChange={(event) =>
+                              selectDiscoveryInterface(networkInterface, event.target.checked)
+                            }
+                          />
+                          <span aria-hidden="true" />
+                        </label>
+                      </div>
+                      {riskPending && (
+                        <div
+                          className="adapter-risk"
+                          role="group"
+                          aria-label={labels.tunRiskTitle(interfaceName)}
+                        >
+                          <span>
+                            <b>{labels.tunRiskTitle(interfaceName)}</b>
+                            <small>{labels.tunRiskText}</small>
+                          </span>
+                          <span className="adapter-risk-actions">
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() => setPendingRiskInterfaceId(null)}
+                            >
+                              {labels.keepOff}
+                            </button>
+                            <button
+                              type="button"
+                              className="primary-button"
+                              onClick={() =>
+                                applyInterfaceSelection(networkInterface.id, true)
+                              }
+                            >
+                              {labels.enableAnyway}
+                            </button>
+                          </span>
+                        </div>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </div>
+              <div className="adapter-manager-foot">
+                <span>
+                  {networkUpdated
+                    ? labels.networkListUpdatedNow
+                    : labels.networkListNotRefreshed}
+                </span>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => {
+                    change("discovery_settings", recommendedDiscoverySettings());
+                    setPendingRiskInterfaceId(null);
+                  }}
+                >
+                  {labels.restoreRecommended}
+                </button>
+              </div>
+            </div>
+          )}
+          {adapterSummary.all_off && (
+            <div className="settings-warning" role="alert">
+              {labels.discoveryAllOff}
+            </div>
+          )}
         </section>
         <section className="settings-section" id="settings-shortcut">
           <h2>{labels.shortcuts}</h2>
@@ -3606,12 +4043,24 @@ function LegacyInfoPanel({ state, conversation, workspace, labels, onRemark, onC
               <dd>{peer?.hostname || peer?.name || labels.notProvided}</dd>
             </div>
             <div>
+              <dt>{labels.deviceId}</dt>
+              <dd>{peer?.id || labels.notProvided}</dd>
+            </div>
+            <div>
               <dt>{labels.currentAddress}</dt>
               <dd>{peer?.addr || labels.notProvided}</dd>
             </div>
             <div>
-              <dt>{peer?.mac_address ? labels.macAddress : labels.deviceId}</dt>
-              <dd>{peer?.mac_address || peer?.id}</dd>
+              <dt>{labels.macAddress}</dt>
+              <dd>{peer?.mac_address || labels.notProvided}</dd>
+            </div>
+            <div>
+              <dt>{labels.identityVerification}</dt>
+              <dd>
+                {peer?.is_offline
+                  ? labels.identityOfflineStopped
+                  : labels.identityVerifiedCurrentAddress}
+              </dd>
             </div>
             <div>
               <dt>{labels.discoveryMethod}</dt>
@@ -3866,7 +4315,40 @@ function GroupModal({ state, workspace, labels, onClose }) {
 
 function EndpointModal({ state, workspace, labels, onClose }) {
   const [endpoint, setEndpoint] = useState("");
-  const valid = /^([a-zA-Z0-9.-]+)(:\d{1,5})?$/.test(endpoint.trim());
+  const [testedInput, setTestedInput] = useState("");
+  const [testResult, setTestResult] = useState(null);
+  const [testError, setTestError] = useState("");
+  const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const candidate = endpoint.trim();
+  const valid = Boolean(candidate && !/[\s/?#]/.test(candidate));
+  const canSave = canSaveVerifiedEndpoint(endpoint, testedInput, testResult);
+  const shortId = (deviceId) => {
+    if (!deviceId) return labels.notProvided;
+    return deviceId.length > 12
+      ? `${deviceId.slice(0, 4)}…${deviceId.slice(-4)}`
+      : deviceId;
+  };
+  const test = async (record = null) => {
+    const value = String(record?.endpoint ?? endpoint).trim();
+    if (!value || /[\s/?#]/.test(value) || testing) return;
+    if (record) setEndpoint(value);
+    setTestedInput(value);
+    setTestResult(null);
+    setTestError("");
+    setTesting(true);
+    try {
+      const result = await workspace.dispatch({
+        type: "device.testEndpoint",
+        endpoint: value,
+        expectedDeviceId: record?.device_id ?? null,
+      });
+      if (result.ok) setTestResult(result.data);
+      else setTestError(result.error?.message || labels.endpointTestFailed);
+    } finally {
+      setTesting(false);
+    }
+  };
   return (
     <Modal
       title={labels.addDevice}
@@ -3879,50 +4361,123 @@ function EndpointModal({ state, workspace, labels, onClose }) {
           </button>
           <button
             className="primary-button"
-            disabled={!valid}
+            disabled={!canSave || saving}
             onClick={async () => {
+              setSaving(true);
               const result = await workspace.dispatch({
                 type: "device.saveEndpoint",
-                endpoint: endpoint.trim(),
+                endpoint: testResult.endpoint || endpoint.trim(),
+                expectedDeviceId: testResult.identity.device_id,
               });
-              if (result.ok) onClose();
+              if (result.ok) {
+                onClose();
+              } else {
+                setTestError(result.error?.message || labels.endpointTestFailed);
+                setTestResult(null);
+              }
+              setSaving(false);
             }}
           >
-            {labels.addDevice}
+            {labels.saveDevice}
           </button>
         </>
       }
     >
+      <p className="endpoint-subtitle">{labels.endpointSubtitle}</p>
       <label className="field">
         <span>{labels.deviceAddress}</span>
-        <input
-          className="numeric"
-          value={endpoint}
-          onChange={(event) => setEndpoint(event.target.value)}
-          placeholder={labels.endpointPlaceholder}
-          autoFocus
-        />
+        <span className="endpoint-test-row">
+          <input
+            className="numeric"
+            value={endpoint}
+            onChange={(event) => {
+              setEndpoint(event.target.value);
+              setTestResult(null);
+              setTestError("");
+            }}
+            placeholder={labels.endpointPlaceholder}
+            autoFocus
+          />
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={!valid || testing}
+            onClick={() => test()}
+          >
+            {testing ? labels.testingConnection : labels.testConnection}
+          </button>
+        </span>
       </label>
       <p className="helper">{labels.endpointHelper}</p>
+      {(testing || testResult || testError) && (
+        <div
+          className={`endpoint-test-result ${
+            testResult?.identity_matches ? "success" : testResult || testError ? "error" : "testing"
+          }`}
+          role="status"
+          aria-live="polite"
+        >
+          {testing && <b>{labels.testingConnection}</b>}
+          {testError && <><b>{labels.endpointTestFailed}</b><small>{testError}</small></>}
+          {testResult?.identity_matches && (
+            <>
+              <b>{testResult.identity.name || testResult.identity.hostname || labels.identityConfirmed}</b>
+              <span>{labels.endpointTestSuccess}</span>
+              <small className="numeric">
+                {labels.deviceId} {testResult.identity.device_id} · {labels.currentAddress}{" "}
+                {testResult.address || testResult.endpoint}
+              </small>
+            </>
+          )}
+          {testResult && !testResult.identity_matches && (
+            <>
+              <b>{labels.endpointTestMismatch}</b>
+              <small className="numeric">
+                {labels.deviceId} {testResult.identity?.device_id || labels.notProvided}
+              </small>
+            </>
+          )}
+        </div>
+      )}
       {state.settings.custom_peers?.length > 0 && (
-        <div className="endpoint-list">
+        <section className="endpoint-list">
+          <header>
+            <b>{labels.savedFixedAddresses}</b>
+            <small>{labels.fixedAddressSafety}</small>
+          </header>
           {state.settings.custom_peers.map((peer) => (
-            <div key={peer}>
-              <span className="numeric">{peer}</span>
-              <button
-                className="text-action danger-text"
-                onClick={() =>
-                  workspace.dispatch({
-                    type: "device.removeEndpoint",
-                    endpoint: peer,
-                  })
-                }
-              >
-                {labels.delete}
-              </button>
+            <div className="endpoint-record" key={peer.endpoint}>
+              <span className="endpoint-record-main">
+                <span>
+                  <b>{peer.name || peer.hostname || peer.endpoint}</b>
+                  <i className={peer.verified ? "verified" : "unverified"}>
+                    {peer.verified ? labels.identityConfirmed : labels.identityNeedsTest}
+                  </i>
+                </span>
+                <small className="numeric">
+                  {peer.endpoint}
+                  {peer.device_id ? ` · ${labels.deviceId} ${shortId(peer.device_id)}` : ""}
+                </small>
+              </span>
+              <span className="endpoint-record-actions">
+                <button className="text-action" type="button" onClick={() => test(peer)}>
+                  {labels.retest}
+                </button>
+                <button
+                  className="text-action danger-text"
+                  onClick={() =>
+                    workspace.dispatch({
+                      type: "device.removeEndpoint",
+                      endpoint: peer.endpoint,
+                    })
+                  }
+                >
+                  {labels.delete}
+                </button>
+              </span>
             </div>
           ))}
-        </div>
+        </section>
       )}
     </Modal>
   );
@@ -4228,6 +4783,7 @@ export default function App({ workspace }) {
           onBack={() => setMobileList(true)}
           onLanguagePreview={setLanguagePreview}
           onActiveSection={setSettingsSection}
+          onManageFixedPeers={() => setModal("endpoint")}
         />
       )}
       {state.activeSection === "chat" && infoOpen && (

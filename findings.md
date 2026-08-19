@@ -11,6 +11,31 @@
 - 文件补充要求：从系统拖文件到输入区后先进入附件草稿，点击发送才传输；发送时显示进度和速度并支持并行传输；完成文件的“打开”使用可选菜单同时提供打开文件和打开目录。
 
 ## 研究发现
+- 2026-08-19：`2026-08-18-xchat-network-presence-message-reliability-design.md` 明确标注“产品方向与 UI 原型已确认，工程方案待评审”；因此原型门禁已满足，但仍需先审查工程分阶段与现有调用链，不能把 A–E 五阶段一次性合并实施。
+- 2026-08-19：最新原型已覆盖按接口发现、代理 TUN 风险确认、固定地址入口、四态连接横幅、三档上下线提醒、真实消息状态文案及 4/8/16 最大并行通道。原型脚本中的定时状态推进有明确注释仅供原型演示，生产实现必须由持久化、传输写入和明确 ACK 事件驱动。
+- 2026-08-19：当前工作树位于 `main`，领先 `origin/main` 1 个文档提交，且 `src/index.html` 有用户修改；后续实现必须避免覆盖该文件和已有工作。
+- 2026-08-19：代码图确认发现热点集中在 `network/discovery.rs` 的 `get_smart_broadcast_addresses`、`start_announcing`、`send_single_broadcast`；在线状态仍由 `PeerManager.force_mark_offline`、`mark_stale_as_offline`、`get_all_peers` 等多入口承担，和设计提出的单一 Presence 写入者存在明确差距。
+- 2026-08-19：现有可靠性基础仍可复用：`workspace.resend_for_peer`、数据库逐设备未送达消息/待回执查询以及单调消息状态写入均已存在。首个切片应避免提前重写 Outbox，而应先停止发现扇出并建立可测量的接口发送计划。
+- 2026-08-19：知识图的符号和边仍可查询，但 `get_code_snippet` 返回的绝对路径指向旧目录 `/Users/eason/workspace/40-49_Code&Tech/XChat` 且源码不可用；必须用当前仓库 `/Users/eason/workspace/40-49_Code/XChat` 刷新索引后再做精确实现判断。
+- 2026-08-19：刷新后精确源码确认：`start_announcing` 每 2 秒同时执行“每个本机 IP × 受限广播/组播”、约 260 个兜底目标、以及全部固定地址；`get_smart_broadcast_addresses` 仍明确生成 `192.168.0.255..192.168.255.255`，现有测试甚至要求保留该行为。阶段 A 必须先把这条测试改成“桌面永不生成 256 地址列表”的红灯约束。
+- 2026-08-19：现有逐接口辅助函数只有 `Vec<String>` 本机 IP 和统一的 `255.255.255.255 + 224.0.0.167` 目标，没有前缀长度、稳定接口 ID、类型或用户选择，因此不能只删 256 地址循环就声称完成设计；阶段 A 至少需要把“发现发送计划”抽成可测试数据模型，并明确平台降级。
+- 2026-08-19：`get_all_local_ips` 并不枚举系统接口，而是分别向多个公共地址做 UDP route probe 后收集源 IP；它天然拿不到接口名称、前缀和类型，也可能受默认路由/TUN 影响。要落实“按选择接口发现”，必须替换或补充这一数据源。
+- 2026-08-19：手动单次发现 `send_single_broadcast` 也直接复用 260 目标列表；即使只改后台循环，用户主动刷新仍会触发同样的地址扫描，阶段 A 的发送计划必须同时覆盖稳态与单次刷新入口。
+- 2026-08-19：`start_announcing` 同时由桌面 `main.rs`、移动/库 `lib.rs` 和 Web `server_main.rs` 启动，阶段 A 的共享核心改动会自然覆盖 Desktop/Web，但平台专用发送降级必须用窄 `cfg` 保留，不能让 Android 兼容逻辑重新污染桌面路径。
+- 2026-08-19：`force_mark_offline` 由旧 Tauri `send_message`、Web `send_message_http` 和共享 `workspace.send_message` 三条路径直接调用；这证实 Presence 阶段必须先建立证据入口再逐步迁移调用者，不能直接删除布尔更新而破坏现有离线补发触发。
+- 2026-08-19：项目已有统一 `get_settings/update_settings` 的 Tauri 与 HTTP 入口，设置扩展应复用该 seam；文件并行 v2 当前固定四分块，4/8/16 选项属于后续阶段 E，不应夹带进阶段 A。
+- 2026-08-19：现有设置入口是参数式薄接口，目前只含下载路径、端口、数据库路径和自动下载。发现接口清单/选择是结构化数据，若直接继续堆 `Option<String>` 会迅速膨胀；更合适的是在共享核心定义窄的 `DiscoverySettings/NetworkInterfaceInfo` 数据模型，再由 Tauri/HTTP 入口薄封装。
+- 2026-08-19：当前直接依赖只有 `socket2`，没有可枚举接口名称、索引、前缀和类型的网络接口 crate；`ipnet` 仅为间接依赖。阶段 A 若要求 Windows/macOS/Linux 一致实现，需要评审一个小型跨平台接口枚举依赖，或接受明显更大的平台 FFI 代码面。
+- 2026-08-19 视觉核对：1440×900 下网络设置沿用现有设置卡片体系，主类别开关、固定地址入口、折叠式接口清单和风险标签层级清楚；接口行展示“名称 / 分类 / IPv4+前缀 / 推荐或排除 / 开关”，生产数据契约必须一次提供这些字段，不能靠前端从名称字符串猜分类。
+- 2026-08-19 视觉核对：设置页对代理 TUN 和虚拟网卡默认关闭，对物理 LAN/组网 VPN 默认开启；折叠摘要显示启用/排除数量。该交互会直接依赖稳定接口 ID，否则 DHCP/IP 变化后无法保留用户选择。
+- 2026-08-19 视觉/交互核对：离线会话在头部、横幅、详情和文件卡同时表现为离线/等待，用户新发消息立即显示“等待对方上线后发送”；点击重试是显式动作。生产实现必须让这些区域共享同一 Presence generation，而不是分别查询或本地猜测。
+- 2026-08-19 视觉/交互核对：原型的离线横幅常驻且不挤压输入区，排队状态位于消息时间/回执位置；这说明阶段 B/C 的前端改动应以统一 snapshot/event merge 为主，不需要重做聊天布局。
+- 2026-08-19：生产前端已经有 `mergeMessages` 的单调状态合并和 `statusLabel` 的离线 pending→“等待对方上线”文案，这两处可保留；主要缺口是后端未即时发专用 message status 事件、Presence 仍是布尔状态，以及 `peer.online/offline` 事件会无条件 Toast/系统通知。
+- 2026-08-19：前端不是固定 `setInterval`，而是 `schedulePoll` 递归 `setTimeout`：存在活跃传输时缩短，否则可见页面走低频刷新。阶段 C 应保留它作为事件丢失后的修复路径，只让正常状态推进改走带 version 的事件。
+- 2026-08-19 外部依赖评审：官方 docs.rs 显示 `getifaddrs 0.6.2` 可跨 Unix/macOS/BSD/Windows 返回接口 `name/index/flags`，地址对象提供 IP、netmask、关联地址和 MAC，最贴合原型及定向广播需要；`network-interface 2.0.5` 也提供 name/index/MAC/broadcast/netmask，但官方 README 仍声明 API 处于开发中；`if-addrs 0.15.0` 体积小且覆盖 Android/桌面目标，但接口模型只暴露 name+addr，不满足稳定 ID 和状态标志。
+- 2026-08-19 外部依赖评审：`getifs 0.6.1` 功能最全并专门处理 Android 11+ SELinux 限制，但能力范围（路由、网关、MTU、multicast 等）明显超过阶段 A；若本轮只需桌面三平台接口清单和前缀，优先选择更窄的 `getifaddrs`，Android 可继续使用现有受限兼容路径并用 `cfg` 隔离。
+- 2026-08-19：数据库已提供通用 `get_setting/set_setting`，可直接保存 JSON 结构的发现选择，不需要新增表或迁移；固定地址已有 `custom_peer:*` 复用路径。阶段 A 可以保持 SQLite 兼容，只扩展共享 settings 聚合接口。
+- 2026-08-19：`src/index.html` 的现有用户改动仅是换行格式变化（内容和资源哈希未变）。后续前端验证应优先把 Vite 输出定向到临时目录，避免构建过程覆盖该文件；真正交付生产 bundle 时需显式保留这项用户改动并检查生成资产范围。
 - 当前前端是 `src/` 下无依赖的 HTML/CSS/JavaScript；桌面由 Tauri 加载，Web 由 `RustEmbed` 嵌入同一目录。
 - `src/js/api.js` 已包含 Tauri invoke 与 HTTP 两条路径；Web 实时事件在旧 `app.js` 中自行维护 WebSocket。
 - 后端已有设备发现、单聊、历史、离线重发、文件发送/接收/重试、下载设置和部分平台能力。
@@ -127,6 +152,65 @@
 - `src-tauri/src/network/`
 - `src-tauri/src/commands.rs`
 - `src-tauri/src/web_server.rs`
+
+### 阶段 15 A0/A1 实施边界
+- `start_announcing` 目前同时向每张探测到的源 IP 发送受限广播/组播，并再向 260 个“智能路由”地址发送；固定地址也跟随 2 秒循环，A0 必须统一替换这三条高频路径。
+- 桌面与 Web 的 `start_listening` 都会对每一份非 reply announcement 立即单播回复；同一帧经广播和组播重复抵达时会重复回复，需共享一个短窗口回复去重器。
+- discovery v2 帧没有 sequence 字段，因此 A0 不升级协议；去重键采用 peer ID、来源地址和原始帧摘要，并以短 TTL 只抑制同一轮重复包。
+- 当前 `get_all_local_ips` 依赖 UDP 路由探针，无法提供接口名、索引、掩码或分类。A1 需要独立的接口清单模型；非 Android 使用系统接口枚举，Android 保留窄范围兼容回退。
+- 现有设置接口只有下载路径、端口、数据库路径和自动下载；最小兼容扩展是在同一设置响应/更新请求中加入 `discovery_settings` 与只读 `network_interfaces`，避免新增 Tauri command 和权限面。
+- React `SettingsWorkspace` 已有统一脏表单和保存动作，网络 UI 可以复用该保存链路；刷新接口列表则重新拉取 workspace 快照，不把运行时接口清单写回配置。
+- Tauri 与 HTTP adapter 的 `patchSettings` 分别做 camelCase/snake_case 转换；二者必须同时发送完整发现配置，确保桌面和 headless Web 不漂移。
+- A0 policy 的稳定接口 ID 使用规范化 system name（Windows 下为系统接口标识），不包含会在重启/热插拔后变化的 index 或 IP。开发期 `if:<index>:<system-name>` override 会迁移到新 ID，无法归属的 index-only override 会安全丢弃。
+- 桌面/服务器使用 `getifaddrs` 的 name/index/flags/IPv4/netmask；Android fallback 只做 5 个本地路由探针且前缀未知时只组播，不恢复 256 地址发送或默认路由广播。
+- 发送计划单轮接口数据报预算为 48；每个有效源地址最多一个定向广播和一个显式接口组播，`/31`、`/32`、未知或非法前缀不猜广播。
+- A0 cadence 的三次启动发送累计时点为 0/400/1500ms，随后按 24–36 秒抖动；接口指纹每 5 秒检查，变化会立刻重置突发，而不会把发现继续当 2 秒在线心跳。
+- 固定地址共享单个无绑定 UDP 单播 socket，但每个 endpoint 各自维护 5 秒起步、300 秒封顶的指数退避；日志只写 endpoint 哈希，不泄露地址或域名。
+- v2 兼容去重在 listener 落库/发事件/回复之前执行，键为 peer ID、来源 IPv4 与原始帧摘要，TTL 2 秒；这能抑制广播/组播双路径重复包，待 v3 sequence/interface ID 后再替换为协议级键。
+- 发现偏好无需 SQLite migration：现有 `settings` KV 以 `network.discovery.settings.v1` 保存 JSON；损坏 JSON 记录诊断后回到安全推荐值，未知字段被忽略以便前向兼容。
+- 设置更新通过 `Notify` 唤醒同一公告循环，保存后立即重建计划并启动三包突发；接口自然变化仍由 5 秒清单指纹检查捕获。
+- workspace 快照、旧 Tauri `get_settings` 与 HTTP `get_settings` 现在返回同一 `discovery_settings`/`network_interfaces`；两个更新入口也共同调用 policy 持久化函数，没有新增 command/route/权限。
+- 24–36 秒发现节奏不能直接沿用旧版 10 秒离线阈值。A0 过渡期采用 75 秒本地阈值，并以 `is_reply=true` 的有界轮转单播心跳兼容旧客户端：32 台以内每 3 秒一批，规模增大时自适应加速，明确保证最多 128 台时丢一轮并叠加 2 秒解析阻塞仍低于旧版 10 秒阈值；Presence v3 上线后再移除该桥。
+- 固定地址发送与 listener 白名单解析都按 16 个/轮轮转；失败独立指数退避，listener 在同一网络指纹内保留上次成功 IP，网络变化时清空 DNS 与 last-good，兼顾临时故障连续性和跨网络安全边界。
+- Android 前缀受限 fallback 仅发送组播；Activity 在前台生命周期持有并在停止时释放 `WifiManager.MulticastLock`，避免 Wi-Fi 过滤使发现完全失效，同时不在后台长期关闭组播过滤。
+- 只控制主动发送不够：监听器也必须按启用接口维护组播 membership，并在落库、事件和回复前验证真实 ingress interface。Unix 可依赖 kernel packet metadata；Windows 缺少等价路径时只允许启用子网或显式固定地址的保守匹配。
+- 网络/设置变更不仅要重建发送计划，还要重置固定地址退避和 DNS 缓存；否则刚修复的路由仍可能等待旧的 300 秒 backoff。
+- 接口枚举属于可失败的运行时事实，不能让 workspace/settings API 因此整体 500，也不能在失败时恢复默认扫描。API 返回空清单，announcer 保留 last-good 或 fail closed。
+- `/1` 的定向广播数学结果是 `255.255.255.255`，等同禁止的 limited broadcast；因此宽前缀即使掩码合法也只生成绑定接口的组播目标。
+
+### 阶段 16 用户确认与代码现状
+- 用户明确要求 Windows 也达到严格接口隔离，Android 可以暂缓，并且不需要为旧版本客户端保留兼容心跳。
+- 关闭发现后地址仍在数据库与 `PeerManager`，但约 75 秒后会标记 `is_offline=true`；`workspace::send_message` 等发送路径只选择 `!is_offline` peer，因此普通已知设备不会尝试直发。
+- “128 台保障”只来自 A0 临时加入的旧版 v2 单播兼容桥：每批 32 台、自适应 3 秒轮转；删除该桥即可同时删除数量上限、调度、预算、指标与测试，不影响当前发现帧。
+- Windows 当前 `recv_discovery_packet` 走 `recv_from` 并把 `ingress_index` 固定为 `None`，只能按来源子网猜接口；重叠子网下无法严格过滤禁用接口或保证原接口回复。
+- Microsoft Winsock 官方接口满足严格实现：IPv4 UDP socket 开启 `IP_PKTINFO` 后，`WSARecvMsg` 的控制消息会返回 `IN_PKTINFO.ipi_ifindex`（实际 ingress）和本地目标地址；`WSASendMsg` 也可通过同一结构指定发送接口和源 IPv4。扩展函数指针必须用 `WSAIoctl(SIO_GET_EXTENSION_FUNCTION_POINTER, WSAID_*)` 取得。
+- 当前项目只有 Unix 直接依赖 `libc`，Windows 尚无直接 Win32 API 依赖；可新增 target-only `windows-sys` 的 Winsock feature，避免影响 macOS/Linux/Android 构建。
+- 官方依据：https://learn.microsoft.com/en-us/windows/win32/winsock/ip-pktinfo 、https://learn.microsoft.com/en-us/windows/win32/api/ws2ipdef/ns-ws2ipdef-in_pktinfo 、https://learn.microsoft.com/en-us/windows/win32/api/mswsock/nc-mswsock-lpfn_wsarecvmsg
+- 用户否决向离线设备的历史 IP 试发：DHCP 地址可能已重新分配，单凭旧 IP 发送存在把协议载荷发给另一台设备的风险。最终设计必须保留 `is_offline` 硬门禁；若未来要安全离线直发，需要先建立经过认证的设备身份握手，而不是信任 IP 或可伪造 UUID。
+- 因此“关闭发现后已添加设备仍可通过已知地址通信”的原型文案不再成立。安全语义应为：动态设备停止发现后约 75 秒离线并停止发送；显式固定地址仍通过发现握手刷新设备身份，而不是绕过离线门禁。
+- 用户要求把上述后果改写成普通用户能直接理解的文案，并在“手动添加设备”中增加测试功能。
+- 当前原型弹窗只有地址输入与“添加设备”，生产链路也只是把字符串保存为 custom peer；没有即时解析/握手结果，也没有展示或绑定远端设备 ID。
+- 有意义的测试必须完成 XChat 身份协议而不是只做 DNS、ping 或 UDP `send_to`；最终采用专用只读 HTTP identity endpoint，使手工测试、保存前重验和文件发送前核验复用同一返回设备名、hostname、设备 ID 与耗时的 seam。
+- 为回应 IP 复用风险，推荐测试成功后把 endpoint 与返回的稳定 device ID 一起保存；后续该地址若回复不同身份，应拒绝关联并提示重新测试，而不是静默接受另一台设备。
+
+### 阶段 17 设备身份与地址复用诊断
+- 当前并未把 IP 当作会话身份：`settings.user_id` 首次启动生成 UUID 并持久化；`users.id`、`PeerManager` 与稳定单聊 ID 均以该 UUID 为键，发现同一 UUID 出现在新地址时会更新 `addr`。
+- 因此张三从 `.22` 变为 `.111` 后，只要新公告已到达，旧会话仍指向张三的 UUID，发送路径会使用更新后的 `.111`；新占用 `.22` 且 UUID 不同的设备不会被合并进张三的会话。
+- 接收端会根据“本机 UUID + 发送者 UUID”重算稳定会话 ID，不匹配就拒绝保存/展示，所以当前格式消息通常不会出现在错误设备的聊天界面。
+- 仍有真实安全窗口：旧地址尚未刷新且 75 秒离线租约未过期时，发送端会直接连接旧 IP；WebSocket 在发送正文前没有目标身份握手，`Ok(())` 只表示连接并写入成功。正文因此可能已经到达错误主机进程，再被会话 ID 校验拒绝，发送方还可能短暂标记为 `sent`。
+- MAC 不能作为唯一应用身份：它标识网卡而非用户/设备安装，一个设备可能有多个网卡，随机 MAC、虚拟网卡、换网卡/重装与伪造都会破坏唯一性；跨子网/VPN 时也往往拿不到对端二层 MAC。当前 MAC 只是 discovery 自报元数据，不是可信证明。
+- 推荐模型是三层分离：持久设备身份（最终为公钥指纹，现阶段 UUID）、短租约 endpoint（IP:port）、辅助网络证据（MAC/hostname）。发送正文前必须以轻量 XChat 身份握手确认 endpoint 返回的设备身份与会话 peer ID 相同；手工添加“测试连接”复用该握手。
+- 桌面原型已按该模型改写：设备列表/详情/群成员以设备 ID 为身份，IP 改称当前地址，MAC 改称网卡地址（辅助）；离线横幅明确说明未向旧地址发送。
+- 手工添加现为“输入地址 → 测试连接 → 展示设备 ID/主机名/地址/耗时 → 保存设备”，保存按钮在成功核验前禁用；连接失败与同地址身份变化均有独立阻断状态。
+- 原型中的“身份核验”是目标协议语义，不代表当前 UUID 已具备抗伪造认证能力；生产协议至少要先比较预期 UUID，再演进到公钥挑战签名。
+
+### 阶段 16 设备身份安全实施结论
+- 上述“正文先到错误进程”的 DHCP 复用窗口已收敛：peer WebSocket 先携带期望 UUID 完成 upgrade，服务端在 upgrade 前核对本机 UUID，客户端再核对响应身份头；两边均通过后才写正文。
+- `is_offline` 仍是发送硬门禁。离线 direct 消息与文件保存为 pending/`waiting_peer`，不连接历史 IP；发送过程中身份不符或连接失败会立刻停止并把 direct peer 标记离线，等待新的 discovery 上线跳变触发补发。
+- UUID 是现有安装级设备主身份，IP:port 是短期 endpoint，MAC/hostname 只是辅助展示。MAC 不能解决多网卡、随机化、跨子网不可见和伪造问题，因此没有升格为主键。
+- 手工地址保存现在是“探测 → 展示身份 → 后端按期望 UUID 重新探测 → 结构化持久化”。旧裸地址不会参与自动 discovery；固定来源发来其他 UUID 的 announcement 会在更新 PeerManager/数据库前被丢弃。
+- Windows listener 已不再以来源子网猜 ingress：`IP_PKTINFO` + `WSARecvMsg` 提供真实 interface index，禁用接口过滤和回复源地址选择与 Unix 路径使用同一策略。
+- 当前 UUID 握手防的是误投和普通地址复用，不是恶意设备冒充；对抗主动攻击仍需要公钥身份、挑战签名和首次信任/指纹确认。这是后续安全演进，不影响本轮“不要因为 IP 变化发给别人”的目标。
 
 ## 视觉/浏览器发现
 - 主导航选中时仅图标使用绿色；会话选中时整行使用绿色。
