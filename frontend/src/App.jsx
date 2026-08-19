@@ -21,6 +21,7 @@ import {
   isImageFile,
   isPhysicalPointInsideRect,
   localFileAvailable,
+  messageDeliveryStatus,
   matchesShortcut,
   mentionQueryAtCaret,
   mentionToken,
@@ -326,8 +327,8 @@ const copy = {
     identityNeedsTest: "需要重新测试",
     retest: "重新测试",
     saveDevice: "保存设备",
-    offlineSafetyTitle: "已停止发送，防止发错设备",
-    offlineSafetyText: "新消息只保存在本机。确认同一设备重新上线后才会发出。",
+    offlineSafetyTitle: "对方已离线",
+    offlineSafetyText: "消息暂不发送，对方上线后自动发送。",
     saveRemark: "保存备注",
     remarkHelper: "备注绑定设备 UUID，不受 IP 地址变化影响。",
     connecting: "正在连接 Xchat…",
@@ -635,8 +636,8 @@ const copy = {
     identityNeedsTest: "Needs another test",
     retest: "Test again",
     saveDevice: "Save device",
-    offlineSafetyTitle: "Sending stopped to prevent reaching the wrong device",
-    offlineSafetyText: "New messages stay on this device until the same peer identity comes online again.",
+    offlineSafetyTitle: "Peer is offline",
+    offlineSafetyText: "Messages will wait and send automatically when the peer is back online.",
     saveRemark: "Save remark",
     remarkHelper: "The remark is linked to the device UUID and is unaffected by IP address changes.",
     connecting: "Connecting to Xchat…",
@@ -1153,9 +1154,8 @@ function sourceText(source, labels) {
 function statusLabel(message, group, labels, peerOffline = false) {
   if (!message.own) return "";
   if (message.status === "failed") return labels.sendFailed;
-  // 对方离线时 pending 会一直挂着，"发送中"看着像卡死了。
-  // 说清楚在等对方上线，用户才知道消息没丢、也不用等。
-  if (!group && peerOffline && message.status === "pending") {
+  const deliveryStatus = messageDeliveryStatus(message, !group && peerOffline);
+  if (deliveryStatus === "waiting_peer") {
     return labels.status.waiting_peer;
   }
   if (group && message.recipient_count) {
@@ -1164,7 +1164,7 @@ function statusLabel(message, group, labels, peerOffline = false) {
       message.recipient_count,
     )} · ${labels.readCount(message.read_count || 0, message.recipient_count)}`;
   }
-  return statusText(message.status, labels);
+  return statusText(deliveryStatus, labels);
 }
 
 function useTheme(theme) {

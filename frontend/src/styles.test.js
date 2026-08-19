@@ -282,8 +282,9 @@ test("pending messages to an offline peer say they are waiting, not sending", as
   const body = app.match(/function statusLabel\([^)]*\)\s*\{([\s\S]*?)\n\}/)?.[1];
 
   assert.ok(body, "statusLabel is missing");
-  // 对方离线时 pending 会一直挂着，"发送中"看着像卡死；必须先于群聊分支判断
-  assert.match(body, /peerOffline\s*&&\s*message\.status\s*===\s*"pending"/);
+  // 文件传输状态必须能覆盖旧数据里错误的 sent 消息状态。
+  assert.match(body, /messageDeliveryStatus\(message,\s*!group\s*&&\s*peerOffline\)/);
+  assert.match(body, /deliveryStatus\s*===\s*"waiting_peer"/);
   assert.match(body, /labels\.status\.waiting_peer/);
   // 调用点必须真的把离线状态传进来，否则这条分支永远走不到
   assert.match(app, /statusLabel\(message,[^)]*peer\?\.is_offline\)/);
@@ -298,8 +299,8 @@ test("fixed-address UI tests identity before saving and explains offline safety"
   assert.match(modal, /expectedDeviceId:\s*testResult\.identity\.device_id/);
   assert.match(modal, /labels\.endpointHelper/);
   assert.match(app, /测试只核对设备身份，不会发送聊天内容/);
-  assert.match(app, /已停止发送，防止发错设备/);
-  assert.match(app, /新消息只保存在本机。确认同一设备重新上线后才会发出/);
+  assert.match(app, /对方已离线/);
+  assert.match(app, /消息暂不发送，对方上线后自动发送。/);
 });
 
 test("offline toasts do not render as errors", async () => {

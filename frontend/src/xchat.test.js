@@ -30,6 +30,7 @@ import {
   matchesShortcut,
   measureTransfers,
   mergeMessages,
+  messageDeliveryStatus,
   messageTimeDividerIndices,
   formatMessageTime,
   mentionQueryAtCaret,
@@ -789,6 +790,53 @@ test("file classification and availability use backend metadata when present", (
   assert.equal(fileKind({ mime_type: "video/mp4" }), "video");
   assert.equal(localFileAvailable({ file_status: "completed", local_available: false }), false);
   assert.equal(localFileAvailable({ file_status: "removed" }), false);
+});
+
+test("incoming files stay unavailable until a local path is published", () => {
+  const downloading = normalizeMessage(
+    {
+      id: 9,
+      msg_type: "file",
+      status: "received",
+      file_status: "downloading",
+      content: "incoming.png",
+    },
+    "self",
+    "direct:test",
+  );
+
+  assert.equal(localFileAvailable(downloading), false);
+  assert.equal(
+    localFileAvailable({
+      direction: "incoming",
+      file_status: "accepted",
+      file_path: "/downloads/incoming.png",
+    }),
+    true,
+  );
+  assert.equal(
+    localFileAvailable({
+      direction: "outgoing",
+      file_status: "waiting_peer",
+      file_path: "C:\\Users\\Eason\\Pictures\\outgoing.png",
+    }),
+    true,
+  );
+});
+
+test("waiting file transfer overrides a stale sent message status", () => {
+  assert.equal(
+    messageDeliveryStatus(
+      {
+        own: true,
+        msg_type: "file",
+        status: "sent",
+        file_status: "waiting_peer",
+      },
+      true,
+    ),
+    "waiting_peer",
+  );
 });
 
 test("emoji picker has a broad unique set and inserts at the current selection", () => {

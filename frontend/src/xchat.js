@@ -644,7 +644,16 @@ export function localFileAvailable(file = {}) {
   const explicit =
     file.local_available ?? file.local_exists ?? file.file_available;
   if (explicit !== undefined && explicit !== null) return Boolean(explicit);
-  return !["invalid", "removed"].includes(fileStatus(file));
+  const path = String(file.file_path || "").trim();
+  return Boolean(path) && !["invalid", "removed"].includes(fileStatus(file));
+}
+
+export function messageDeliveryStatus(message = {}, peerOffline = false) {
+  if (message.msg_type === "file" && fileStatus(message) === "waiting_peer") {
+    return "waiting_peer";
+  }
+  if (peerOffline && message.status === "pending") return "waiting_peer";
+  return message.status || "";
 }
 
 function draftId() {
