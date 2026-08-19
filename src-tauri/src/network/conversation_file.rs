@@ -189,6 +189,11 @@ pub async fn send_path(
     let receiver_id = (conversation.kind == "direct")
         .then_some(conversation.peer_id.as_deref())
         .flatten();
+    let message_status = if online_addresses.is_empty() {
+        "pending"
+    } else {
+        "sent"
+    };
     let message = db::save_conversation_message(
         pool,
         conversation_id,
@@ -197,7 +202,7 @@ pub async fn send_path(
         &source.file_name,
         "file",
         unix_timestamp(),
-        "sent",
+        message_status,
         &client_message_id,
     )
     .await?;
@@ -2610,6 +2615,59 @@ mod tests {
         cleanup_managed_temp_source(&unrelated);
         assert!(unrelated.exists());
         std::fs::remove_file(unrelated).unwrap();
+    }
+
+    #[tokio::test]
+    async fn offline_file_messages_remain_pending_until_the_peer_returns() {
+        let app_dir = std::env::temp_dir().join(format!(
+            "xchat-offline-file-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let pool = db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        db::save_or_update_user(
+            &pool,
+            "peer-a".into(),
+            "Alice".into(),
+            "127.0.0.1:9".into(),
+            true,
+            0,
+        )
+        .await
+        .unwrap();
+        let conversation = db::ensure_direct_conversation(&pool, "peer-a")
+            .await
+            .unwrap();
+        let source = app_dir.join("waiting.png");
+        tokio::fs::write(&source, b"image").await.unwrap();
+
+        let result = send_path(
+            &pool,
+            &PeerManager::new(),
+            &conversation.id,
+            source.to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+        let message_status = result.message.status.clone();
+        let file_status = result.message.file_status.clone();
+        let transfer_statuses = result
+            .transfers
+            .iter()
+            .map(|transfer| transfer.status.clone())
+            .collect::<Vec<_>>();
+
+        pool.close().await;
+        tokio::fs::remove_dir_all(app_dir).await.unwrap();
+
+        assert_eq!(message_status.as_deref(), Some("pending"));
+        assert_eq!(file_status.as_deref(), Some("waiting_peer"));
+        assert!(
+            transfer_statuses
+                .iter()
+                .all(|status| status == "waiting_peer")
+        );
     }
 
     #[tokio::test]
