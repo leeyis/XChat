@@ -66,6 +66,7 @@ struct ValidatedSource {
 #[derive(Debug, Clone)]
 struct UploadJob {
     transfer_id: String,
+    peer_id: String,
     peer_addr: String,
     conversation_id: String,
     client_message_id: String,
@@ -238,6 +239,7 @@ pub async fn send_path(
                 .is_some_and(|peer| supports_parallel_file(&peer.capabilities));
             jobs.push(UploadJob {
                 transfer_id,
+                peer_id: peer_id.clone(),
                 peer_addr: peer_addr.clone(),
                 conversation_id: conversation_id.to_string(),
                 client_message_id: client_message_id.clone(),
@@ -680,6 +682,7 @@ pub async fn retry_message(
         if let Some(peer_addr) = peer_addr {
             jobs.push(UploadJob {
                 transfer_id,
+                peer_id: peer_id.clone(),
                 peer_addr,
                 conversation_id: conversation_id.to_string(),
                 client_message_id: client_message_id.to_string(),
@@ -774,6 +777,7 @@ async fn prepare_resume_job(
 
     Ok(UploadJob {
         transfer_id: transfer.id.clone(),
+        peer_id: transfer.peer_id.clone(),
         peer_addr: peer_addr.to_string(),
         conversation_id: conversation_id.to_string(),
         client_message_id: client_message_id.to_string(),
@@ -904,11 +908,18 @@ async fn run_upload(pool: &Pool<Sqlite>, job: UploadJob) {
 
 async fn post_remote_terminal(
     peer_addr: &str,
+    expected_peer_id: &str,
     client_message_id: &str,
     transfer_id: &str,
     status: &str,
     peer_id: Option<&str>,
 ) -> Option<String> {
+    if let Err(error) =
+        super::peer_identity::require_peer_identity(peer_addr, expected_peer_id).await
+    {
+        eprintln!("[ConversationFile] 取消清理前核对设备身份失败: {error}");
+        return None;
+    }
     let client_message_id = urlencoding::encode(client_message_id);
     let transfer_id = urlencoding::encode(transfer_id);
     let mut url = format!(
@@ -951,6 +962,7 @@ async fn post_remote_terminal(
 async fn notify_remote_cleanup(job: &UploadJob, status: &str) -> Option<String> {
     post_remote_terminal(
         &job.peer_addr,
+        &job.peer_id,
         &job.client_message_id,
         &job.transfer_id,
         status,
@@ -983,6 +995,7 @@ pub(crate) async fn notify_peer_terminal(
     };
     post_remote_terminal(
         &peer.addr,
+        &transfer.peer_id,
         client_message_id,
         &transfer.id,
         status,
@@ -1000,8 +1013,15 @@ async fn upload_chunks(
         return UploadOutcome::Cancelled(0);
     }
 
+    if let Err(error) =
+        super::peer_identity::require_peer_identity(&job.peer_addr, &job.peer_id).await
+    {
+        return UploadOutcome::Failed(0, format!("发送文件前核对设备身份失败: {error}"));
+    }
+
     if let Some(group_sync) = &job.group_sync {
-        if let Err(error) = super::protocol::send_protocol_message(&job.peer_addr, group_sync).await
+        if let Err(error) =
+            super::protocol::send_protocol_message(&job.peer_addr, &job.peer_id, group_sync).await
         {
             return UploadOutcome::Failed(0, format!("发送群同步失败: {error}"));
         }
@@ -2431,6 +2451,15 @@ mod tests {
         let terminal_tx = status_tx.clone();
         let router = axum::Router::new()
             .route(
+                "/api/peer_identity",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "device_id": "peer-a",
+                        "name": "Alice",
+                    }))
+                }),
+            )
+            .route(
                 "/api/uploads/v2/prepare",
                 axum::routing::post(|| async {
                     axum::Json(serde_json::json!({
@@ -2534,6 +2563,7 @@ mod tests {
             &pool,
             UploadJob {
                 transfer_id: transfer_id.into(),
+                peer_id: "peer-a".into(),
                 peer_addr: address.to_string(),
                 conversation_id: conversation.id,
                 client_message_id: "parallel-sender-failure".into(),

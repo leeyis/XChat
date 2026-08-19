@@ -289,6 +289,19 @@ test("pending messages to an offline peer say they are waiting, not sending", as
   assert.match(app, /statusLabel\(message,[^)]*peer\?\.is_offline\)/);
 });
 
+test("fixed-address UI tests identity before saving and explains offline safety", async () => {
+  const app = await readFile(new URL("./App.jsx", import.meta.url), "utf8");
+  const modal = app.match(/function EndpointModal\([^)]*\)\s*\{([\s\S]*?)\n\}\n\nfunction RemarkModal/)?.[1];
+
+  assert.ok(modal, "EndpointModal is missing");
+  assert.match(modal, /type:\s*"device\.testEndpoint"/);
+  assert.match(modal, /expectedDeviceId:\s*testResult\.identity\.device_id/);
+  assert.match(modal, /labels\.endpointHelper/);
+  assert.match(app, /测试只核对设备身份，不会发送聊天内容/);
+  assert.match(app, /已停止发送，防止发错设备/);
+  assert.match(app, /新消息只保存在本机。确认同一设备重新上线后才会发出/);
+});
+
 test("offline toasts do not render as errors", async () => {
   const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
   const rule = css.match(/\.toast\.warning i\s*\{([^}]*)\}/)?.[1];
@@ -312,7 +325,7 @@ test("every prop passed to Icon is actually destructured by Icon", async () => {
   }
 });
 
-test("user-visible version sources stay synchronized at 0.1.5", async () => {
+test("user-visible version sources stay synchronized at 0.1.6", async () => {
   const [packageJson, tauriConfig, cargoToml, app, android] = await Promise.all([
     readFile(new URL("../../package.json", import.meta.url), "utf8"),
     readFile(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
@@ -321,9 +334,9 @@ test("user-visible version sources stay synchronized at 0.1.5", async () => {
     readFile(new URL("../../src-tauri/gen/android/app/build.gradle.kts", import.meta.url), "utf8"),
   ]);
 
-  assert.equal(JSON.parse(packageJson).version, "0.1.5");
-  assert.equal(JSON.parse(tauriConfig).version, "0.1.5");
-  assert.match(cargoToml, /^version = "0\.1\.5"$/m);
-  assert.match(app, /:\s*"0\.1\.5";/);
-  assert.match(android, /versionName[^\n]*"0\.1\.5"/);
+  assert.equal(JSON.parse(packageJson).version, "0.1.6");
+  assert.equal(JSON.parse(tauriConfig).version, "0.1.6");
+  assert.match(cargoToml, /^version = "0\.1\.6"$/m);
+  assert.match(app, /:\s*"0\.1\.6";/);
+  assert.match(android, /versionName[^\n]*"0\.1\.6"/);
 });

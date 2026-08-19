@@ -815,7 +815,157 @@ export function normalizeConversation(raw = {}, devices = []) {
   };
 }
 
+export function recommendedDiscoverySettings() {
+  return {
+    local_discovery: true,
+    vpn_discovery: true,
+    interface_overrides: {},
+  };
+}
+
+export function validServerPort(value) {
+  if (value === null || value === undefined) return false;
+  const text = String(value);
+  if (!/^[0-9]+$/.test(text)) return false;
+  const port = Number(text);
+  return Number.isInteger(port) && port >= 1 && port <= 65535;
+}
+
+export function withDiscoveryInterfaceSelection(
+  discoverySettings,
+  networkInterface,
+  enabled,
+) {
+  const settings = normalizeDiscoverySettings(discoverySettings);
+  const overrides = { ...settings.interface_overrides };
+  if (Boolean(enabled) === Boolean(networkInterface.default_enabled)) {
+    delete overrides[networkInterface.id];
+  } else {
+    overrides[networkInterface.id] = Boolean(enabled);
+  }
+  return { ...settings, interface_overrides: overrides };
+}
+
+export function discoverySettingsEqual(left, right, networkInterfaces = []) {
+  const defaults = new Map(
+    networkInterfaces.map((networkInterface) => [
+      String(networkInterface.id ?? ""),
+      Boolean(networkInterface.default_enabled),
+    ]),
+  );
+  const canonical = (raw) => {
+    const settings = normalizeDiscoverySettings(raw);
+    const interfaceOverrides = Object.fromEntries(
+      Object.entries(settings.interface_overrides)
+        .filter(([id, enabled]) => !defaults.has(id) || defaults.get(id) !== enabled)
+        .sort(([leftId], [rightId]) => leftId.localeCompare(rightId)),
+    );
+    return {
+      local_discovery: settings.local_discovery,
+      vpn_discovery: settings.vpn_discovery,
+      interface_overrides: interfaceOverrides,
+    };
+  };
+  return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+}
+
+function normalizeDiscoverySettings(raw = {}) {
+  const overrides =
+    raw.interface_overrides && typeof raw.interface_overrides === "object"
+      ? Object.fromEntries(
+          Object.entries(raw.interface_overrides).map(([id, enabled]) => [id, Boolean(enabled)]),
+        )
+      : {};
+  return {
+    local_discovery: Boolean(raw.local_discovery ?? true),
+    vpn_discovery: Boolean(raw.vpn_discovery ?? true),
+    interface_overrides: overrides,
+  };
+}
+
+function normalizeNetworkInterface(raw = {}) {
+  const addresses = Array.isArray(raw.addresses)
+    ? raw.addresses
+        .filter((address) => address?.ipv4)
+        .map((address) => ({
+          ipv4: String(address.ipv4),
+          prefix_length:
+            address.prefix_length === null || address.prefix_length === undefined
+              ? null
+              : Number(address.prefix_length),
+        }))
+    : [];
+  return {
+    id: String(raw.id ?? ""),
+    name: String(raw.name ?? raw.id ?? ""),
+    index: raw.index ?? null,
+    addresses,
+    category: raw.category ?? "unknown",
+    is_up: Boolean(raw.is_up),
+    default_enabled: Boolean(raw.default_enabled),
+    selected: Boolean(raw.selected),
+    enabled: Boolean(raw.enabled),
+    exclusion_reason: raw.exclusion_reason ?? null,
+  };
+}
+
+export function discoveryInterfaceState(networkInterface, discoverySettings = {}) {
+  const settings = normalizeDiscoverySettings(discoverySettings);
+  const overrides = settings.interface_overrides;
+  const selected = Object.prototype.hasOwnProperty.call(overrides, networkInterface.id)
+    ? Boolean(overrides[networkInterface.id])
+    : Boolean(networkInterface.default_enabled);
+  const categoryDisabled =
+    (networkInterface.category === "physical_lan" && !settings.local_discovery) ||
+    (networkInterface.category === "mesh_vpn" && !settings.vpn_discovery);
+  return {
+    selected,
+    enabled: Boolean(networkInterface.is_up && selected && !categoryDisabled),
+    category_disabled: categoryDisabled,
+  };
+}
+
+export function discoverySummary(networkInterfaces = [], discoverySettings = {}) {
+  const states = networkInterfaces.map((networkInterface) =>
+    discoveryInterfaceState(networkInterface, discoverySettings),
+  );
+  const enabled = states.filter((state) => state.enabled).length;
+  const paused = states.filter((state) => state.selected && state.category_disabled).length;
+  return {
+    enabled,
+    paused,
+    excluded: Math.max(0, states.length - enabled - paused),
+    all_off: enabled === 0,
+  };
+}
+
+export function normalizeCustomPeer(raw) {
+  const source = typeof raw === "string" ? { endpoint: raw } : raw ?? {};
+  const endpoint = String(source.endpoint ?? source.peer ?? "").trim();
+  const deviceId = source.device_id ?? source.deviceId ?? null;
+  return {
+    endpoint,
+    device_id: deviceId ? String(deviceId) : null,
+    name: source.name ?? null,
+    hostname: source.hostname ?? null,
+    mac_address: source.mac_address ?? source.macAddress ?? null,
+    app_version: source.app_version ?? source.appVersion ?? null,
+    last_verified_at: source.last_verified_at ?? source.lastVerifiedAt ?? null,
+    verified: Boolean(deviceId),
+  };
+}
+
+export function canSaveVerifiedEndpoint(currentInput, testedInput, result) {
+  return Boolean(
+    String(currentInput ?? "").trim() &&
+      String(currentInput ?? "").trim() === String(testedInput ?? "").trim() &&
+      result?.identity_matches === true &&
+      result?.identity?.device_id,
+  );
+}
+
 function normalizeSettings(raw = {}) {
+  const discovery_settings = normalizeDiscoverySettings(raw.discovery_settings);
   return {
     name: raw.name ?? "",
     avatar: raw.avatar ?? storage.get("xchat.avatar") ?? "",
@@ -830,7 +980,11 @@ function normalizeSettings(raw = {}) {
       raw.capture_shortcut ??
       storage.get("xchat.captureShortcut") ??
       (humanPlatform() === "macos" ? "⌘ ⇧ A" : "Ctrl/⌘ ⇧ A"),
-    custom_peers: raw.custom_peers ?? [],
+    custom_peers: (raw.custom_peers ?? [])
+      .map(normalizeCustomPeer)
+      .filter((record) => record.endpoint),
+    discovery_settings,
+    network_interfaces: (raw.network_interfaces ?? []).map(normalizeNetworkInterface),
   };
 }
 
@@ -1284,8 +1438,12 @@ export class TauriAdapter {
     return this.invoke("update_device_metadata", { deviceId, remark: patch.remark });
   }
 
-  addEndpoint(peer) {
-    return this.invoke("add_custom_peer", { peer });
+  testEndpoint(peer, expectedDeviceId = null) {
+    return this.invoke("test_custom_peer", { peer, expectedDeviceId });
+  }
+
+  addEndpoint(peer, expectedDeviceId) {
+    return this.invoke("add_custom_peer", { peer, expectedDeviceId });
   }
 
   removeEndpoint(peer) {
@@ -1351,7 +1509,9 @@ export class TauriAdapter {
       await this.invoke("update_my_name", { newName: patch.name });
     }
     if (
-      ["download_path", "port", "db_path", "auto_download"].some((key) => patch[key] !== undefined)
+      ["download_path", "port", "db_path", "auto_download", "discovery_settings"].some(
+        (key) => patch[key] !== undefined,
+      )
     ) {
       const next = { ...current, ...patch };
       await this.invoke("update_settings", {
@@ -1359,6 +1519,7 @@ export class TauriAdapter {
         port: String(next.port),
         dbPath: next.db_path,
         autoDownload: next.auto_download,
+        discoverySettings: next.discovery_settings,
       });
     }
     if (patch.theme !== undefined) {
@@ -1619,8 +1780,18 @@ export class HttpWsAdapter {
     return this.json(`/api/devices/${encodeURIComponent(deviceId)}`, "POST", patch);
   }
 
-  addEndpoint(peer) {
-    return this.json("/api/add_custom_peer", "POST", { peer });
+  testEndpoint(peer, expectedDeviceId = null) {
+    return this.json("/api/test_custom_peer", "POST", {
+      peer,
+      expected_device_id: expectedDeviceId,
+    });
+  }
+
+  addEndpoint(peer, expectedDeviceId) {
+    return this.json("/api/add_custom_peer", "POST", {
+      peer,
+      expected_device_id: expectedDeviceId,
+    });
   }
 
   removeEndpoint(peer) {
@@ -1882,7 +2053,9 @@ export class HttpWsAdapter {
       await this.json("/api/update_my_name", "POST", { name: patch.name });
     }
     if (
-      ["download_path", "port", "db_path", "auto_download"].some((key) => patch[key] !== undefined)
+      ["download_path", "port", "db_path", "auto_download", "discovery_settings"].some(
+        (key) => patch[key] !== undefined,
+      )
     ) {
       const next = { ...current, ...patch };
       await this.json("/api/update_settings", "POST", {
@@ -1890,6 +2063,7 @@ export class HttpWsAdapter {
         port: Number(next.port),
         db_path: next.db_path,
         auto_download: next.auto_download,
+        discovery_settings: next.discovery_settings,
       });
     }
     if (patch.theme !== undefined) {
@@ -2801,8 +2975,10 @@ export function createXChatModule() {
       case "device.saveRemark":
         await adapter.updateDevice(action.id, { remark: action.remark });
         return refreshWorkspace();
+      case "device.testEndpoint":
+        return adapter.testEndpoint(action.endpoint, action.expectedDeviceId ?? null);
       case "device.saveEndpoint":
-        await adapter.addEndpoint(action.endpoint);
+        await adapter.addEndpoint(action.endpoint, action.expectedDeviceId);
         return refreshWorkspace();
       case "device.removeEndpoint":
         await adapter.removeEndpoint(action.endpoint);

@@ -1,14 +1,22 @@
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use socket2::{Domain, Protocol, Socket, Type};
-use std::net::{Ipv4Addr, UdpSocket};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::future::Future;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use std::pin::Pin;
 use std::sync::{Arc, OnceLock, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "desktop")]
 use tauri::{AppHandle, Emitter};
 
+use crate::network::discovery_policy::{
+    self, DiscoveryNetworkSnapshot, DiscoverySendPlan, DiscoverySettings,
+    MAX_INTERFACE_DATAGRAMS_PER_CYCLE,
+};
 use crate::peers::PeerManager;
 
-const MULTICAST_IP: &str = "224.0.0.167";
 pub const DISCOVERY_PROTOCOL_VERSION: u16 = 2;
 pub const DISCOVERY_CAPABILITIES: &[&str] = &[
     "group_chat",
@@ -20,7 +28,214 @@ static LOCAL_DEVICE_METADATA: OnceLock<(Option<String>, Option<String>)> = OnceL
 /// 当前对外展示/使用的本机 IP。外层 `None` 表示尚未探测过，
 /// 内层 `None` 表示探测过但没有可用地址（避免每次快照都重复全量探测）。
 static LOCAL_IP_ADDRESS: RwLock<Option<Option<String>>> = RwLock::new(None);
-static ALL_LOCAL_IPS: RwLock<Vec<String>> = RwLock::new(Vec::new());
+static ALL_LOCAL_IPS: RwLock<Option<Vec<String>>> = RwLock::new(None);
+
+const DISCOVERY_STEADY_INTERVAL: Duration = Duration::from_secs(30);
+const FIXED_PEER_INITIAL_BACKOFF: Duration = Duration::from_secs(5);
+const FIXED_PEER_MAX_BACKOFF: Duration = Duration::from_secs(300);
+
+#[derive(Debug, Default)]
+struct DiscoveryCadence {
+    burst_sends: u8,
+}
+
+impl DiscoveryCadence {
+    fn delay_after_send(&mut self, jitter_sample: u16) -> Duration {
+        match self.burst_sends {
+            0 => {
+                self.burst_sends = 1;
+                Duration::from_millis(400)
+            }
+            1 => {
+                self.burst_sends = 2;
+                Duration::from_millis(1100)
+            }
+            _ => {
+                self.burst_sends = 3;
+                steady_discovery_delay(jitter_sample)
+            }
+        }
+    }
+
+    fn reset_burst(&mut self) {
+        self.burst_sends = 0;
+    }
+}
+
+fn steady_discovery_delay(jitter_sample: u16) -> Duration {
+    let sample = u64::from(jitter_sample.min(1000));
+    Duration::from_millis(24_000 + sample * 12)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ReplyDedupeKey {
+    peer_id: String,
+    source_ip: Ipv4Addr,
+    frame_digest: u64,
+}
+
+#[derive(Debug)]
+struct ReplyDeduper {
+    ttl: Duration,
+    seen: HashMap<ReplyDedupeKey, Instant>,
+}
+
+impl ReplyDeduper {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            seen: HashMap::new(),
+        }
+    }
+
+    fn should_accept(
+        &mut self,
+        peer_id: &str,
+        source_ip: Ipv4Addr,
+        frame: &str,
+        now: Instant,
+    ) -> bool {
+        self.seen
+            .retain(|_, seen_at| now.saturating_duration_since(*seen_at) < self.ttl);
+        let mut hasher = DefaultHasher::new();
+        frame.hash(&mut hasher);
+        let key = ReplyDedupeKey {
+            peer_id: peer_id.to_string(),
+            source_ip,
+            frame_digest: hasher.finish(),
+        };
+        if self.seen.contains_key(&key) {
+            return false;
+        }
+        self.seen.insert(key, now);
+        true
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FixedPeerRetryState {
+    consecutive_failures: u8,
+    next_attempt: Instant,
+}
+
+impl FixedPeerRetryState {
+    fn new(now: Instant) -> Self {
+        Self {
+            consecutive_failures: 0,
+            next_attempt: now,
+        }
+    }
+
+    fn can_attempt(&self, now: Instant) -> bool {
+        now >= self.next_attempt
+    }
+
+    fn record_failure(&mut self, now: Instant) {
+        let multiplier = 1u64 << u32::from(self.consecutive_failures.min(6));
+        let delay = Duration::from_secs(
+            (FIXED_PEER_INITIAL_BACKOFF.as_secs() * multiplier)
+                .min(FIXED_PEER_MAX_BACKOFF.as_secs()),
+        );
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.next_attempt = now + delay;
+    }
+
+    fn record_success(&mut self, now: Instant) {
+        self.consecutive_failures = 0;
+        self.next_attempt = now + DISCOVERY_STEADY_INTERVAL;
+    }
+
+    fn reset(&mut self, now: Instant) {
+        self.consecutive_failures = 0;
+        self.next_attempt = now;
+    }
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+struct DiscoverySendCounter {
+    attempts: u64,
+    success: u64,
+    failure: u64,
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+struct DiscoveryReceiveCounter {
+    announcements: u64,
+    deduplicated: u64,
+    replies: u64,
+}
+
+#[derive(Debug)]
+struct DiscoveryMetricsWindow {
+    started_at: Instant,
+    send: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, DiscoverySendCounter>,
+    >,
+    receive: DiscoveryReceiveCounter,
+}
+
+impl DiscoveryMetricsWindow {
+    fn new(now: Instant) -> Self {
+        Self {
+            started_at: now,
+            send: std::collections::BTreeMap::new(),
+            receive: DiscoveryReceiveCounter::default(),
+        }
+    }
+
+    fn record_send(&mut self, interface_id: &str, target_kind: &str, success: bool) {
+        let counter = self
+            .send
+            .entry(interface_id.to_string())
+            .or_default()
+            .entry(target_kind.to_string())
+            .or_default();
+        counter.attempts += 1;
+        if success {
+            counter.success += 1;
+        } else {
+            counter.failure += 1;
+        }
+    }
+
+    fn record_receive(&mut self, deduplicated: bool, replied: bool) {
+        self.receive.announcements += 1;
+        self.receive.deduplicated += u64::from(deduplicated);
+        self.receive.replies += u64::from(replied);
+    }
+
+    fn record_reply(&mut self) {
+        self.receive.replies += 1;
+    }
+
+    fn report_if_due(
+        &mut self,
+        now: Instant,
+        send_budget: usize,
+        excluded_interfaces: &[(String, String)],
+    ) -> Option<serde_json::Value> {
+        if now.saturating_duration_since(self.started_at) < Duration::from_secs(60) {
+            return None;
+        }
+        self.started_at = now;
+        let send = std::mem::take(&mut self.send);
+        let receive = std::mem::take(&mut self.receive);
+        Some(serde_json::json!({
+            "window_seconds": 60,
+            "send_budget": send_budget,
+            "send": send,
+            "receive": receive,
+            "excluded_interfaces": excluded_interfaces
+                .iter()
+                .map(|(name, reason)| serde_json::json!({
+                    "name": name,
+                    "reason": reason,
+                }))
+                .collect::<Vec<_>>(),
+        }))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveryAnnouncement {
@@ -124,49 +339,31 @@ pub(crate) fn local_device_metadata() -> (Option<String>, Option<String>) {
         .clone()
 }
 
-/// 用一个目标地址反查内核为该路由选择的源 IP。
-/// UDP connect 不会发包，只做路由表查询，所以可以安全地大量探测。
-fn probe_local_ip(target: Ipv4Addr) -> Option<String> {
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
-    socket.connect((target, 8888)).ok()?;
-    let address = socket.local_addr().ok()?.ip();
-    (!address.is_unspecified() && !address.is_loopback()).then(|| address.to_string())
+fn enabled_local_ips(snapshot: &DiscoveryNetworkSnapshot) -> Vec<String> {
+    snapshot
+        .interfaces
+        .iter()
+        .filter(|interface| interface.enabled)
+        .flat_map(|interface| interface.addresses.iter())
+        .map(|address| address.ipv4.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
-/// 探测目标集合：覆盖组播、公网默认路由与常见私有网段。
-/// 每个存在对应网卡的网段都会返回该网卡的源 IP，没有路由的会直接失败。
-fn ip_probe_targets() -> Vec<Ipv4Addr> {
-    let mut targets = Vec::with_capacity(280);
-    targets.push(Ipv4Addr::new(224, 0, 0, 167));
-    targets.push(Ipv4Addr::new(8, 8, 8, 8));
-    for third in 0..=255u8 {
-        targets.push(Ipv4Addr::new(192, 168, third, 1));
-    }
-    for second in 16..=31u8 {
-        targets.push(Ipv4Addr::new(172, second, 0, 1));
-    }
-    targets.push(Ipv4Addr::new(10, 0, 0, 1));
-    targets
+#[cfg(test)]
+fn local_ip_for_snapshot(snapshot: &DiscoveryNetworkSnapshot) -> Option<String> {
+    default_local_ip(&enabled_local_ips(snapshot))
 }
 
-/// 枚举所有可用的本机 IPv4 地址（不含回环与未指定地址）
-pub(crate) fn get_all_local_ips() -> Vec<String> {
-    let mut ips: Vec<String> = Vec::new();
-    for target in ip_probe_targets() {
-        if let Some(ip) = probe_local_ip(target) {
-            if !ips.contains(&ip) {
-                ips.push(ip);
-            }
-        }
-    }
-    ips
+#[cfg(test)]
+fn cached_ip_list(cached: &Option<Vec<String>>) -> Option<Vec<String>> {
+    cached.clone()
 }
 
-/// 默认地址取组播路由的出口（UDP 发现实际使用的那张卡），列表为空时返回 None
+/// 默认展示地址取真实接口清单中的首个地址，不再通过默认路由探测。
 fn default_local_ip(all_ips: &[String]) -> Option<String> {
-    probe_local_ip(Ipv4Addr::new(224, 0, 0, 167))
-        .filter(|ip| all_ips.contains(ip))
-        .or_else(|| all_ips.first().cloned())
+    all_ips.first().cloned()
 }
 
 /// 后台重扫时的取舍：手动选的地址还在就保留，没了才回落到默认
@@ -177,59 +374,38 @@ pub(crate) fn keep_or_reselect(current: Option<&str>, all_ips: &[String]) -> Opt
     }
 }
 
-/// 重新探测本机 IP 列表，并把当前 IP 重置为默认出口（设置页手动刷新用）
-pub(crate) fn refresh_local_ips() -> Vec<String> {
-    let all_ips = get_all_local_ips();
+/// 用持久化发现策略的当前快照刷新 IP 列表；全关时保持已探测为空，不回退默认策略。
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+pub(crate) fn refresh_local_ips(snapshot: &DiscoveryNetworkSnapshot) -> Vec<String> {
+    let all_ips = enabled_local_ips(snapshot);
     let preferred = default_local_ip(&all_ips);
 
-    *ALL_LOCAL_IPS.write().unwrap() = all_ips.clone();
+    *ALL_LOCAL_IPS.write().unwrap() = Some(all_ips.clone());
     *LOCAL_IP_ADDRESS.write().unwrap() = Some(preferred.clone());
 
     println!("[IP] 刷新本机 IP: 当前 {:?}，可用 {:?}", preferred, all_ips);
     all_ips
 }
 
-/// 心跳循环里的周期性重扫：更新可用列表，但不覆盖用户手动选的地址
-pub(crate) fn rescan_local_ips() -> Vec<String> {
-    let all_ips = get_all_local_ips();
-    let current = LOCAL_IP_ADDRESS.read().unwrap().clone().flatten();
-    let preferred = keep_or_reselect(current.as_deref(), &all_ips);
-
-    *ALL_LOCAL_IPS.write().unwrap() = all_ips.clone();
-    *LOCAL_IP_ADDRESS.write().unwrap() = Some(preferred);
-
-    all_ips
-}
-
 pub(crate) fn local_ip_address() -> Option<String> {
-    if let Some(cached) = LOCAL_IP_ADDRESS.read().unwrap().clone() {
-        return cached;
-    }
-    refresh_local_ips();
     LOCAL_IP_ADDRESS.read().unwrap().clone().flatten()
 }
 
 /// 从已探测到的列表中手动切换当前 IP
 #[cfg(feature = "desktop")]
 pub(crate) fn set_local_ip(ip: String) -> bool {
-    if !ALL_LOCAL_IPS.read().unwrap().contains(&ip) {
+    if !ALL_LOCAL_IPS
+        .read()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|addresses| addresses.contains(&ip))
+    {
         eprintln!("[IP] 目标地址不在可用列表中: {}", ip);
         return false;
     }
     *LOCAL_IP_ADDRESS.write().unwrap() = Some(Some(ip.clone()));
     println!("[IP] 手动切换本机 IP 为: {}", ip);
     true
-}
-
-/// 读取缓存的 IP 列表；若尚未探测过则先探测一次
-pub(crate) fn get_all_cached_ips() -> Vec<String> {
-    {
-        let cached = ALL_LOCAL_IPS.read().unwrap();
-        if !cached.is_empty() {
-            return cached.clone();
-        }
-    }
-    refresh_local_ips()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -261,10 +437,7 @@ fn local_announcement(
 }
 
 // 创建支持广播和组播的 UDP socket
-fn create_discovery_socket(
-    bind_addr: &str,
-    is_listener: bool,
-) -> Result<UdpSocket, std::io::Error> {
+fn create_discovery_socket(bind_addr: &str) -> Result<UdpSocket, std::io::Error> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
     #[cfg(target_os = "windows")]
@@ -281,121 +454,1201 @@ fn create_discovery_socket(
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
     socket.bind(&addr.into())?;
 
-    let std_socket: UdpSocket = socket.into();
-
-    if is_listener {
-        let multi_addr: Ipv4Addr = MULTICAST_IP.parse().unwrap();
-        // 先按默认接口加入，保证单网卡与 Android（读不到网卡列表）场景不退化
-        let _ = std_socket.join_multicast_v4(&multi_addr, &Ipv4Addr::UNSPECIFIED);
-        // 再对每张探测到的网卡各加入一次，多网卡才不会只收到默认卡的组播
-        for ip in get_all_cached_ips() {
-            if let Ok(interface) = ip.parse::<Ipv4Addr>() {
-                let _ = std_socket.join_multicast_v4(&multi_addr, &interface);
-            }
-        }
-    } else {
-        std_socket.set_broadcast(true)?;
-        let _ = std_socket.set_multicast_ttl_v4(1);
-    }
-
-    Ok(std_socket)
-}
-
-/// 把发送 socket 绑到某张网卡的地址上。
-/// 绑定源地址会强制包从这张卡出去，因此不需要知道子网掩码：
-/// 受限广播 255.255.255.255 与组播都是链路本地的，不经过路由器。
-fn bind_interface_socket(local_ip: Ipv4Addr) -> Result<UdpSocket, std::io::Error> {
-    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    let addr = std::net::SocketAddr::from((local_ip, 0));
-    socket.bind(&addr.into())?;
-    socket.set_broadcast(true)?;
-    let _ = socket.set_multicast_ttl_v4(1);
-    // IP_MULTICAST_IF：仅靠绑定源地址在部分平台不足以决定组播出口，必须显式指定
-    let _ = socket.set_multicast_if_v4(&local_ip);
     Ok(socket.into())
 }
 
-/// 为每个探测到的本机地址建一个发送 socket；绑不上的地址（已失效）直接跳过
-fn interface_sockets(local_ips: &[String]) -> Vec<(Ipv4Addr, UdpSocket)> {
-    local_ips
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "visionos",
+    target_os = "tvos",
+    target_os = "watchos"
+))]
+fn bind_socket_to_interface_index(
+    socket: &Socket,
+    interface_index: Option<u32>,
+) -> std::io::Result<()> {
+    let index = interface_index
+        .and_then(std::num::NonZeroU32::new)
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing interface index")
+        })?;
+    socket.bind_device_by_index_v4(Some(index))
+}
+
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "visionos",
+    target_os = "tvos",
+    target_os = "watchos"
+)))]
+fn bind_socket_to_interface_index(
+    _socket: &Socket,
+    _interface_index: Option<u32>,
+) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn bind_source_socket(
+    local_ip: Ipv4Addr,
+    interface_index: Option<u32>,
+) -> Result<UdpSocket, std::io::Error> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    bind_socket_to_interface_index(&socket, interface_index)?;
+    socket.bind(&SocketAddr::from((local_ip, 0)).into())?;
+    Ok(socket.into())
+}
+
+/// 把发送 socket 绑到某张网卡的地址上。
+/// 绑定源地址会强制包从这张卡出去；目标由真实前缀计算定向广播，
+/// 组播同时显式指定出口并限制 TTL，均不依赖默认路由兜底。
+fn bind_interface_socket(
+    local_ip: Ipv4Addr,
+    interface_index: Option<u32>,
+) -> Result<UdpSocket, std::io::Error> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    bind_socket_to_interface_index(&socket, interface_index)?;
+    let addr = std::net::SocketAddr::from((local_ip, 0));
+    socket.bind(&addr.into())?;
+    socket.set_broadcast(true)?;
+    socket.set_multicast_ttl_v4(1)?;
+    // IP_MULTICAST_IF：仅靠绑定源地址在部分平台不足以决定组播出口，必须显式指定
+    socket.set_multicast_if_v4(&local_ip)?;
+    Ok(socket.into())
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[cfg(any(test, target_os = "windows"))]
+struct WindowsControlHeader {
+    length: usize,
+    level: i32,
+    kind: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[cfg(any(test, target_os = "windows"))]
+struct WindowsIpv4PacketInfo {
+    address: u32,
+    interface_index: u32,
+}
+
+#[cfg(any(test, target_os = "windows"))]
+const WINDOWS_IPPROTO_IP: i32 = 0;
+#[cfg(any(test, target_os = "windows"))]
+const WINDOWS_IP_PKTINFO: i32 = 19;
+
+#[cfg(any(test, target_os = "windows"))]
+fn align_up(value: usize, alignment: usize) -> Option<usize> {
+    value
+        .checked_add(alignment.checked_sub(1)?)
+        .map(|value| value & !(alignment - 1))
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn windows_cmsg_data_offset() -> usize {
+    align_up(
+        std::mem::size_of::<WindowsControlHeader>(),
+        std::mem::align_of::<usize>(),
+    )
+    .expect("control header alignment is representable")
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn parse_windows_pktinfo_control(control: &[u8]) -> Option<u32> {
+    let header_size = std::mem::size_of::<WindowsControlHeader>();
+    let data_offset = windows_cmsg_data_offset();
+    let packet_info_size = std::mem::size_of::<WindowsIpv4PacketInfo>();
+    let mut offset = 0usize;
+
+    while control.len().saturating_sub(offset) >= header_size {
+        let header = unsafe {
+            control
+                .as_ptr()
+                .add(offset)
+                .cast::<WindowsControlHeader>()
+                .read_unaligned()
+        };
+        let remaining = control.len() - offset;
+        if header.length < data_offset || header.length > remaining {
+            return None;
+        }
+        if header.level == WINDOWS_IPPROTO_IP
+            && header.kind == WINDOWS_IP_PKTINFO
+            && header.length >= data_offset + packet_info_size
+        {
+            let packet_info = unsafe {
+                control
+                    .as_ptr()
+                    .add(offset + data_offset)
+                    .cast::<WindowsIpv4PacketInfo>()
+                    .read_unaligned()
+            };
+            return (packet_info.interface_index != 0).then_some(packet_info.interface_index);
+        }
+
+        let step = align_up(header.length, std::mem::align_of::<WindowsControlHeader>())?;
+        if step == 0 || step > remaining {
+            return None;
+        }
+        offset += step;
+    }
+
+    None
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn enable_ingress_interface_metadata(socket: &UdpSocket) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let enabled: libc::c_int = 1;
+    let result = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::IPPROTO_IP,
+            libc::IP_PKTINFO,
+            (&enabled as *const libc::c_int).cast(),
+            std::mem::size_of_val(&enabled) as libc::socklen_t,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+fn enable_ingress_interface_metadata(socket: &UdpSocket) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let enabled: libc::c_int = 1;
+    let result = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::IPPROTO_IP,
+            libc::IP_RECVIF,
+            (&enabled as *const libc::c_int).cast(),
+            std::mem::size_of_val(&enabled) as libc::socklen_t,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "dragonfly"
+    ))
+))]
+fn enable_ingress_interface_metadata(_socket: &UdpSocket) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+static WINDOWS_WSA_RECV_MSG: OnceLock<windows_sys::Win32::Networking::WinSock::LPFN_WSARECVMSG> =
+    OnceLock::new();
+
+#[cfg(target_os = "windows")]
+fn windows_socket_error() -> std::io::Error {
+    use windows_sys::Win32::Networking::WinSock;
+
+    std::io::Error::from_raw_os_error(unsafe { WinSock::WSAGetLastError() })
+}
+
+#[cfg(target_os = "windows")]
+fn windows_socket_handle(
+    socket: &impl std::os::windows::io::AsRawSocket,
+) -> windows_sys::Win32::Networking::WinSock::SOCKET {
+    socket.as_raw_socket() as windows_sys::Win32::Networking::WinSock::SOCKET
+}
+
+#[cfg(target_os = "windows")]
+fn load_windows_wsa_recv_msg(
+    socket: &impl std::os::windows::io::AsRawSocket,
+) -> windows_sys::Win32::Networking::WinSock::LPFN_WSARECVMSG {
+    use windows_sys::Win32::Networking::WinSock;
+
+    let guid = WinSock::WSAID_WSARECVMSG;
+    let mut receiver: WinSock::LPFN_WSARECVMSG = None;
+    let mut bytes_returned = 0u32;
+    let result = unsafe {
+        WinSock::WSAIoctl(
+            windows_socket_handle(socket),
+            WinSock::SIO_GET_EXTENSION_FUNCTION_POINTER,
+            (&guid as *const windows_sys::core::GUID).cast(),
+            std::mem::size_of_val(&guid) as u32,
+            (&mut receiver as *mut WinSock::LPFN_WSARECVMSG).cast(),
+            std::mem::size_of_val(&receiver) as u32,
+            &mut bytes_returned,
+            std::ptr::null_mut(),
+            None,
+        )
+    };
+    if result == 0 && bytes_returned as usize == std::mem::size_of_val(&receiver) {
+        receiver
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_wsa_recv_msg(
+    socket: &impl std::os::windows::io::AsRawSocket,
+) -> std::io::Result<windows_sys::Win32::Networking::WinSock::LPFN_WSARECVMSG> {
+    let receiver = *WINDOWS_WSA_RECV_MSG.get_or_init(|| load_windows_wsa_recv_msg(socket));
+    if receiver.is_some() {
+        Ok(receiver)
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Windows network stack does not support WSARecvMsg",
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn enable_ingress_interface_metadata(socket: &UdpSocket) -> std::io::Result<()> {
+    use windows_sys::Win32::Networking::WinSock;
+
+    debug_assert_eq!(WINDOWS_IPPROTO_IP, WinSock::IPPROTO_IP);
+    debug_assert_eq!(WINDOWS_IP_PKTINFO, WinSock::IP_PKTINFO);
+    debug_assert_eq!(
+        std::mem::size_of::<WindowsControlHeader>(),
+        std::mem::size_of::<WinSock::CMSGHDR>(),
+    );
+    debug_assert_eq!(
+        std::mem::size_of::<WindowsIpv4PacketInfo>(),
+        std::mem::size_of::<WinSock::IN_PKTINFO>(),
+    );
+
+    let enabled = 1u32;
+    let result = unsafe {
+        WinSock::setsockopt(
+            windows_socket_handle(socket),
+            WinSock::IPPROTO_IP,
+            WinSock::IP_PKTINFO,
+            (&enabled as *const u32).cast(),
+            std::mem::size_of_val(&enabled) as i32,
+        )
+    };
+    if result != 0 {
+        return Err(windows_socket_error());
+    }
+    windows_wsa_recv_msg(socket)?;
+    Ok(())
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn enable_ingress_interface_metadata(_socket: &UdpSocket) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn create_listener_socket(bind_addr: &str) -> std::io::Result<tokio::net::UdpSocket> {
+    let socket = create_discovery_socket(bind_addr)?;
+    enable_ingress_interface_metadata(&socket)?;
+    socket.set_nonblocking(true)?;
+    tokio::net::UdpSocket::from_std(socket)
+}
+
+#[derive(Debug)]
+struct ReceivedDiscoveryPacket {
+    size: usize,
+    source: SocketAddr,
+    ingress_index: Option<u32>,
+}
+
+#[cfg(unix)]
+fn try_recv_discovery_packet(
+    socket: &tokio::net::UdpSocket,
+    buffer: &mut [u8],
+) -> std::io::Result<ReceivedDiscoveryPacket> {
+    use std::os::fd::AsRawFd;
+
+    let mut source: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut iov = libc::iovec {
+        iov_base: buffer.as_mut_ptr().cast(),
+        iov_len: buffer.len(),
+    };
+    let mut control = [0 as libc::c_long; 32];
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_name = (&mut source as *mut libc::sockaddr_storage).cast();
+    message.msg_namelen = std::mem::size_of_val(&source) as libc::socklen_t;
+    message.msg_iov = &mut iov;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = std::mem::size_of_val(&control) as _;
+
+    let received = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut message, libc::MSG_DONTWAIT) };
+    if received < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if source.ss_family != libc::AF_INET as libc::sa_family_t {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "discovery packet source is not IPv4",
+        ));
+    }
+    let source_v4 =
+        unsafe { &*((&source as *const libc::sockaddr_storage).cast::<libc::sockaddr_in>()) };
+    let source = SocketAddr::from((
+        Ipv4Addr::from(source_v4.sin_addr.s_addr.to_ne_bytes()),
+        u16::from_be(source_v4.sin_port),
+    ));
+
+    let mut ingress_index = None;
+    let mut header = unsafe { libc::CMSG_FIRSTHDR(&message) };
+    while !header.is_null() {
+        let header_ref = unsafe { &*header };
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        if header_ref.cmsg_level == libc::IPPROTO_IP && header_ref.cmsg_type == libc::IP_PKTINFO {
+            let packet_info = unsafe { &*(libc::CMSG_DATA(header).cast::<libc::in_pktinfo>()) };
+            ingress_index = u32::try_from(packet_info.ipi_ifindex).ok();
+        }
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "dragonfly"
+        ))]
+        if header_ref.cmsg_level == libc::IPPROTO_IP && header_ref.cmsg_type == libc::IP_RECVIF {
+            let link = unsafe { &*(libc::CMSG_DATA(header).cast::<libc::sockaddr_dl>()) };
+            ingress_index = Some(u32::from(link.sdl_index));
+        }
+        header = unsafe { libc::CMSG_NXTHDR(&message, header) };
+    }
+
+    Ok(ReceivedDiscoveryPacket {
+        size: received as usize,
+        source,
+        ingress_index,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn try_recv_discovery_packet(
+    socket: &tokio::net::UdpSocket,
+    buffer: &mut [u8],
+) -> std::io::Result<ReceivedDiscoveryPacket> {
+    use windows_sys::Win32::Networking::WinSock;
+
+    #[repr(align(8))]
+    struct AlignedControl([u8; 128]);
+
+    let receiver = windows_wsa_recv_msg(socket)?.expect("WSARecvMsg was checked above");
+    let mut source = WinSock::SOCKADDR_IN::default();
+    let mut data = WinSock::WSABUF {
+        len: buffer.len().min(u32::MAX as usize) as u32,
+        buf: buffer.as_mut_ptr(),
+    };
+    let mut control = AlignedControl([0; 128]);
+    let mut message = WinSock::WSAMSG {
+        name: (&mut source as *mut WinSock::SOCKADDR_IN).cast(),
+        namelen: std::mem::size_of_val(&source) as i32,
+        lpBuffers: &mut data,
+        dwBufferCount: 1,
+        Control: WinSock::WSABUF {
+            len: control.0.len() as u32,
+            buf: control.0.as_mut_ptr(),
+        },
+        dwFlags: 0,
+    };
+    let mut received = 0u32;
+    let result = unsafe {
+        receiver(
+            windows_socket_handle(socket),
+            &mut message,
+            &mut received,
+            std::ptr::null_mut(),
+            None,
+        )
+    };
+    if result != 0 {
+        return Err(windows_socket_error());
+    }
+    if source.sin_family != WinSock::AF_INET {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "discovery packet source is not IPv4",
+        ));
+    }
+
+    let source_ip = Ipv4Addr::from(unsafe { source.sin_addr.S_un.S_addr }.to_ne_bytes());
+    let source = SocketAddr::from((source_ip, u16::from_be(source.sin_port)));
+    let control_length = (message.Control.len as usize).min(control.0.len());
+    let ingress_index = parse_windows_pktinfo_control(&control.0[..control_length]);
+
+    Ok(ReceivedDiscoveryPacket {
+        size: received as usize,
+        source,
+        ingress_index,
+    })
+}
+
+#[cfg(any(unix, target_os = "windows"))]
+async fn recv_discovery_packet(
+    socket: &tokio::net::UdpSocket,
+    buffer: &mut [u8],
+) -> std::io::Result<ReceivedDiscoveryPacket> {
+    socket
+        .async_io(tokio::io::Interest::READABLE, || {
+            try_recv_discovery_packet(socket, buffer)
+        })
+        .await
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+async fn recv_discovery_packet(
+    socket: &tokio::net::UdpSocket,
+    buffer: &mut [u8],
+) -> std::io::Result<ReceivedDiscoveryPacket> {
+    let (size, source) = socket.recv_from(buffer).await?;
+    Ok(ReceivedDiscoveryPacket {
+        size,
+        source,
+        ingress_index: None,
+    })
+}
+
+fn sync_listener_multicast_memberships(
+    socket: &tokio::net::UdpSocket,
+    joined: &mut BTreeSet<Ipv4Addr>,
+    desired: &BTreeSet<Ipv4Addr>,
+) {
+    let multicast = Ipv4Addr::new(224, 0, 0, 167);
+    for interface in joined.difference(desired).copied().collect::<Vec<_>>() {
+        match socket.leave_multicast_v4(multicast, interface) {
+            Ok(()) => {
+                joined.remove(&interface);
+            }
+            Err(error) => {
+                eprintln!(
+                    "[UDP][discovery.listener] leave multicast failed on {interface}: {error}"
+                );
+            }
+        }
+    }
+    for interface in desired.difference(joined).copied().collect::<Vec<_>>() {
+        match socket.join_multicast_v4(multicast, interface) {
+            Ok(()) => {
+                joined.insert(interface);
+            }
+            Err(error) => {
+                eprintln!(
+                    "[UDP][discovery.listener] join multicast failed on {interface}: {error}"
+                );
+            }
+        }
+    }
+}
+
+const DNS_TTL: Duration = Duration::from_secs(60);
+const FIXED_PEER_RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
+const INTERFACE_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const MAX_FIXED_PEER_DATAGRAMS_PER_CYCLE: usize = 16;
+const TOTAL_DISCOVERY_DATAGRAM_BUDGET: usize =
+    MAX_INTERFACE_DATAGRAMS_PER_CYCLE + MAX_FIXED_PEER_DATAGRAMS_PER_CYCLE;
+
+type DnsCache = HashMap<String, (Vec<std::net::SocketAddr>, Instant)>;
+
+struct ResolvedFixedPeer {
+    addresses: Vec<std::net::SocketAddr>,
+    cache_key: Option<String>,
+}
+
+type FixedPeerResolutionFuture =
+    Pin<Box<dyn Future<Output = (String, Result<ResolvedFixedPeer, String>)> + Send>>;
+
+fn rotating_fixed_peer_endpoints(
+    custom_peers: &[String],
+    retry_states: &mut HashMap<String, FixedPeerRetryState>,
+    cursor: &mut usize,
+    now: Instant,
+) -> Vec<String> {
+    if custom_peers.is_empty() {
+        *cursor = 0;
+        return Vec::new();
+    }
+    let start = *cursor % custom_peers.len();
+    let mut scanned = 0;
+    let mut selected = Vec::new();
+    for offset in 0..custom_peers.len() {
+        let endpoint = &custom_peers[(start + offset) % custom_peers.len()];
+        scanned = offset + 1;
+        if retry_states
+            .entry(endpoint.clone())
+            .or_insert_with(|| FixedPeerRetryState::new(now))
+            .can_attempt(now)
+        {
+            selected.push(endpoint.clone());
+            if selected.len() == MAX_FIXED_PEER_DATAGRAMS_PER_CYCLE {
+                break;
+            }
+        }
+    }
+    *cursor = (start + scanned) % custom_peers.len();
+    selected
+}
+
+#[derive(Default)]
+struct FixedPeerSourceResolver {
+    dns_cache: DnsCache,
+    retry_states: HashMap<String, FixedPeerRetryState>,
+    resolved_by_endpoint: HashMap<String, HashSet<Ipv4Addr>>,
+    expected_ids_by_source: HashMap<Ipv4Addr, HashSet<String>>,
+    cursor: usize,
+}
+
+fn fixed_peer_identity_allowed(
+    expected_ids_by_source: &HashMap<Ipv4Addr, HashSet<String>>,
+    source_ip: Ipv4Addr,
+    peer_id: &str,
+) -> bool {
+    expected_ids_by_source
+        .get(&source_ip)
+        .is_none_or(|expected_ids| expected_ids.contains(peer_id))
+}
+
+impl FixedPeerSourceResolver {
+    fn reset_after_network_change(&mut self, now: Instant) {
+        self.dns_cache.clear();
+        self.resolved_by_endpoint.clear();
+        self.expected_ids_by_source.clear();
+        for state in self.retry_states.values_mut() {
+            state.reset(now);
+        }
+    }
+
+    fn bind_verified_identities(&mut self, records: &[crate::db::CustomPeerRecord]) {
+        self.expected_ids_by_source.clear();
+        for record in records {
+            let Some(device_id) = record
+                .device_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|device_id| !device_id.is_empty())
+            else {
+                continue;
+            };
+            let Some(sources) = self.resolved_by_endpoint.get(&record.endpoint) else {
+                continue;
+            };
+            for source in sources {
+                self.expected_ids_by_source
+                    .entry(*source)
+                    .or_default()
+                    .insert(device_id.to_string());
+            }
+        }
+    }
+
+    fn identity_allowed(&self, source_ip: Ipv4Addr, peer_id: &str) -> bool {
+        fixed_peer_identity_allowed(&self.expected_ids_by_source, source_ip, peer_id)
+    }
+
+    async fn refresh(&mut self, custom_peers: &[String], port: u16) -> HashSet<Ipv4Addr> {
+        let known = custom_peers.iter().cloned().collect::<HashSet<_>>();
+        self.retry_states
+            .retain(|endpoint, _| known.contains(endpoint));
+        self.resolved_by_endpoint
+            .retain(|endpoint, _| known.contains(endpoint));
+
+        let now = Instant::now();
+        let endpoints = rotating_fixed_peer_endpoints(
+            custom_peers,
+            &mut self.retry_states,
+            &mut self.cursor,
+            now,
+        );
+        let cache_snapshot = Arc::new(self.dns_cache.clone());
+        let mut resolutions = FuturesUnordered::<FixedPeerResolutionFuture>::new();
+        for endpoint in endpoints {
+            let cache_snapshot = Arc::clone(&cache_snapshot);
+            resolutions.push(Box::pin(async move {
+                let result = bounded_resolution(
+                    FIXED_PEER_RESOLVE_TIMEOUT,
+                    resolve_fixed_peer(&endpoint, port, now, cache_snapshot.as_ref()),
+                )
+                .await
+                .and_then(|result| result);
+                (endpoint, result)
+            }));
+        }
+
+        while let Some((endpoint, result)) = resolutions.next().await {
+            let completed_at = Instant::now();
+            match result {
+                Ok(resolved) => {
+                    if let Some(cache_key) = resolved.cache_key {
+                        self.dns_cache.insert(
+                            cache_key,
+                            (resolved.addresses.clone(), completed_at + DNS_TTL),
+                        );
+                    }
+                    let sources = resolved
+                        .addresses
+                        .into_iter()
+                        .filter_map(|address| match address.ip() {
+                            std::net::IpAddr::V4(ipv4) => Some(ipv4),
+                            std::net::IpAddr::V6(_) => None,
+                        })
+                        .collect::<HashSet<_>>();
+                    if !sources.is_empty() {
+                        self.resolved_by_endpoint.insert(endpoint.clone(), sources);
+                    }
+                    if let Some(state) = self.retry_states.get_mut(&endpoint) {
+                        state.record_success(completed_at);
+                    }
+                }
+                Err(error) => {
+                    let metric_id = fixed_peer_metric_id(&endpoint);
+                    eprintln!("[UDP][discovery.listener] {metric_id} resolve failed: {error}");
+                    if let Some(state) = self.retry_states.get_mut(&endpoint) {
+                        state.record_failure(completed_at);
+                    }
+                }
+            }
+        }
+
+        self.resolved_by_endpoint
+            .values()
+            .flat_map(|sources| sources.iter().copied())
+            .collect()
+    }
+}
+
+fn discovery_runtime_wake_delay(
+    now: Instant,
+    discovery_deadline: Instant,
+    next_policy_check: Instant,
+) -> Duration {
+    [
+        discovery_deadline.saturating_duration_since(now),
+        next_policy_check.saturating_duration_since(now),
+    ]
+    .into_iter()
+    .min()
+    .unwrap_or_default()
+}
+
+async fn bounded_resolution<T, F>(timeout: Duration, future: F) -> Result<T, String>
+where
+    F: Future<Output = T>,
+{
+    tokio::time::timeout(timeout, future)
+        .await
+        .map_err(|_| "resolution timed out".to_string())
+}
+
+fn fail_closed_network_snapshot() -> DiscoveryNetworkSnapshot {
+    DiscoveryNetworkSnapshot {
+        settings: DiscoverySettings {
+            local_discovery: false,
+            vpn_discovery: false,
+            interface_overrides: Default::default(),
+        },
+        interfaces: Vec::new(),
+    }
+}
+
+fn read_default_network_snapshot() -> DiscoveryNetworkSnapshot {
+    discovery_policy::system_network_snapshot(DiscoverySettings::default())
+}
+
+fn snapshot_after_read(
+    previous: Option<&DiscoveryNetworkSnapshot>,
+    result: Result<DiscoveryNetworkSnapshot, String>,
+) -> DiscoveryNetworkSnapshot {
+    match result {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            eprintln!("[UDP][discovery.inventory] settings load failed: {error}");
+            previous
+                .cloned()
+                .unwrap_or_else(fail_closed_network_snapshot)
+        }
+    }
+}
+
+async fn read_network_snapshot(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    previous: Option<&DiscoveryNetworkSnapshot>,
+) -> DiscoveryNetworkSnapshot {
+    snapshot_after_read(previous, discovery_policy::network_snapshot(pool).await)
+}
+
+fn network_fingerprint(snapshot: &DiscoveryNetworkSnapshot) -> String {
+    serde_json::to_string(snapshot).unwrap_or_default()
+}
+
+fn excluded_interfaces(snapshot: &DiscoveryNetworkSnapshot) -> Vec<(String, String)> {
+    snapshot
+        .interfaces
         .iter()
-        .filter_map(|ip| ip.parse::<Ipv4Addr>().ok())
-        .filter_map(|ip| bind_interface_socket(ip).ok().map(|socket| (ip, socket)))
+        .filter_map(|interface| {
+            interface
+                .exclusion_reason
+                .as_ref()
+                .map(|reason| (interface.name.clone(), reason.clone()))
+        })
         .collect()
 }
 
-/// 每张网卡都要发的目标：受限广播 + 组播。绑定源地址后二者都只走本网卡。
-fn per_interface_targets(port: u16) -> Vec<std::net::SocketAddr> {
-    vec![
-        std::net::SocketAddr::from((Ipv4Addr::BROADCAST, port)),
-        std::net::SocketAddr::from((MULTICAST_IP.parse::<Ipv4Addr>().unwrap(), port)),
-    ]
+fn listener_multicast_memberships(snapshot: &DiscoveryNetworkSnapshot) -> BTreeSet<Ipv4Addr> {
+    snapshot
+        .interfaces
+        .iter()
+        .filter(|interface| interface.enabled)
+        .flat_map(|interface| interface.addresses.iter())
+        .filter_map(|address| address.ipv4.parse().ok())
+        .collect()
 }
 
-// 核心黑科技：生成全网段广播地址（绕过 Android 网卡读取限制）
-fn get_smart_broadcast_addresses(port: u16) -> Vec<String> {
-    let mut addrs = Vec::with_capacity(260);
+fn address_contains_source(
+    address: &discovery_policy::NetworkInterfaceAddress,
+    source_ip: Ipv4Addr,
+) -> bool {
+    let Ok(local_ip) = address.ipv4.parse::<Ipv4Addr>() else {
+        return false;
+    };
+    let Some(prefix) = address.prefix_length.filter(|prefix| *prefix <= 32) else {
+        return false;
+    };
+    if prefix == 0 {
+        return false;
+    }
+    let mask = u32::MAX << (32 - u32::from(prefix));
+    u32::from(local_ip) & mask == u32::from(source_ip) & mask
+}
 
-    // 1. 全局受限广播 (应对普通路由器)
-    addrs.push(format!("255.255.255.255:{}", port));
-    // 2. 组播 (PC端互联完美生效)
-    addrs.push(format!("{}:{}", MULTICAST_IP, port));
-    // 3. 苹果 iOS 热点固定广播地址
-    addrs.push(format!("172.20.10.15:{}", port));
-    // 4. 常见企业路由器网段
-    addrs.push(format!("10.0.0.255:{}", port));
+fn interface_first_ipv4(interface: &discovery_policy::NetworkInterfaceView) -> Option<Ipv4Addr> {
+    interface
+        .addresses
+        .first()
+        .and_then(|address| address.ipv4.parse().ok())
+}
 
-    // 5. Android 随机热点网段 "暴力"覆盖 (192.168.0.255 ~ 192.168.255.255)
-    // 那些没有对应网卡的地址会在微秒级被内核路由表直接丢弃，不会产生网络风暴
-    for i in 0..=255 {
-        addrs.push(format!("192.168.{}.255:{}", i, port));
+fn reply_source_ip(
+    snapshot: &DiscoveryNetworkSnapshot,
+    source_ip: Ipv4Addr,
+    ingress_index: Option<u32>,
+) -> Option<Ipv4Addr> {
+    reply_source_ip_with_unmapped_ingress(
+        snapshot,
+        source_ip,
+        ingress_index,
+        cfg!(target_os = "android"),
+    )
+}
+
+fn reply_source_ip_with_unmapped_ingress(
+    snapshot: &DiscoveryNetworkSnapshot,
+    source_ip: Ipv4Addr,
+    ingress_index: Option<u32>,
+    allow_unmapped_ingress: bool,
+) -> Option<Ipv4Addr> {
+    if let Some(index) = ingress_index {
+        return match snapshot
+            .interfaces
+            .iter()
+            .find(|interface| interface.index == Some(index))
+        {
+            Some(interface) if interface.enabled => interface_first_ipv4(interface),
+            Some(_) => None,
+            None if allow_unmapped_ingress => snapshot
+                .interfaces
+                .iter()
+                .find(|interface| interface.enabled)
+                .and_then(interface_first_ipv4),
+            None => None,
+        };
     }
 
-    addrs
+    snapshot
+        .interfaces
+        .iter()
+        .filter(|interface| interface.enabled)
+        .find_map(|interface| {
+            interface
+                .addresses
+                .iter()
+                .find(|address| address_contains_source(address, source_ip))
+                .and_then(|address| address.ipv4.parse().ok())
+        })
+        .or_else(|| {
+            allow_unmapped_ingress.then(|| {
+                snapshot
+                    .interfaces
+                    .iter()
+                    .find(|interface| interface.enabled)
+                    .and_then(interface_first_ipv4)
+            })?
+        })
 }
 
-/// 每隔多少个心跳周期重扫一次网卡（2 秒一拍，约 30 秒）
-const IP_RESCAN_TICKS: u32 = 15;
+fn reply_source_ip_for_packet(
+    snapshot: &DiscoveryNetworkSnapshot,
+    source_ip: Ipv4Addr,
+    ingress_index: Option<u32>,
+    explicitly_fixed: bool,
+) -> Option<Ipv4Addr> {
+    reply_source_ip(snapshot, source_ip, ingress_index).or_else(|| {
+        explicitly_fixed.then(|| {
+            if let Some(index) = ingress_index {
+                return snapshot
+                    .interfaces
+                    .iter()
+                    .find(|interface| interface.index == Some(index))
+                    .and_then(interface_first_ipv4);
+            }
+            snapshot.interfaces.iter().find_map(|interface| {
+                interface
+                    .addresses
+                    .iter()
+                    .find(|address| address_contains_source(address, source_ip))
+                    .and_then(|address| address.ipv4.parse().ok())
+            })
+        })?
+    })
+}
+
+fn local_interface_index(snapshot: &DiscoveryNetworkSnapshot, local_ip: Ipv4Addr) -> Option<u32> {
+    snapshot.interfaces.iter().find_map(|interface| {
+        interface
+            .addresses
+            .iter()
+            .any(|address| address.ipv4.parse::<Ipv4Addr>() == Ok(local_ip))
+            .then_some(interface.index)
+            .flatten()
+    })
+}
+
+fn discovery_packet_allowed(
+    snapshot: &DiscoveryNetworkSnapshot,
+    source_ip: Ipv4Addr,
+    ingress_index: Option<u32>,
+    fixed_peer_ips: &HashSet<Ipv4Addr>,
+) -> bool {
+    discovery_packet_allowed_with_unmapped_ingress(
+        snapshot,
+        source_ip,
+        ingress_index,
+        fixed_peer_ips,
+        cfg!(target_os = "android"),
+    )
+}
+
+fn discovery_packet_allowed_with_unmapped_ingress(
+    snapshot: &DiscoveryNetworkSnapshot,
+    source_ip: Ipv4Addr,
+    ingress_index: Option<u32>,
+    fixed_peer_ips: &HashSet<Ipv4Addr>,
+    allow_unmapped_ingress: bool,
+) -> bool {
+    if fixed_peer_ips.contains(&source_ip) {
+        return true;
+    }
+    if let Some(index) = ingress_index {
+        if let Some(interface) = snapshot
+            .interfaces
+            .iter()
+            .find(|interface| interface.index == Some(index))
+        {
+            return interface.enabled;
+        }
+        return allow_unmapped_ingress
+            && snapshot
+                .interfaces
+                .iter()
+                .any(|interface| interface.enabled);
+    }
+
+    if allow_unmapped_ingress
+        && snapshot
+            .interfaces
+            .iter()
+            .any(|interface| interface.enabled)
+    {
+        return true;
+    }
+
+    reply_source_ip(snapshot, source_ip, None).is_some() || fixed_peer_ips.contains(&source_ip)
+}
+
+pub(crate) fn update_local_ip_cache(snapshot: &DiscoveryNetworkSnapshot) -> Vec<String> {
+    let all_ips = enabled_local_ips(snapshot);
+    let current = LOCAL_IP_ADDRESS.read().unwrap().clone().flatten();
+    let preferred = keep_or_reselect(current.as_deref(), &all_ips);
+    *ALL_LOCAL_IPS.write().unwrap() = Some(all_ips.clone());
+    *LOCAL_IP_ADDRESS.write().unwrap() = Some(preferred);
+    all_ips
+}
+
+fn log_network_plan(snapshot: &DiscoveryNetworkSnapshot, plan: &DiscoverySendPlan) {
+    println!(
+        "[UDP][discovery.plan] {}",
+        serde_json::json!({
+            "interfaces": snapshot.interfaces,
+            "interface_targets": plan.targets.len(),
+            "interface_budget": plan.budget,
+            "fixed_peer_budget": MAX_FIXED_PEER_DATAGRAMS_PER_CYCLE,
+            "total_budget": TOTAL_DISCOVERY_DATAGRAM_BUDGET,
+        })
+    );
+}
+
+fn send_interface_announcements(
+    plan: &DiscoverySendPlan,
+    message: &str,
+    metrics: &mut DiscoveryMetricsWindow,
+) {
+    let mut sockets = HashMap::<(String, Ipv4Addr), Option<UdpSocket>>::new();
+    for target in &plan.targets {
+        let socket = sockets
+            .entry((target.interface_id.clone(), target.source_ip))
+            .or_insert_with(|| {
+                match bind_interface_socket(target.source_ip, target.interface_index) {
+                    Ok(socket) => Some(socket),
+                    Err(error) => {
+                        eprintln!(
+                            "[UDP][discovery.send] bind failed on {} ({}): {error}",
+                            target.interface_id, target.source_ip
+                        );
+                        None
+                    }
+                }
+            });
+        let success = socket.as_ref().is_some_and(|socket| {
+            socket
+                .send_to(message.as_bytes(), target.destination)
+                .is_ok()
+        });
+        metrics.record_send(&target.interface_id, target.kind.as_str(), success);
+    }
+}
+
+fn fixed_peer_metric_id(endpoint: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    endpoint.hash(&mut hasher);
+    format!("fixed:{:08x}", hasher.finish() as u32)
+}
+
+async fn resolve_fixed_peer(
+    endpoint: &str,
+    port: u16,
+    now: Instant,
+    dns_cache: &DnsCache,
+) -> Result<ResolvedFixedPeer, String> {
+    if let Ok(address) = endpoint.parse::<std::net::SocketAddr>() {
+        return Ok(ResolvedFixedPeer {
+            addresses: vec![address],
+            cache_key: None,
+        });
+    }
+    if let Ok(ip) = endpoint.parse::<std::net::IpAddr>() {
+        return Ok(ResolvedFixedPeer {
+            addresses: vec![std::net::SocketAddr::new(ip, port)],
+            cache_key: None,
+        });
+    }
+    let with_port = if endpoint.contains(':') {
+        endpoint.to_string()
+    } else {
+        format!("{endpoint}:{port}")
+    };
+    if let Some((cached, expiry)) = dns_cache.get(&with_port) {
+        if *expiry > now {
+            return Ok(ResolvedFixedPeer {
+                addresses: cached.clone(),
+                cache_key: None,
+            });
+        }
+    }
+    let addresses = tokio::net::lookup_host(&with_port)
+        .await
+        .map_err(|error| error.to_string())?
+        .filter(|address| address.is_ipv4())
+        .collect::<Vec<_>>();
+    if addresses.is_empty() {
+        return Err("no IPv4 address resolved".to_string());
+    }
+    Ok(ResolvedFixedPeer {
+        addresses,
+        cache_key: Some(with_port),
+    })
+}
+
+async fn refresh_listener_policy(
+    socket: &tokio::net::UdpSocket,
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    port: u16,
+    snapshot: &mut DiscoveryNetworkSnapshot,
+    joined: &mut BTreeSet<Ipv4Addr>,
+    fixed_peer_resolver: &mut FixedPeerSourceResolver,
+    fixed_peer_ips: &mut HashSet<Ipv4Addr>,
+) {
+    let latest = read_network_snapshot(pool, Some(snapshot)).await;
+    if network_fingerprint(&latest) != network_fingerprint(snapshot) {
+        fixed_peer_resolver.reset_after_network_change(Instant::now());
+    }
+    let desired = listener_multicast_memberships(&latest);
+    sync_listener_multicast_memberships(socket, joined, &desired);
+    *snapshot = latest;
+    let records = crate::db::get_custom_peer_records(pool).await;
+    let custom_peers = records
+        .iter()
+        .filter(|record| record.is_verified())
+        .map(|record| record.endpoint.clone())
+        .collect::<Vec<_>>();
+    *fixed_peer_ips = fixed_peer_resolver.refresh(&custom_peers, port).await;
+    fixed_peer_resolver.bind_verified_identities(&records);
+}
+
+fn send_discovery_reply(
+    snapshot: &DiscoveryNetworkSnapshot,
+    fixed_peer_ips: &HashSet<Ipv4Addr>,
+    source_ip: Ipv4Addr,
+    ingress_index: Option<u32>,
+    target: SocketAddr,
+    message: &[u8],
+) -> bool {
+    let explicitly_fixed = fixed_peer_ips.contains(&source_ip);
+    let socket =
+        match reply_source_ip_for_packet(snapshot, source_ip, ingress_index, explicitly_fixed) {
+            Some(local_ip) => bind_source_socket(
+                local_ip,
+                ingress_index.or_else(|| local_interface_index(snapshot, local_ip)),
+            ),
+            None if explicitly_fixed => create_discovery_socket("0.0.0.0:0"),
+            None => return false,
+        };
+    socket
+        .and_then(|socket| socket.send_to(message, target))
+        .is_ok()
+}
+
+async fn send_fixed_peer_announcements(
+    socket: &UdpSocket,
+    message: &str,
+    custom_peers: &[String],
+    port: u16,
+    dns_cache: &mut DnsCache,
+    retry_states: &mut HashMap<String, FixedPeerRetryState>,
+    cursor: &mut usize,
+    metrics: &mut DiscoveryMetricsWindow,
+) {
+    let known = custom_peers
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    retry_states.retain(|endpoint, _| known.contains(endpoint));
+    let now = Instant::now();
+    let cache_snapshot = Arc::new(dns_cache.clone());
+    let mut resolutions = FuturesUnordered::<FixedPeerResolutionFuture>::new();
+    for endpoint in rotating_fixed_peer_endpoints(custom_peers, retry_states, cursor, now) {
+        let cache_snapshot = Arc::clone(&cache_snapshot);
+        resolutions.push(Box::pin(async move {
+            let result = bounded_resolution(
+                FIXED_PEER_RESOLVE_TIMEOUT,
+                resolve_fixed_peer(&endpoint, port, now, cache_snapshot.as_ref()),
+            )
+            .await
+            .and_then(|result| result);
+            (endpoint, result)
+        }));
+    }
+
+    while let Some((endpoint, resolved)) = resolutions.next().await {
+        let metric_id = fixed_peer_metric_id(&endpoint);
+        let completed_at = Instant::now();
+        let any_success = match resolved {
+            Ok(resolved) => {
+                if let Some(cache_key) = resolved.cache_key {
+                    dns_cache.insert(
+                        cache_key,
+                        (resolved.addresses.clone(), completed_at + DNS_TTL),
+                    );
+                }
+                let success = resolved
+                    .addresses
+                    .into_iter()
+                    .next()
+                    .is_some_and(|address| socket.send_to(message.as_bytes(), address).is_ok());
+                metrics.record_send(&metric_id, "fixed_unicast", success);
+                success
+            }
+            Err(error) => {
+                metrics.record_send(&metric_id, "fixed_unicast", false);
+                eprintln!("[UDP][discovery.fixed] {metric_id} resolve/send failed: {error}");
+                false
+            }
+        };
+
+        if let Some(state) = retry_states.get_mut(&endpoint) {
+            if any_success {
+                state.record_success(completed_at);
+            } else {
+                state.record_failure(completed_at);
+            }
+        }
+    }
+}
 
 pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx::Sqlite>) {
-    let socket = match create_discovery_socket("0.0.0.0:0", false) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[UDP] 创建发送 socket 失败: {}", e);
+    use rand::Rng;
+    use sysinfo::System;
+
+    let unicast_socket = match create_discovery_socket("0.0.0.0:0") {
+        Ok(socket) => socket,
+        Err(error) => {
+            eprintln!("[UDP] 创建固定地址发送 socket 失败: {error}");
             return;
         }
     };
-
-    println!("[UDP] 开始通过智能路由遍历发送心跳...");
-
-    use std::collections::HashMap;
-    use std::time::Instant;
-    use sysinfo::System;
-    let mut sys = System::new();
-    let target_addrs = get_smart_broadcast_addresses(port);
     let (hostname, mac_address) = local_device_metadata();
-
-    // 逐网卡发送：绑定源地址强制包从每张卡出去，多网卡/多网段才不会漏
-    let interface_targets = per_interface_targets(port);
-    let mut known_ips = get_all_cached_ips();
-    let mut nic_sockets = interface_sockets(&known_ips);
-    println!("[UDP] 逐网卡心跳已就绪: {:?}", known_ips);
-    let mut tick: u32 = 0;
-
-    // DNS 缓存：hostname → (解析结果, 过期时间)，TTL 60 秒
-    let mut dns_cache: HashMap<String, (Vec<std::net::SocketAddr>, Instant)> = HashMap::new();
-    const DNS_TTL: Duration = Duration::from_secs(60);
+    let mut system = System::new();
+    let mut snapshot = read_network_snapshot(&pool, None).await;
+    let mut fingerprint = network_fingerprint(&snapshot);
+    let mut cadence = DiscoveryCadence::default();
+    let mut dns_cache = DnsCache::new();
+    let mut retry_states = HashMap::new();
+    let mut fixed_peer_cursor = 0;
+    let mut metrics = DiscoveryMetricsWindow::new(Instant::now());
+    update_local_ip_cache(&snapshot);
+    log_network_plan(
+        &snapshot,
+        &discovery_policy::build_send_plan(&snapshot, port),
+    );
 
     loop {
-        let username = match crate::db::get_username(&pool).await {
-            Ok(name) => name,
-            Err(_) => "Unknown".to_string(),
-        };
-
-        sys.refresh_memory();
-        let available_memory_mb = sys.available_memory() / (1024 * 1024);
-
-        let msg = local_announcement(
+        let username = crate::db::get_username(&pool)
+            .await
+            .unwrap_or_else(|_| "Unknown".to_string());
+        system.refresh_memory();
+        let available_memory_mb = system.available_memory() / (1024 * 1024);
+        let message = local_announcement(
             user_id.clone(),
             username,
             port,
@@ -407,84 +1660,92 @@ pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx:
         )
         .encode();
 
-        // 逐网卡发一遍受限广播与组播：不依赖子网掩码，多网卡都能覆盖
-        for (_ip, nic_socket) in &nic_sockets {
-            for target in &interface_targets {
-                let _ = nic_socket.send_to(msg.as_bytes(), target);
-            }
-        }
-
-        // 兜底：遍历所有可能地址，仅路由存在的网卡能发送成功
-        // （Android 读不到网卡列表时，这条路径仍然有效）
-        for addr in &target_addrs {
-            let _ = socket.send_to(msg.as_bytes(), addr);
-        }
-
-        // 发送单播到自定义设备（支持 IP 和 域名/主机名）
+        let plan = discovery_policy::build_send_plan(&snapshot, port);
+        send_interface_announcements(&plan, &message, &mut metrics);
         let custom_peers = crate::db::get_custom_peers(&pool).await;
-        let now = Instant::now();
-        for peer in &custom_peers {
-            if let Ok(addr) = peer.parse::<std::net::SocketAddr>() {
-                // 快速路径：纯 IP:port
-                let _ = socket.send_to(msg.as_bytes(), addr);
-            } else {
-                // DNS 路径：域名/主机名
-                let with_port = if peer.contains(':') {
-                    peer.clone()
-                } else {
-                    format!("{}:{}", peer, port)
-                };
+        send_fixed_peer_announcements(
+            &unicast_socket,
+            &message,
+            &custom_peers,
+            port,
+            &mut dns_cache,
+            &mut retry_states,
+            &mut fixed_peer_cursor,
+            &mut metrics,
+        )
+        .await;
+        if let Some(report) = metrics.report_if_due(
+            Instant::now(),
+            TOTAL_DISCOVERY_DATAGRAM_BUDGET,
+            &excluded_interfaces(&snapshot),
+        ) {
+            println!("[UDP][discovery.metrics] {report}");
+        }
 
-                // 查缓存
-                let addrs = if let Some((cached, expiry)) = dns_cache.get(&with_port) {
-                    if *expiry > now {
-                        Some(cached.clone())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
+        let jitter_sample = rand::thread_rng().gen_range(0..=1000);
+        let deadline = Instant::now() + cadence.delay_after_send(jitter_sample);
+        let mut next_policy_check = Instant::now() + INTERFACE_POLL_INTERVAL;
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let settings_changed = tokio::select! {
+                _ = tokio::time::sleep(discovery_runtime_wake_delay(
+                    now,
+                    deadline,
+                    next_policy_check,
+                )) => false,
+                _ = discovery_policy::wait_for_settings_change() => true,
+            };
+            let now = Instant::now();
+            if now >= deadline && !settings_changed {
+                break;
+            }
+            if !settings_changed && now < next_policy_check {
+                continue;
+            }
+            next_policy_check = now + INTERFACE_POLL_INTERVAL;
 
-                let addrs = match addrs {
-                    Some(a) => a,
-                    None => {
-                        // DNS 解析
-                        match tokio::net::lookup_host(&with_port).await {
-                            Ok(resolved) => {
-                                let list: Vec<_> = resolved.collect();
-                                if !list.is_empty() {
-                                    dns_cache
-                                        .insert(with_port.clone(), (list.clone(), now + DNS_TTL));
-                                }
-                                list
-                            }
-                            Err(e) => {
-                                eprintln!("[UDP] DNS 解析失败 ({}): {}", peer, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                };
-
-                for addr in &addrs {
-                    let _ = socket.send_to(msg.as_bytes(), addr);
+            let latest = read_network_snapshot(&pool, Some(&snapshot)).await;
+            let latest_fingerprint = network_fingerprint(&latest);
+            if settings_changed || latest_fingerprint != fingerprint {
+                snapshot = latest;
+                fingerprint = latest_fingerprint;
+                update_local_ip_cache(&snapshot);
+                cadence.reset_burst();
+                for state in retry_states.values_mut() {
+                    state.reset(Instant::now());
                 }
+                dns_cache.clear();
+                log_network_plan(
+                    &snapshot,
+                    &discovery_policy::build_send_plan(&snapshot, port),
+                );
+                break;
+            }
+
+            let custom_peers = crate::db::get_custom_peers(&pool).await;
+            send_fixed_peer_announcements(
+                &unicast_socket,
+                &message,
+                &custom_peers,
+                port,
+                &mut dns_cache,
+                &mut retry_states,
+                &mut fixed_peer_cursor,
+                &mut metrics,
+            )
+            .await;
+            let now = Instant::now();
+            if let Some(report) = metrics.report_if_due(
+                now,
+                TOTAL_DISCOVERY_DATAGRAM_BUDGET,
+                &excluded_interfaces(&snapshot),
+            ) {
+                println!("[UDP][discovery.metrics] {report}");
             }
         }
-
-        // 周期性重扫网卡：插拔网线、连断 VPN 后自动跟上，不覆盖手动选择
-        tick = tick.wrapping_add(1);
-        if tick % IP_RESCAN_TICKS == 0 {
-            let latest = rescan_local_ips();
-            if latest != known_ips {
-                println!("[UDP] 网卡变化 {:?} -> {:?}，重建逐网卡心跳", known_ips, latest);
-                nic_sockets = interface_sockets(&latest);
-                known_ips = latest;
-            }
-        }
-
-        tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
 
@@ -499,7 +1760,7 @@ pub async fn start_listening(
     pool: sqlx::Pool<sqlx::Sqlite>,
 ) {
     let bind_addr = format!("0.0.0.0:{}", port);
-    let socket = match create_discovery_socket(&bind_addr, true) {
+    let socket = match create_listener_socket(&bind_addr) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("[UDP] 创建监听 socket 失败: {}", e);
@@ -509,10 +1770,55 @@ pub async fn start_listening(
 
     let mut buf = [0u8; 1024];
     let (hostname, mac_address) = local_device_metadata();
+    let mut deduper = ReplyDeduper::new(Duration::from_secs(2));
+    let mut metrics = DiscoveryMetricsWindow::new(Instant::now());
+    let mut snapshot = fail_closed_network_snapshot();
+    let mut joined = BTreeSet::new();
+    let mut fixed_peer_resolver = FixedPeerSourceResolver::default();
+    let mut fixed_peer_ips = HashSet::new();
+    refresh_listener_policy(
+        &socket,
+        &pool,
+        port,
+        &mut snapshot,
+        &mut joined,
+        &mut fixed_peer_resolver,
+        &mut fixed_peer_ips,
+    )
+    .await;
+    let mut next_policy_refresh = tokio::time::Instant::now() + INTERFACE_POLL_INTERVAL;
     println!("[UDP] 正在端口 {} 监听邻居...", port);
 
     loop {
-        if let Ok((size, addr)) = socket.recv_from(&mut buf) {
+        let packet = tokio::select! {
+            result = recv_discovery_packet(&socket, &mut buf) => match result {
+                Ok(packet) => packet,
+                Err(error) => {
+                    eprintln!("[UDP][discovery.listener] receive failed: {error}");
+                    continue;
+                }
+            },
+            _ = tokio::time::sleep_until(next_policy_refresh) => {
+                refresh_listener_policy(
+                    &socket, &pool, port, &mut snapshot, &mut joined,
+                    &mut fixed_peer_resolver, &mut fixed_peer_ips,
+                ).await;
+                next_policy_refresh = tokio::time::Instant::now() + INTERFACE_POLL_INTERVAL;
+                continue;
+            },
+            _ = discovery_policy::wait_for_settings_change() => {
+                refresh_listener_policy(
+                    &socket, &pool, port, &mut snapshot, &mut joined,
+                    &mut fixed_peer_resolver, &mut fixed_peer_ips,
+                ).await;
+                next_policy_refresh = tokio::time::Instant::now() + INTERFACE_POLL_INTERVAL;
+                continue;
+            },
+        };
+        let size = packet.size;
+        let addr = packet.source;
+        let ingress_index = packet.ingress_index;
+        {
             let msg = String::from_utf8_lossy(&buf[..size]);
             let parts: Vec<&str> = msg.split('|').collect();
 
@@ -528,6 +1834,32 @@ pub async fn start_listening(
                 if peer_id == my_id {
                     continue;
                 }
+
+                let std::net::IpAddr::V4(source_ip) = addr.ip() else {
+                    continue;
+                };
+                if !discovery_packet_allowed(&snapshot, source_ip, ingress_index, &fixed_peer_ips) {
+                    continue;
+                }
+                if !fixed_peer_resolver.identity_allowed(source_ip, &peer_id) {
+                    eprintln!(
+                        "[UDP][security] ignored fixed-address announcement from {source_ip}: device identity did not match"
+                    );
+                    continue;
+                }
+                let now = Instant::now();
+                if !deduper.should_accept(&peer_id, source_ip, &msg, now) {
+                    metrics.record_receive(true, false);
+                    if let Some(report) = metrics.report_if_due(
+                        now,
+                        TOTAL_DISCOVERY_DATAGRAM_BUDGET,
+                        &excluded_interfaces(&snapshot),
+                    ) {
+                        println!("[UDP][discovery.metrics] {report}");
+                    }
+                    continue;
+                }
+                metrics.record_receive(false, false);
 
                 let peer_addr = format!("{}:{}", addr.ip(), peer_port);
 
@@ -640,8 +1972,27 @@ pub async fn start_listening(
                         Some(env!("CARGO_PKG_VERSION").to_string()),
                     )
                     .encode();
-                    let target = format!("{}:{}", addr.ip(), peer_port);
-                    let _ = socket.send_to(reply.as_bytes(), &target);
+                    let Ok(peer_port) = peer_port.parse::<u16>() else {
+                        continue;
+                    };
+                    let target = SocketAddr::new(addr.ip(), peer_port);
+                    if send_discovery_reply(
+                        &snapshot,
+                        &fixed_peer_ips,
+                        source_ip,
+                        ingress_index,
+                        target,
+                        reply.as_bytes(),
+                    ) {
+                        metrics.record_reply();
+                    }
+                }
+                if let Some(report) = metrics.report_if_due(
+                    Instant::now(),
+                    TOTAL_DISCOVERY_DATAGRAM_BUDGET,
+                    &excluded_interfaces(&snapshot),
+                ) {
+                    println!("[UDP][discovery.metrics] {report}");
                 }
             }
         }
@@ -658,7 +2009,7 @@ pub async fn start_listening(
     pool: sqlx::Pool<sqlx::Sqlite>,
 ) {
     let bind_addr = format!("0.0.0.0:{}", port);
-    let socket = match create_discovery_socket(&bind_addr, true) {
+    let socket = match create_listener_socket(&bind_addr) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("[UDP] Web端创建监听 socket 失败: {}", e);
@@ -668,8 +2019,53 @@ pub async fn start_listening(
 
     let mut buf = [0u8; 1024];
     let (hostname, mac_address) = local_device_metadata();
+    let mut deduper = ReplyDeduper::new(Duration::from_secs(2));
+    let mut metrics = DiscoveryMetricsWindow::new(Instant::now());
+    let mut snapshot = fail_closed_network_snapshot();
+    let mut joined = BTreeSet::new();
+    let mut fixed_peer_resolver = FixedPeerSourceResolver::default();
+    let mut fixed_peer_ips = HashSet::new();
+    refresh_listener_policy(
+        &socket,
+        &pool,
+        port,
+        &mut snapshot,
+        &mut joined,
+        &mut fixed_peer_resolver,
+        &mut fixed_peer_ips,
+    )
+    .await;
+    let mut next_policy_refresh = tokio::time::Instant::now() + INTERFACE_POLL_INTERVAL;
     loop {
-        if let Ok((size, addr)) = socket.recv_from(&mut buf) {
+        let packet = tokio::select! {
+            result = recv_discovery_packet(&socket, &mut buf) => match result {
+                Ok(packet) => packet,
+                Err(error) => {
+                    eprintln!("[UDP][discovery.listener] receive failed: {error}");
+                    continue;
+                }
+            },
+            _ = tokio::time::sleep_until(next_policy_refresh) => {
+                refresh_listener_policy(
+                    &socket, &pool, port, &mut snapshot, &mut joined,
+                    &mut fixed_peer_resolver, &mut fixed_peer_ips,
+                ).await;
+                next_policy_refresh = tokio::time::Instant::now() + INTERFACE_POLL_INTERVAL;
+                continue;
+            },
+            _ = discovery_policy::wait_for_settings_change() => {
+                refresh_listener_policy(
+                    &socket, &pool, port, &mut snapshot, &mut joined,
+                    &mut fixed_peer_resolver, &mut fixed_peer_ips,
+                ).await;
+                next_policy_refresh = tokio::time::Instant::now() + INTERFACE_POLL_INTERVAL;
+                continue;
+            },
+        };
+        let size = packet.size;
+        let addr = packet.source;
+        let ingress_index = packet.ingress_index;
+        {
             let msg = String::from_utf8_lossy(&buf[..size]);
             let parts: Vec<&str> = msg.split('|').collect();
 
@@ -685,6 +2081,31 @@ pub async fn start_listening(
                 if peer_id == my_id {
                     continue;
                 }
+                let std::net::IpAddr::V4(source_ip) = addr.ip() else {
+                    continue;
+                };
+                if !discovery_packet_allowed(&snapshot, source_ip, ingress_index, &fixed_peer_ips) {
+                    continue;
+                }
+                if !fixed_peer_resolver.identity_allowed(source_ip, &peer_id) {
+                    eprintln!(
+                        "[UDP][security] ignored fixed-address announcement from {source_ip}: device identity did not match"
+                    );
+                    continue;
+                }
+                let now = Instant::now();
+                if !deduper.should_accept(&peer_id, source_ip, &msg, now) {
+                    metrics.record_receive(true, false);
+                    if let Some(report) = metrics.report_if_due(
+                        now,
+                        TOTAL_DISCOVERY_DATAGRAM_BUDGET,
+                        &excluded_interfaces(&snapshot),
+                    ) {
+                        println!("[UDP][discovery.metrics] {report}");
+                    }
+                    continue;
+                }
+                metrics.record_receive(false, false);
                 let peer_addr = format!("{}:{}", addr.ip(), peer_port);
 
                 let is_new_or_reconnected = peer_manager.add_or_update_with_details(
@@ -765,8 +2186,27 @@ pub async fn start_listening(
                         Some(env!("CARGO_PKG_VERSION").to_string()),
                     )
                     .encode();
-                    let target = format!("{}:{}", addr.ip(), peer_port);
-                    let _ = socket.send_to(reply.as_bytes(), &target);
+                    let Ok(peer_port) = peer_port.parse::<u16>() else {
+                        continue;
+                    };
+                    let target = SocketAddr::new(addr.ip(), peer_port);
+                    if send_discovery_reply(
+                        &snapshot,
+                        &fixed_peer_ips,
+                        source_ip,
+                        ingress_index,
+                        target,
+                        reply.as_bytes(),
+                    ) {
+                        metrics.record_reply();
+                    }
+                }
+                if let Some(report) = metrics.report_if_due(
+                    Instant::now(),
+                    TOTAL_DISCOVERY_DATAGRAM_BUDGET,
+                    &excluded_interfaces(&snapshot),
+                ) {
+                    println!("[UDP][discovery.metrics] {report}");
                 }
             }
         }
@@ -775,8 +2215,7 @@ pub async fn start_listening(
 
 /// 离线看门狗的扫描间隔。原先离线判定只在前端拉快照时顺带发生，
 /// 没人拉就永远不翻转，于是既没有离线通知、也不会触发上线补发。
-/// 必须明显小于 PEER_OFFLINE_TIMEOUT_SECS(10s)，否则实际感知延迟是
-/// 超时 + 扫描间隔。2 秒一扫，最坏 12 秒内出提示。
+/// A0 兼容超时是 75 秒；2 秒扫描让实际翻转最多再增加约 2 秒。
 const OFFLINE_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 
 /// 主动扫描超时未见的用户并广播离线事件。
@@ -869,9 +2308,6 @@ pub async fn send_single_broadcast(
     user_id: String,
     username: String,
 ) -> Result<(), String> {
-    let socket = create_discovery_socket("0.0.0.0:0", false)
-        .map_err(|e| format!("创建发送socket失败: {}", e))?;
-
     let (hostname, mac_address) = local_device_metadata();
     let msg = local_announcement(
         user_id,
@@ -884,11 +2320,10 @@ pub async fn send_single_broadcast(
         Some(env!("CARGO_PKG_VERSION").to_string()),
     )
     .encode();
-    let target_addrs = get_smart_broadcast_addresses(port);
-
-    for addr in target_addrs {
-        let _ = socket.send_to(msg.as_bytes(), &addr);
-    }
+    let snapshot = read_default_network_snapshot();
+    let plan = discovery_policy::build_send_plan(&snapshot, port);
+    let mut metrics = DiscoveryMetricsWindow::new(Instant::now());
+    send_interface_announcements(&plan, &msg, &mut metrics);
 
     Ok(())
 }
@@ -898,9 +2333,472 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fixed_peer_source_requires_the_bound_device_identity() {
+        let fixed_source = Ipv4Addr::new(192, 168, 10, 22);
+        let ordinary_lan_source = Ipv4Addr::new(192, 168, 10, 111);
+        let expected_ids =
+            HashMap::from([(fixed_source, HashSet::from(["device-zhangsan".to_string()]))]);
+
+        assert!(fixed_peer_identity_allowed(
+            &expected_ids,
+            fixed_source,
+            "device-zhangsan"
+        ));
+        assert!(!fixed_peer_identity_allowed(
+            &expected_ids,
+            fixed_source,
+            "device-lisi"
+        ));
+        assert!(fixed_peer_identity_allowed(
+            &expected_ids,
+            ordinary_lan_source,
+            "device-lisi"
+        ));
+    }
+
+    #[test]
+    fn windows_packet_info_reports_the_ingress_interface() {
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct TestControlHeader {
+            length: usize,
+            level: i32,
+            kind: i32,
+        }
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct TestPacketInfo {
+            address: u32,
+            interface_index: u32,
+        }
+
+        #[repr(align(8))]
+        struct AlignedControl([u8; 128]);
+
+        let mut control = AlignedControl([0; 128]);
+        let data_offset =
+            (std::mem::size_of::<TestControlHeader>() + std::mem::align_of::<usize>() - 1)
+                & !(std::mem::align_of::<usize>() - 1);
+        let message_length = data_offset + std::mem::size_of::<TestPacketInfo>();
+        unsafe {
+            control
+                .0
+                .as_mut_ptr()
+                .cast::<TestControlHeader>()
+                .write_unaligned(TestControlHeader {
+                    length: message_length,
+                    level: 0,
+                    kind: 19,
+                });
+            control
+                .0
+                .as_mut_ptr()
+                .add(data_offset)
+                .cast::<TestPacketInfo>()
+                .write_unaligned(TestPacketInfo {
+                    address: 0,
+                    interface_index: 27,
+                });
+        }
+
+        assert_eq!(
+            parse_windows_pktinfo_control(&control.0[..message_length]),
+            Some(27),
+        );
+        assert_eq!(
+            parse_windows_pktinfo_control(
+                &control.0[..std::mem::size_of::<TestControlHeader>() - 1]
+            ),
+            None,
+        );
+
+        control.0[12..16].copy_from_slice(&20_i32.to_ne_bytes());
+        assert_eq!(
+            parse_windows_pktinfo_control(&control.0[..message_length]),
+            None,
+        );
+    }
+
+    fn listener_test_snapshot() -> DiscoveryNetworkSnapshot {
+        DiscoveryNetworkSnapshot {
+            settings: DiscoverySettings::default(),
+            interfaces: vec![
+                discovery_policy::NetworkInterfaceView {
+                    id: "if:name:en0".into(),
+                    name: "en0".into(),
+                    index: Some(14),
+                    addresses: vec![discovery_policy::NetworkInterfaceAddress {
+                        ipv4: "192.168.10.152".into(),
+                        prefix_length: Some(23),
+                    }],
+                    category: discovery_policy::InterfaceCategory::PhysicalLan,
+                    is_up: true,
+                    default_enabled: true,
+                    selected: true,
+                    enabled: true,
+                    exclusion_reason: None,
+                },
+                discovery_policy::NetworkInterfaceView {
+                    id: "if:name:utun4".into(),
+                    name: "utun4".into(),
+                    index: Some(22),
+                    addresses: vec![discovery_policy::NetworkInterfaceAddress {
+                        ipv4: "198.18.0.1".into(),
+                        prefix_length: Some(30),
+                    }],
+                    category: discovery_policy::InterfaceCategory::ProxyTun,
+                    is_up: true,
+                    default_enabled: false,
+                    selected: false,
+                    enabled: false,
+                    exclusion_reason: Some("proxy_tun_default_excluded".into()),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn discovery_cadence_bursts_then_moves_to_jittered_steady_state() {
+        let mut cadence = DiscoveryCadence::default();
+        let first_gap = cadence.delay_after_send(500);
+        let second_gap = cadence.delay_after_send(500);
+        let steady_gap = cadence.delay_after_send(500);
+
+        assert_eq!(first_gap, Duration::from_millis(400));
+        assert_eq!(first_gap + second_gap, Duration::from_millis(1500));
+        assert_eq!(steady_gap, Duration::from_secs(30));
+        assert_eq!(steady_discovery_delay(0), Duration::from_secs(24));
+        assert_eq!(steady_discovery_delay(1000), Duration::from_secs(36));
+
+        cadence.reset_burst();
+        assert_eq!(cadence.delay_after_send(500), Duration::from_millis(400),);
+    }
+
+    #[test]
+    fn discovery_reply_dedupe_only_suppresses_the_same_recent_frame() {
+        let start = std::time::Instant::now();
+        let mut deduper = ReplyDeduper::new(Duration::from_secs(2));
+        let source = Ipv4Addr::new(192, 168, 10, 22);
+
+        assert!(deduper.should_accept("peer-a", source, "frame-a", start));
+        assert!(!deduper.should_accept(
+            "peer-a",
+            source,
+            "frame-a",
+            start + Duration::from_millis(500),
+        ));
+        assert!(deduper.should_accept(
+            "peer-a",
+            source,
+            "frame-b",
+            start + Duration::from_millis(500),
+        ));
+        assert!(deduper.should_accept(
+            "peer-a",
+            Ipv4Addr::new(10, 8, 0, 2),
+            "frame-a",
+            start + Duration::from_millis(500),
+        ));
+        assert!(deduper.should_accept(
+            "peer-a",
+            source,
+            "frame-a",
+            start + Duration::from_millis(2100),
+        ));
+    }
+
+    #[test]
+    fn listener_membership_ingress_and_reply_source_follow_enabled_interfaces() {
+        let snapshot = listener_test_snapshot();
+        let memberships = listener_multicast_memberships(&snapshot);
+        assert_eq!(
+            memberships,
+            std::collections::BTreeSet::from([Ipv4Addr::new(192, 168, 10, 152)])
+        );
+        assert_eq!(enabled_local_ips(&snapshot), vec!["192.168.10.152"]);
+
+        let fixed = std::collections::HashSet::from([Ipv4Addr::new(203, 0, 113, 8)]);
+        let lan_peer = Ipv4Addr::new(192, 168, 11, 20);
+        let tun_peer = Ipv4Addr::new(198, 18, 0, 2);
+        let fixed_tun_peer = std::collections::HashSet::from([tun_peer]);
+
+        assert!(discovery_packet_allowed(
+            &snapshot,
+            lan_peer,
+            Some(14),
+            &fixed
+        ));
+        assert!(!discovery_packet_allowed(
+            &snapshot,
+            tun_peer,
+            Some(22),
+            &fixed
+        ));
+        assert!(discovery_packet_allowed_with_unmapped_ingress(
+            &snapshot,
+            tun_peer,
+            Some(22),
+            &fixed_tun_peer,
+            false,
+        ));
+        assert!(discovery_packet_allowed(&snapshot, lan_peer, None, &fixed));
+        assert!(!discovery_packet_allowed(&snapshot, tun_peer, None, &fixed));
+        assert!(discovery_packet_allowed(
+            &snapshot,
+            Ipv4Addr::new(203, 0, 113, 8),
+            None,
+            &fixed,
+        ));
+        assert!(!discovery_packet_allowed_with_unmapped_ingress(
+            &snapshot,
+            lan_peer,
+            Some(999),
+            &fixed,
+            false,
+        ));
+        assert!(discovery_packet_allowed_with_unmapped_ingress(
+            &snapshot,
+            lan_peer,
+            Some(999),
+            &fixed,
+            true,
+        ));
+        assert_eq!(
+            reply_source_ip(&snapshot, lan_peer, Some(14)),
+            Some(Ipv4Addr::new(192, 168, 10, 152)),
+        );
+        assert_eq!(reply_source_ip(&snapshot, tun_peer, Some(22)), None);
+        assert_eq!(
+            reply_source_ip_for_packet(&snapshot, tun_peer, Some(22), true),
+            Some(Ipv4Addr::new(198, 18, 0, 1)),
+        );
+        assert_eq!(
+            reply_source_ip_for_packet(&snapshot, tun_peer, Some(22), false),
+            None,
+        );
+        assert_eq!(
+            reply_source_ip_with_unmapped_ingress(&snapshot, lan_peer, Some(999), true),
+            Some(Ipv4Addr::new(192, 168, 10, 152)),
+        );
+        assert_eq!(
+            reply_source_ip_with_unmapped_ingress(&snapshot, tun_peer, Some(22), true),
+            None,
+        );
+
+        let mut prefixless = snapshot.clone();
+        prefixless.interfaces[0].addresses[0].prefix_length = None;
+        assert_eq!(
+            reply_source_ip_with_unmapped_ingress(&prefixless, lan_peer, None, true),
+            Some(Ipv4Addr::new(192, 168, 10, 152)),
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn listener_reads_the_kernel_ingress_interface_index() {
+        let listener = create_listener_socket("127.0.0.1:0").unwrap();
+        let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sender
+            .send_to(b"probe", listener.local_addr().unwrap())
+            .unwrap();
+
+        let mut buffer = [0u8; 16];
+        let packet = bounded_resolution(
+            Duration::from_secs(1),
+            recv_discovery_packet(&listener, &mut buffer),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(&buffer[..packet.size], b"probe");
+        assert_eq!(
+            packet.source.ip(),
+            "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
+        );
+        assert!(packet.ingress_index.is_some());
+    }
+
+    #[test]
+    fn discovery_fixed_peer_failures_back_off_without_blocking_other_peers() {
+        let start = std::time::Instant::now();
+        let mut failing = FixedPeerRetryState::new(start);
+        let untouched = FixedPeerRetryState::new(start);
+
+        assert!(failing.can_attempt(start));
+        failing.record_failure(start);
+        assert!(!failing.can_attempt(start + Duration::from_secs(4)));
+        assert!(failing.can_attempt(start + Duration::from_secs(5)));
+        assert!(untouched.can_attempt(start + Duration::from_secs(1)));
+
+        failing.record_failure(start + Duration::from_secs(5));
+        assert!(!failing.can_attempt(start + Duration::from_secs(14)));
+        assert!(failing.can_attempt(start + Duration::from_secs(15)));
+
+        failing.record_success(start + Duration::from_secs(15));
+        assert!(!failing.can_attempt(start + Duration::from_secs(44)));
+        assert!(failing.can_attempt(start + Duration::from_secs(45)));
+
+        failing.reset(start + Duration::from_secs(20));
+        assert!(failing.can_attempt(start + Duration::from_secs(20)));
+        assert_eq!(failing.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn fixed_peer_batches_rotate_without_exceeding_the_cycle_budget() {
+        let now = Instant::now();
+        let peers = (0..40)
+            .map(|index| format!("peer-{index:02}.example"))
+            .collect::<Vec<_>>();
+        let mut retry_states = HashMap::new();
+        let mut cursor = 0;
+
+        let first = rotating_fixed_peer_endpoints(&peers, &mut retry_states, &mut cursor, now);
+        let second = rotating_fixed_peer_endpoints(&peers, &mut retry_states, &mut cursor, now);
+
+        assert_eq!(first.len(), MAX_FIXED_PEER_DATAGRAMS_PER_CYCLE);
+        assert_eq!(second.len(), MAX_FIXED_PEER_DATAGRAMS_PER_CYCLE);
+        assert_eq!(first[0], "peer-00.example");
+        assert_eq!(second[0], "peer-16.example");
+    }
+
+    #[tokio::test]
+    async fn listener_fixed_peer_resolution_keeps_last_good_address_on_failure() {
+        let endpoint = "invalid\0host".to_string();
+        let expected = Ipv4Addr::new(100, 64, 0, 8);
+        let mut resolver = FixedPeerSourceResolver::default();
+        resolver
+            .resolved_by_endpoint
+            .insert(endpoint.clone(), HashSet::from([expected]));
+
+        let sources = resolver.refresh(&[endpoint], 8888).await;
+
+        assert_eq!(sources, HashSet::from([expected]));
+    }
+
+    #[test]
+    fn listener_fixed_peer_resolution_drops_stale_addresses_after_network_change() {
+        let now = Instant::now();
+        let endpoint = "mesh.example".to_string();
+        let mut resolver = FixedPeerSourceResolver::default();
+        resolver.resolved_by_endpoint.insert(
+            endpoint.clone(),
+            HashSet::from([Ipv4Addr::new(100, 64, 0, 8)]),
+        );
+        resolver.retry_states.insert(
+            endpoint,
+            FixedPeerRetryState {
+                consecutive_failures: 3,
+                next_attempt: now + Duration::from_secs(60),
+            },
+        );
+
+        resolver.reset_after_network_change(now);
+
+        assert!(resolver.resolved_by_endpoint.is_empty());
+        assert!(resolver
+            .retry_states
+            .values()
+            .all(|state| state.can_attempt(now)));
+    }
+
+    #[tokio::test]
+    async fn fixed_peer_resolution_has_a_bounded_timeout() {
+        assert_eq!(
+            bounded_resolution(Duration::from_millis(20), async { 7 })
+                .await
+                .unwrap(),
+            7,
+        );
+        let error = bounded_resolution(Duration::from_millis(1), async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            9
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error, "resolution timed out");
+    }
+
+    #[test]
+    fn discovery_runtime_wake_delay_only_tracks_discovery_and_policy_deadlines() {
+        let start = Instant::now();
+        assert_eq!(
+            discovery_runtime_wake_delay(
+                start,
+                start + Duration::from_secs(30),
+                start + INTERFACE_POLL_INTERVAL,
+            ),
+            INTERFACE_POLL_INTERVAL,
+        );
+        assert_eq!(
+            discovery_runtime_wake_delay(
+                start,
+                start + Duration::from_secs(3),
+                start + INTERFACE_POLL_INTERVAL,
+            ),
+            Duration::from_secs(3),
+        );
+    }
+
+    #[test]
+    fn discovery_metrics_report_interface_targets_and_receive_deduplication() {
+        let start = std::time::Instant::now();
+        let mut metrics = DiscoveryMetricsWindow::new(start);
+        metrics.record_send("if:7", "broadcast", true);
+        metrics.record_send("if:7", "multicast", false);
+        metrics.record_receive(false, true);
+        metrics.record_receive(true, false);
+
+        assert!(metrics
+            .report_if_due(start + Duration::from_secs(59), 48, &[])
+            .is_none());
+        let report = metrics
+            .report_if_due(
+                start + Duration::from_secs(60),
+                48,
+                &[(
+                    "Meta Tunnel".to_string(),
+                    "proxy_tun_default_excluded".to_string(),
+                )],
+            )
+            .unwrap();
+
+        assert_eq!(report["send_budget"], 48);
+        assert_eq!(report["send"]["if:7"]["broadcast"]["attempts"], 1);
+        assert_eq!(report["send"]["if:7"]["broadcast"]["success"], 1);
+        assert_eq!(report["send"]["if:7"]["multicast"]["failure"], 1);
+        assert_eq!(report["receive"]["announcements"], 2);
+        assert_eq!(report["receive"]["deduplicated"], 1);
+        assert_eq!(report["receive"]["replies"], 1);
+        assert_eq!(report["excluded_interfaces"][0]["name"], "Meta Tunnel");
+    }
+
+    #[test]
+    fn snapshot_read_failure_keeps_last_good_policy_or_fails_closed() {
+        let previous = DiscoveryNetworkSnapshot {
+            settings: DiscoverySettings {
+                local_discovery: false,
+                vpn_discovery: true,
+                interface_overrides: std::collections::BTreeMap::new(),
+            },
+            interfaces: Vec::new(),
+        };
+
+        assert_eq!(
+            snapshot_after_read(Some(&previous), Err("database unavailable".into())),
+            previous,
+        );
+
+        let initial = snapshot_after_read(None, Err("database unavailable".into()));
+        assert!(!initial.settings.local_discovery);
+        assert!(!initial.settings.vpn_discovery);
+        assert!(initial.interfaces.is_empty());
+    }
+
+    #[test]
     fn offline_is_noticed_within_a_couple_seconds_of_the_timeout() {
-        // 实际感知延迟 = 离线超时 + 扫描间隔。扫描间隔一旦接近甚至超过超时，
-        // 「10 秒判离线」在用户看来就变成 15 秒以上。
+        // 实际感知延迟 = 离线超时 + 扫描间隔；扫描粒度必须显著小于兼容超时。
         let timeout = crate::peers::PEER_OFFLINE_TIMEOUT_SECS;
         let scan = OFFLINE_SCAN_INTERVAL.as_secs();
         assert!(
@@ -1021,43 +2919,22 @@ mod tests {
     }
 
     #[test]
-    fn interface_sockets_skip_addresses_that_are_not_local() {
-        // 203.0.113.7 是 RFC 5737 文档网段，本机不可能持有 → 必须被跳过
-        let sockets = interface_sockets(&[
-            "127.0.0.1".to_string(),
-            "203.0.113.7".to_string(),
-            "not-an-ip".to_string(),
-        ]);
-        assert_eq!(sockets.len(), 1);
-        assert_eq!(sockets[0].0, Ipv4Addr::LOCALHOST);
-    }
-
-    #[test]
-    fn per_interface_targets_cover_limited_broadcast_and_multicast() {
-        // 绑定源地址后这两个目标都只走本网卡，因此无需知道子网掩码
-        let targets = per_interface_targets(8888);
-        let ips: Vec<_> = targets.iter().map(|target| target.ip().to_string()).collect();
-        assert!(ips.contains(&"255.255.255.255".to_string()));
-        assert!(ips.contains(&MULTICAST_IP.to_string()));
-        assert!(targets.iter().all(|target| target.port() == 8888));
-    }
-
-    #[test]
-    fn brute_force_fallback_still_covers_android_hotspot_ranges() {
-        // 逐网卡发送是新增路径，不能顺手削弱 Android 的兜底覆盖
-        let addrs = get_smart_broadcast_addresses(8888);
-        assert!(addrs.contains(&"255.255.255.255:8888".to_string()));
-        assert!(addrs.contains(&"172.20.10.15:8888".to_string()));
-        assert!(addrs.contains(&"192.168.0.255:8888".to_string()));
-        assert!(addrs.contains(&"192.168.255.255:8888".to_string()));
-    }
-
-    #[test]
     fn local_ip_address_never_returns_loopback_or_unspecified() {
         if let Some(address) = local_ip_address() {
             let address: std::net::IpAddr = address.parse().unwrap();
             assert!(!address.is_loopback());
             assert!(!address.is_unspecified());
         }
+    }
+
+    #[test]
+    fn all_off_snapshot_has_no_display_or_cached_ip_fallback() {
+        let mut snapshot = listener_test_snapshot();
+        for interface in &mut snapshot.interfaces {
+            interface.enabled = false;
+        }
+
+        assert_eq!(local_ip_for_snapshot(&snapshot), None);
+        assert_eq!(cached_ip_list(&Some(Vec::new())), Some(Vec::new()));
     }
 }

@@ -104,6 +104,7 @@ fn main() {
             lanchat::commands::clear_chat_history,
             lanchat::commands::delete_user_complete,
             lanchat::commands::get_custom_peers,
+            lanchat::commands::test_custom_peer,
             lanchat::commands::add_custom_peer,
             lanchat::commands::remove_custom_peer,
             lanchat::commands::show_notification,

@@ -121,6 +121,11 @@ description = "Allows reading custom peer IP addresses"
 commands.allow = ["get_custom_peers"]
 
 [[permission]]
+identifier = "allow-test-custom-peer"
+description = "Allows testing a custom peer address and reading its device identity"
+commands.allow = ["test_custom_peer"]
+
+[[permission]]
 identifier = "allow-add-custom-peer"
 description = "Allows adding a custom peer IP address"
 commands.allow = ["add_custom_peer"]

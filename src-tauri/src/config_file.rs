@@ -100,6 +100,19 @@ pub fn get_port_from_config() -> Option<u16> {
     read_config().port
 }
 
+pub fn parse_server_port(value: &str) -> Result<u16, String> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("invalid port".to_string());
+    }
+    let port = value
+        .parse::<u16>()
+        .map_err(|_| "invalid port".to_string())?;
+    if port == 0 {
+        return Err("invalid port".to_string());
+    }
+    Ok(port)
+}
+
 /// 保存端口到配置
 pub fn save_port_to_config(port: u16) -> Result<(), String> {
     if port == 0 {
@@ -125,4 +138,19 @@ pub fn save_lang_to_config(lang: &str) -> Result<(), String> {
     let mut cfg = read_config();
     cfg.lang = Some(lang.to_string());
     write_config(&cfg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_server_port;
+
+    #[test]
+    fn server_port_parser_matches_frontend_decimal_contract() {
+        for value in ["1", "8888", "65535"] {
+            assert!(parse_server_port(value).is_ok(), "{value}");
+        }
+        for value in ["", "0", "65536", "1e3", "+1", " 1", "1.5"] {
+            assert!(parse_server_port(value).is_err(), "{value}");
+        }
+    }
 }

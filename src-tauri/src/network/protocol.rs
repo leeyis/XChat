@@ -208,12 +208,13 @@ pub fn parse_protocol_value(value: Value) -> Result<Option<ProtocolMessage>, Str
 
 pub async fn send_protocol_message(
     peer_addr: &str,
+    expected_peer_id: &str,
     message: &ProtocolMessage,
 ) -> Result<(), String> {
     message.validate()?;
     let json =
         serde_json::to_string(message).map_err(|error| format!("serialize protocol: {error}"))?;
-    super::messaging::send_json_via_ws(peer_addr, &json).await
+    super::messaging::send_json_via_ws(peer_addr, expected_peer_id, &json).await
 }
 
 #[cfg(test)]

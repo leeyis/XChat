@@ -76,6 +76,7 @@ pub fn run() {
             commands::request_file,
             commands::delete_user_complete,
             commands::get_custom_peers,
+            commands::test_custom_peer,
             commands::add_custom_peer,
             commands::remove_custom_peer,
             commands::show_notification,

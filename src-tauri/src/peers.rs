@@ -4,11 +4,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// 心跳 2 秒一次，10 秒即连丢 5 拍才判离线 —— 用户要的是及时反馈，
-// 长超时会让「对方已经关了程序」这件事迟迟不显示。
-// 代价是 Wi-Fi 抖动可能偶发误判，但对方一有心跳就立刻恢复在线，
-// 且发送失败会 force_mark_offline 兜底，误判的成本只是提示闪一下。
-pub(crate) const PEER_OFFLINE_TIMEOUT_SECS: u64 = 10;
+// 发现稳态间隔为 24–36 秒。至少容忍两个最慢发现周期，再留 3 秒给
+// 调度抖动，避免设备在两轮合法公告之间被反复标离线。
+pub(crate) const PEER_OFFLINE_TIMEOUT_SECS: u64 = 75;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Peer {
@@ -235,7 +233,7 @@ impl PeerManager {
         let mut peers = self.peers.write().unwrap();
         let mut newly_offline = Vec::new();
 
-        // 2 秒心跳连丢 5 拍才判离线，短时抖动不会立刻翻转。
+        // A0 的低频发现不是心跳；PresenceService 上线前使用兼容超时防止抖动。
         for peer in peers.values_mut() {
             let time_since_seen = now.saturating_sub(peer.last_seen);
             if time_since_seen > PEER_OFFLINE_TIMEOUT_SECS && !peer.is_offline {
@@ -399,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn heartbeat_jitter_does_not_flap_peer_online_state() {
+    fn presence_timeout_does_not_flap_peer_online_state() {
         let manager = PeerManager::new();
         manager.add_or_update("peer-1".into(), "Alice".into(), "127.0.0.1:8888".into());
         {
@@ -407,7 +405,7 @@ mod tests {
             peers.get_mut("peer-1").unwrap().last_seen = 1_000;
         }
 
-        // 心跳每 2 秒一次，短时抖动/丢包不应把用户判成离线
+        // 短时调度抖动或丢包不应把用户判成离线。
         manager.mark_stale_as_offline_at(1_000 + PEER_OFFLINE_TIMEOUT_SECS / 2);
         assert!(!manager.peers.read().unwrap()["peer-1"].is_offline);
 
@@ -419,6 +417,21 @@ mod tests {
 
         manager.mark_stale_as_offline_at(1_001 + PEER_OFFLINE_TIMEOUT_SECS);
         assert!(manager.peers.read().unwrap()["peer-1"].is_offline);
+    }
+
+    #[test]
+    fn low_frequency_discovery_does_not_flap_before_two_max_intervals() {
+        let manager = PeerManager::new();
+        manager.add_or_update("peer-1".into(), "Alice".into(), "127.0.0.1:8888".into());
+        {
+            let mut peers = manager.peers.write().unwrap();
+            peers.get_mut("peer-1").unwrap().last_seen = 1_000;
+        }
+
+        // Discovery can legally wait 36 seconds, so presence timeout must
+        // tolerate two such intervals.
+        manager.mark_stale_as_offline_at(1_072);
+        assert!(!manager.peers.read().unwrap()["peer-1"].is_offline);
     }
 
     #[test]
