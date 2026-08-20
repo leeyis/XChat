@@ -1,5 +1,27 @@
 # 进度日志
 
+## 会话：2026-08-20 最大并行通道完整实现
+
+### 阶段 18：范围确认与实施规划
+- **状态：** in_progress
+- 执行的操作：
+  - 对照用户截图、原型、设计文档、生产 React 设置页、Rust 设置接口和 Git 历史完成诊断。
+  - 确认截图内容来自已批准原型；生产端从未接入对应字段，当前并行 v2 固定使用 4 个范围。
+  - 确认本轮必须覆盖真实设置持久化、Tauri/Web 双入口、新传输调度、旧端回退与生产 UI，不能只显示下拉框。
+  - 用户明确要求开始完整实现；继续沿用当前仓库建分支、不建 worktree 的工作方式。
+  - 已创建 `agent/parallel-transfer-channels` 分支。
+  - 代码图确认设置快照和 SQLite KV 可直接扩展；发现 capability 可承载新协议协商。
+  - 确认当前每个文件独立并发四个大范围且没有全局限流；拟采用共享限流代际与小范围 worker 队列，同时保持旧 v2 固定四范围回退。
+  - 审计首次发送、离线恢复和显式重试，确认三条路径都必须从布尔 `parallel_v2` 升级为同一协商传输计划。
+  - 审计接收 manifest，确认 v2 的 prepare 与恢复都锁死四范围；可调并发需要显式 v3 manifest 校验，不能静默改变 v2 语义。
+  - 建立干净基线：`rtk npm test` 98/98 通过；`rtk cargo test --manifest-path src-tauri/Cargo.toml --lib` 125/125 通过。
+  - 审计设置双入口和前端 adapter，确认字段可无迁移接入现有 KV，并由现有 Tauri/Web 对等测试覆盖。
+  - 确认接收端稳定状态机可复用任意合法 manifest；决定新增显式 v3 路由/capability，完整保留 v2 固定四范围契约。
+  - 找到现有真实 fake receiver 与 prepare handler 测试 seam，可用端到端峰值/交错记录验证全局并发与公平性。
+  - 已写入 `docs/superpowers/plans/2026-08-20-xchat-configurable-transfer-channels.md`，把实现拆为设置持久化、代际限流、双 API、v3 协议、全局调度、前端和最终验证七个测试先行阶段。
+- 下一步：
+  - 按实施计划从设置持久化与全局限流的失败测试开始执行。
+
 ## 会话：2026-08-19 Windows A0/A1 收敛
 
 ### 阶段 16：范围确认与短设计

@@ -11,6 +11,26 @@
 - 文件补充要求：从系统拖文件到输入区后先进入附件草稿，点击发送才传输；发送时显示进度和速度并支持并行传输；完成文件的“打开”使用可选菜单同时提供打开文件和打开目录。
 
 ## 研究发现
+- 2026-08-20：用户截图中的“最大并行通道”完整文案只存在于 `ui-ref/xchat-desktop-prototype.html`；生产 `SettingsWorkspace`、设置归一化、Tauri/HTTP 设置接口和可见 Git 历史均没有对应字段。
+- 2026-08-20：当前并行文件 v2 并非缺少并行能力，而是 `parallel_chunk_ranges` 固定把大文件分成 4 份；旧端能力回退、失败回滚、断点恢复、SHA-256 校验和 finalize 幂等已经有稳定测试基础。
+- 2026-08-20：跨网段端点修复提交没有修改 `frontend/`，因此该设置缺失不是本次端点修复造成；设计文档明确将 4/8/16 配置列为阶段 E。
+- 2026-08-20：用户已基于现有原型要求完整实施。实现必须同时覆盖前端、Tauri/HTTP 设置、SQLite KV、发送端分块/并发调度和兼容语义，不能只恢复一个无效下拉框。
+- 2026-08-20：`WorkspaceSettings` 已是桌面/Web 共用设置快照，Tauri 与 HTTP 也共享通用 SQLite settings KV；新增 `max_parallel_channels` 可以沿用现有 seam，无需数据库迁移或新增命令/路由。
+- 2026-08-20：当前发现只声明 `parallel_file_v2`，PeerManager 会保存权威 capabilities；这足以把旧 v2 识别为固定 4 通道，但 8/16 必须增加可协商的新能力，不能直接向旧接收端发送不同 manifest。
+- 2026-08-20：当前 `upload_parallel_chunks` 一次把全部四个范围放入 `FuturesUnordered`，没有跨文件共享的并发控制。完整实现需要进程级共享限流代际：同一设置代际的新传输共享上限，保存新值后创建新代际，已有传输继续持有旧代际，符合“只影响新开始传输”。
+- 2026-08-20：为兼顾全局公平性，新协议不能继续只生成与通道数相同的超大范围；应生成有界的小范围队列，每个文件只运行至多协商通道数的 worker，每个范围分别取得全局公平信号量许可，使后到文件能在前一文件的范围完成后获得通道。
+- 2026-08-20：`UploadJob` 目前只有 `parallel_v2: bool`；首次发送、离线恢复和显式重试都只根据对端是否声明 `parallel_file_v2` 决定协议。新实现应把它提升为显式传输计划（顺序 v1、固定四范围 v2、可调 worker 的 v3），确保所有入口使用相同协商结果。
+- 2026-08-20：接收端不仅在 prepare 时要求 `chunks == parallel_chunk_ranges(file_size)`，加载落盘 manifest 时也再次要求固定四范围且 `version == 2`。支持公平的小范围队列必须新增 manifest 版本并用“索引连续、offset 无缝、长度正数、完整覆盖且数量有界”的独立校验，同时继续接受旧 v2 manifest。
+- 2026-08-20：`send_path` 会为同一逻辑文件的所有在线收件人同时 spawn 独立上传；因此全局上限必须位于共享 transfer runtime，而不是单个 `UploadJob` 或单个会话内部。SHA-256 仍可按现有方式只计算一次并在各收件人任务间复用。
+- 2026-08-20：`network::transfer` 已有进程级 `OnceLock<TransferCancellationRegistry>` 先例；可在同一模块加入可独立测试的 `TransferConcurrencyController` 和生产单例，避免把调度状态塞进 Tauri/Axum 两套 AppState。
+- 2026-08-20：React `normalizeSettings`、`SETTINGS_PATCH_KEYS`、Tauri/Web `patchSettings` 与现有双 adapter 对等测试提供完整前端 seam。新增字段应统一命名为后端 `max_parallel_channels`、Tauri payload `maxParallelChannels`，非法或旧快照统一归一为默认 4。
+- 2026-08-20：Rust `get_settings`、workspace snapshot、HTTP settings 和两条更新入口均可复用同一 transfer setting helper；允许值只接受 4/8/16，缺失或损坏的历史值读取为 4，显式非法更新返回错误而不覆盖旧值。
+- 2026-08-20：接收端在 manifest 通过校验后，分块接收、恢复扫描、进度聚合、顺序合并和 SHA-256 校验均按 `manifest.chunks` 泛化工作；v3 的主要接收改动可以限制在新路由、manifest 版本与安全覆盖校验，不必重写稳定的数据落盘状态机。
+- 2026-08-20：实施计划已固化为七个可独立验证阶段；协议选择明确为 v1 顺序、v2 固定四范围、v3 可调 worker，所有实际 HTTP 分块请求统一经过进程级代际信号量。
+- 2026-08-20：推荐保留 `/api/uploads/v2/*` 的固定四范围契约，并新增 `/api/uploads/v3/*`；新 discovery capability 声明 v3 与最大 16，发送端仅在对端明确声明时使用 v3。这样旧接收端永远不会收到其无法解释的新清单。
+- 2026-08-20：全局限制应覆盖 v1 顺序上传、v2 固定四范围和 v3 worker；v1 每次 HTTP 分块占一个许可，v2/v3 每个范围请求占一个许可，才能让“所有文件传输共享全局上限”在混合版本设备间成立。
+- 2026-08-20：现有 Rust 测试已具备真实 Axum fake receiver、临时 SQLite 和 `run_upload` 调用 seam；可扩展为两个 v3 上传并记录同时处理的范围数，直接验证跨文件峰值不超过设置且第二个文件能在第一个完成前取得通道，而不是只测试信号量内部字段。
+- 2026-08-20：现有 Web 测试直接调用 prepare handler 并检查 manifest/状态，适合先锁定 v2 仍只接受固定四范围、v3 接受安全覆盖清单，以及重启加载 v2/v3 manifest 的兼容行为。
 - 2026-08-19：`2026-08-18-xchat-network-presence-message-reliability-design.md` 明确标注“产品方向与 UI 原型已确认，工程方案待评审”；因此原型门禁已满足，但仍需先审查工程分阶段与现有调用链，不能把 A–E 五阶段一次性合并实施。
 - 2026-08-19：最新原型已覆盖按接口发现、代理 TUN 风险确认、固定地址入口、四态连接横幅、三档上下线提醒、真实消息状态文案及 4/8/16 最大并行通道。原型脚本中的定时状态推进有明确注释仅供原型演示，生产实现必须由持久化、传输写入和明确 ACK 事件驱动。
 - 2026-08-19：当前工作树位于 `main`，领先 `origin/main` 1 个文档提交，且 `src/index.html` 有用户修改；后续实现必须避免覆盖该文件和已有工作。
