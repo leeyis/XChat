@@ -26,6 +26,28 @@ test("selected settings tab keeps a transparent background", async () => {
   assert.doesNotMatch(selected, /font-weight\s*:/);
 });
 
+test("download settings expose the approved maximum parallel channel control", async () => {
+  const app = await readFile(new URL("./App.jsx", import.meta.url), "utf8");
+  const downloadSettings = app.slice(
+    app.indexOf('id="settings-download"'),
+    app.indexOf('id="settings-network"'),
+  );
+
+  assert.match(app, /maxParallelChannels:\s*"最大并行通道"/);
+  assert.match(
+    app,
+    /兼顾兼容性与资源占用。保存后对新开始的传输生效；旧版设备会自动使用 4 个通道。/,
+  );
+  assert.match(downloadSettings, /form\.max_parallel_channels/);
+  assert.match(
+    downloadSettings,
+    /change\("max_parallel_channels",\s*Number\(event\.target\.value\)\)/,
+  );
+  for (const value of [4, 8, 16]) {
+    assert.match(downloadSettings, new RegExp(`value=\\{${value}\\}`));
+  }
+});
+
 test("selected file source avoids accent-tinted backgrounds", async () => {
   const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
   const selected = css.match(/\.source-filter\.selected\s*\{([^}]*)\}/)?.[1];

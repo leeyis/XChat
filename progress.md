@@ -1,5 +1,52 @@
 # 进度日志
 
+## 会话：2026-08-20 最大并行通道完整实现
+
+### 阶段 18：范围确认与实施规划
+- **状态：** in_progress
+- 执行的操作：
+  - 对照用户截图、原型、设计文档、生产 React 设置页、Rust 设置接口和 Git 历史完成诊断。
+  - 确认截图内容来自已批准原型；生产端从未接入对应字段，当前并行 v2 固定使用 4 个范围。
+  - 确认本轮必须覆盖真实设置持久化、Tauri/Web 双入口、新传输调度、旧端回退与生产 UI，不能只显示下拉框。
+  - 用户明确要求开始完整实现；继续沿用当前仓库建分支、不建 worktree 的工作方式。
+  - 已创建 `agent/parallel-transfer-channels` 分支。
+  - 代码图确认设置快照和 SQLite KV 可直接扩展；发现 capability 可承载新协议协商。
+  - 确认当前每个文件独立并发四个大范围且没有全局限流；拟采用共享限流代际与小范围 worker 队列，同时保持旧 v2 固定四范围回退。
+  - 审计首次发送、离线恢复和显式重试，确认三条路径都必须从布尔 `parallel_v2` 升级为同一协商传输计划。
+  - 审计接收 manifest，确认 v2 的 prepare 与恢复都锁死四范围；可调并发需要显式 v3 manifest 校验，不能静默改变 v2 语义。
+  - 建立干净基线：`rtk npm test` 98/98 通过；`rtk cargo test --manifest-path src-tauri/Cargo.toml --lib` 125/125 通过。
+  - 审计设置双入口和前端 adapter，确认字段可无迁移接入现有 KV，并由现有 Tauri/Web 对等测试覆盖。
+  - 确认接收端稳定状态机可复用任意合法 manifest；决定新增显式 v3 路由/capability，完整保留 v2 固定四范围契约。
+  - 找到现有真实 fake receiver 与 prepare handler 测试 seam，可用端到端峰值/交错记录验证全局并发与公平性。
+  - 已写入 `docs/superpowers/plans/2026-08-20-xchat-configurable-transfer-channels.md`，把实现拆为设置持久化、代际限流、双 API、v3 协议、全局调度、前端和最终验证七个测试先行阶段。
+  - RED：新增设置/限流测试首次编译出现 14 个预期缺失符号错误，确认测试确实约束未实现行为。
+  - GREEN：实现设置键、默认值、4/8/16 校验、损坏值回退，以及共享 `Semaphore` 的进程级代际限流器；`rtk cargo test --manifest-path src-tauri/Cargo.toml --lib max_parallel_channels` 5/5 通过。
+  - 限流许可等待保留 Tokio semaphore 的原始排队位置，并每 25ms 检查取消 token；取消会丢弃等待 future，不占用或泄漏 permit。
+  - RED：Workspace/Web 新测试首次得到缺失 `max_parallel_channels` 字段的预期编译错误；同时修正测试中 opaque `IntoResponse` 必须先显式转换的调用方式。
+  - GREEN：Workspace 快照、旧版 `get_settings` Tauri JSON、Tauri `update_settings`、HTTP get/update 已全部接入同一验证/持久化 helper；非法值在任何其他字段写入前返回。
+  - `rtk cargo test --manifest-path src-tauri/Cargo.toml --lib parallel_channels` 8/8 通过，覆盖默认快照、HTTP 解析、有效保存和非法值不覆盖。
+  - RED：v3 协商/分块/manifest 测试首次出现 34 个预期缺失符号错误；随后逐步补齐协议模型并用编译错误找出全部旧布尔调用点。
+  - GREEN：新增 `parallel_file_v3:16` capability、显式 v1/v2/v3 `UploadPlan`、有界公平分块生成器、严格覆盖校验和 v3 prepare/chunk 路由；v2 固定四范围与原路由保持不变。
+  - 初次发送、等待上线恢复、显式恢复和失败重试现统一读取当前本地设置并对 peer capabilities 运行同一协商函数；并行发送按协商 channel 数限制单文件 worker 数。
+  - 新增 Web handler 测试确认 v3 manifest 落盘为 version 3，v2 prepare/chunk 路由拒绝该布局；`rtk cargo test --manifest-path src-tauri/Cargo.toml --lib` 全量 138/138 通过。
+  - RED：双 v3 fake receiver 测试先因 `UploadJob` 尚未捕获 limiter 代际而编译失败；在途取消测试随后稳定复现请求会等待 5 秒服务端响应、1 秒内无法退出。
+  - GREEN：每个新 job 捕获当前设置对应的 limiter 代际；v1 每个 multipart chunk、v2/v3 每个 range 都在真实 HTTP 请求期间持有同一全局 permit。
+  - v3 双传输实测峰值不超过 4，且第二个 transfer ID 在第一个文件的全部范围启动前已出现；v1 与 v2 在许可池耗尽时均无数据请求越过门禁。
+  - 对 prepare、分块 send 和响应体读取统一增加 25ms 原子取消轮询；在途取消现于 1 秒断言内返回并允许替代请求立即取得释放的 permit。
+  - 4/8/16 三档均新增“持满后额外 try_acquire 失败、释放后恢复完整许可数”测试；最终 Rust 全量回归 142/142 通过，三档设置定向测试 9/9 通过。
+  - RED：前端归一化、脏状态/保存/reset 和双 adapter 参数测试先因缺失导出而失败；生产设置控件静态契约测试先因缺失原型文案与字段绑定而失败。
+  - GREEN：设置归一化仅接受数字 4/8/16，旧/非法快照回退 4；共享 patch helper 保证新字段参与保存和重载，Tauri 发送 `maxParallelChannels`、HTTP 发送 `max_parallel_channels`。
+  - 已在“自动接收文件”正下方接入批准的 4/8/16 下拉框、中英文文案和随选项变化的资源提示；`rtk npm test` 101/101 通过，`rtk npm run build` 成功刷新生产资源。
+  - desktop library 与 headless Web feature 均通过 `cargo check`；Rust library 全量回归最终为 144/144，前端全量回归为 101/101。
+  - 浏览器生产 UI 已验证默认 4、保存/重载 8 与 16、重置回 4、窄桌面宽度无横向溢出且控制项与批准原型一致。
+  - 独立 Tauri WebView 实例已验证 8 的保存与进程重启持久化、16 的动态提示及重置回 4；未替换或关闭 `/Applications/Xchat.app` 中用户原有实例。
+  - 固定端点双实例真实传输已验证 Web→Tauri v3/8，以及双 Web v3c16 的 39,283,312 字节文件；后者发送/接收 SHA-256 均为 `9b1b377d0db55de24fae63f0bdc9b18c38b427e77e31e1039844cef350911e5a`。
+  - 最终代码审查发现并修复 manifest 布局复用边界：v3 ID 编码通道布局，恢复保持原 v2/v3 计划，设置/能力导致布局变化时使用新 retry ID，避免接收端永久返回 manifest conflict。
+  - v3 双上传 fake receiver 回归现逐档执行 4/8/16，均验证全局峰值不超限且第二个文件在第一个耗尽工作队列前取得通道；旧 v1/v2 回退、恢复和取消继续由确定性集成测试覆盖。
+  - 本机没有可供运行的真实旧二进制和第二台跨网段真机；因此未把同机验证表述为完整真机矩阵。真实测试可在两端安装本次新版本以验证 8/16，混合旧版时预期固定回退 4。
+- 下一步：
+  - 提交最终兼容修复与验证记录，合并到本地 `main`，并在合并结果上复跑全量测试。
+
 ## 会话：2026-08-19 Windows A0/A1 收敛
 
 ### 阶段 16：范围确认与短设计

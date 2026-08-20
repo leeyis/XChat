@@ -29,12 +29,13 @@ import {
   nativeCaptureShortcutAvailable,
   nativeDragDropTarget,
   discoveryInterfaceState,
-  discoverySettingsEqual,
   discoverySummary,
   formatMessageTime,
   messageTimeDividerIndices,
   recommendedDiscoverySettings,
   retainedMentionIds,
+  settingsFormDirty,
+  settingsPatch,
   shortcutLabelFromEvent,
   validServerPort,
   withDiscoveryInterfaceSelection,
@@ -250,6 +251,16 @@ const copy = {
     chooseFolder: "选择文件夹",
     autoReceiveFiles: "自动接收文件",
     autoReceiveFilesHint: "关闭后文件停在待接收状态",
+    maxParallelChannels: "最大并行通道",
+    maxParallelChannelsAria: "文件传输最大并行通道",
+    maxParallelChannelsDefault: "4（默认）",
+    maxParallelChannelsHint: (channels) =>
+      ({
+        4: "兼顾兼容性与资源占用。保存后对新开始的传输生效；旧版设备会自动使用 4 个通道。",
+        8: "同一时间传输更多数据块。保存后对新开始的传输生效；旧版设备会自动使用 4 个通道。",
+        16: "适合高速网络与高性能存储，会增加 CPU 和磁盘占用。保存后对新开始的传输生效；旧版设备仍自动使用 4 个通道。",
+      })[channels] ??
+      "兼顾兼容性与资源占用。保存后对新开始的传输生效；旧版设备会自动使用 4 个通道。",
     network: "网络",
     serverPort: "服务端口",
     invalidServerPort: "请输入 1–65535 之间的整数端口",
@@ -559,6 +570,16 @@ const copy = {
     chooseFolder: "Choose folder",
     autoReceiveFiles: "Automatically receive files",
     autoReceiveFilesHint: "When off, files wait for manual acceptance",
+    maxParallelChannels: "Maximum parallel channels",
+    maxParallelChannelsAria: "Maximum parallel file-transfer channels",
+    maxParallelChannelsDefault: "4 (default)",
+    maxParallelChannelsHint: (channels) =>
+      ({
+        4: "Balances compatibility and resource use. Applies to newly started transfers after saving; older devices automatically use 4 channels.",
+        8: "Transfers more data chunks concurrently. Applies to newly started transfers after saving; older devices automatically use 4 channels.",
+        16: "For fast networks and high-performance storage; uses more CPU and disk resources. Applies to newly started transfers after saving; older devices still use 4 channels.",
+      })[channels] ??
+      "Balances compatibility and resource use. Applies to newly started transfers after saving; older devices automatically use 4 channels.",
     network: "Network",
     serverPort: "Server port",
     invalidServerPort: "Enter an integer port from 1 to 65535",
@@ -3361,40 +3382,6 @@ function SettingRow({ label, detail, children }) {
   );
 }
 
-const SETTINGS_PATCH_KEYS = [
-  "name",
-  "avatar",
-  "theme",
-  "language",
-  "notifications_enabled",
-  "download_path",
-  "auto_download",
-  "port",
-  "db_path",
-  "discovery_settings",
-  "capture_shortcut",
-];
-
-function settingValueEqual(key, left, right, networkInterfaces = []) {
-  if (key === "port") return String(left ?? "") === String(right ?? "");
-  if (key === "discovery_settings") {
-    return discoverySettingsEqual(left, right, networkInterfaces);
-  }
-  return left === right;
-}
-
-function settingsFormDirty(form, baseline) {
-  return SETTINGS_PATCH_KEYS.some(
-    (key) =>
-      !settingValueEqual(
-        key,
-        form[key],
-        baseline[key],
-        baseline.network_interfaces || [],
-      ),
-  );
-}
-
 function SettingsWorkspace({
   state,
   workspace,
@@ -3541,19 +3528,7 @@ function SettingsWorkspace({
         <button
           className="primary-button"
           onClick={async () => {
-            const patch = Object.fromEntries(
-              SETTINGS_PATCH_KEYS
-                .filter(
-                  (key) =>
-                    !settingValueEqual(
-                      key,
-                      form[key],
-                      state.settings[key],
-                      state.settings.network_interfaces || [],
-                    ),
-                )
-                .map((key) => [key, form[key]]),
-            );
+            const patch = settingsPatch(form, state.settings);
             const result = await workspace.dispatch({ type: "settings.patch", patch });
             if (result.ok) setDirty(false);
           }}
@@ -3695,6 +3670,20 @@ function SettingsWorkspace({
             detail={labels.autoReceiveFilesHint}
           >
             <input type="checkbox" checked={form.auto_download} onChange={(event) => change("auto_download", event.target.checked)} />
+          </SettingRow>
+          <SettingRow
+            label={labels.maxParallelChannels}
+            detail={labels.maxParallelChannelsHint(form.max_parallel_channels)}
+          >
+            <select
+              value={form.max_parallel_channels}
+              aria-label={labels.maxParallelChannelsAria}
+              onChange={(event) => change("max_parallel_channels", Number(event.target.value))}
+            >
+              <option value={4}>{labels.maxParallelChannelsDefault}</option>
+              <option value={8}>8</option>
+              <option value={16}>16</option>
+            </select>
           </SettingRow>
         </section>
         <section className="settings-section" id="settings-network">

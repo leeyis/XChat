@@ -80,6 +80,7 @@ pub struct WorkspaceSettings {
     pub notifications_enabled: bool,
     pub download_path: String,
     pub auto_download: bool,
+    pub max_parallel_channels: u8,
     pub port: u16,
     pub db_path: String,
     pub capture_shortcut: String,
@@ -512,6 +513,7 @@ pub async fn get_snapshot(
         notifications_enabled: db::get_notifications_enabled(pool).await,
         download_path: db::get_download_path(pool).await?,
         auto_download: db::get_auto_download(pool).await,
+        max_parallel_channels: crate::network::transfer::load_max_parallel_channels(pool).await?,
         port: config.port.or(db::get_port(pool).await).unwrap_or(8888),
         db_path: config
             .db_path
@@ -1844,6 +1846,25 @@ pub async fn update_preference(pool: &Pool<Sqlite>, key: &str, value: &str) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn workspace_settings_include_default_max_parallel_channels() {
+        let app_dir = std::env::temp_dir().join(format!(
+            "xchat-parallel-settings-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let pool = db::init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        let peer_manager = PeerManager::new();
+
+        let snapshot = get_snapshot(&pool, &peer_manager).await.unwrap();
+
+        assert_eq!(
+            snapshot.settings.max_parallel_channels,
+            crate::network::transfer::DEFAULT_MAX_PARALLEL_CHANNELS
+        );
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
 
     #[tokio::test]
     async fn one_failed_send_does_not_abort_the_rest_of_the_resend_queue() {

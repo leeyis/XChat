@@ -353,6 +353,15 @@ pub async fn start_server(
             "/api/uploads/v2/:transfer_id/:chunk_index",
             post(receive_parallel_upload_http),
         )
+        .route(
+            "/api/uploads/v3/prepare",
+            post(prepare_parallel_upload_v3_http)
+                .layer(DefaultBodyLimit::max(64 * 1024)),
+        )
+        .route(
+            "/api/uploads/v3/:transfer_id/:chunk_index",
+            post(receive_parallel_upload_v3_http),
+        )
         .route("/api/get_my_name", get(get_name_http))
         .route("/api/get_my_id", get(get_id_http))
         .route("/api/peer_identity", get(peer_identity_http))
@@ -1077,6 +1086,17 @@ async fn get_settings_http(State(state): State<Arc<AppState>>) -> impl IntoRespo
     let db_path = cfg.db_path.unwrap_or_else(crate::config_file::get_default_db_path);
 
     let auto_download = crate::db::get_auto_download(&state.pool).await;
+    let max_parallel_channels =
+        match crate::network::transfer::load_max_parallel_channels(&state.pool).await {
+            Ok(channels) => channels,
+            Err(error) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse { error }),
+                )
+                    .into_response();
+            }
+        };
     let discovery = match crate::network::discovery_policy::network_snapshot(&state.pool).await {
         Ok(discovery) => discovery,
         Err(error) => {
@@ -1093,6 +1113,7 @@ async fn get_settings_http(State(state): State<Arc<AppState>>) -> impl IntoRespo
         "port": port,
         "db_path": db_path,
         "auto_download": auto_download,
+        "max_parallel_channels": max_parallel_channels,
         "discovery_settings": discovery.settings,
         "network_interfaces": discovery.interfaces,
     }))
@@ -1106,6 +1127,7 @@ struct UpdateSettingsRequest {
     port: Option<String>,
     db_path: Option<String>,
     auto_download: Option<bool>,
+    max_parallel_channels: Option<u8>,
     discovery_settings: Option<crate::network::discovery_policy::DiscoverySettings>,
 }
 
@@ -1134,6 +1156,11 @@ async fn update_settings_http(
 ) -> impl IntoResponse {
     println!("[Web Server] 收到更新设置请求");
 
+    if let Some(channels) = payload.max_parallel_channels {
+        if let Err(error) = crate::network::transfer::validate_max_parallel_channels(channels) {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
+        }
+    }
     if let Some(ref path) = payload.download_path {
         if let Err(e) = crate::db::update_download_path(&state.pool, path.clone()).await {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
@@ -1165,6 +1192,13 @@ async fn update_settings_http(
     }
     if let Some(enabled) = payload.auto_download {
         let _ = crate::db::set_auto_download(&state.pool, enabled).await;
+    }
+    if let Some(channels) = payload.max_parallel_channels {
+        if let Err(error) =
+            crate::network::transfer::save_max_parallel_channels(&state.pool, channels).await
+        {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
+        }
     }
     if let Some(settings) = payload.discovery_settings {
         if let Err(error) =
@@ -2712,16 +2746,18 @@ async fn handle_websocket(
                             println!("[手动下载] 发送端收到下载请求: msg_id={}, from={}", sender_msg_id, from_id);
 
                             // 从 peer manager 查找对方地址
-                            let receiver_addr = state.peer_manager.get_all_peers().iter()
-                                .find(|p| p.id == from_id)
-                                .map(|p| p.addr.clone())
+                            let receiver_peer = state
+                                .peer_manager
+                                .get_all_peers()
+                                .into_iter()
+                                .find(|peer| peer.id == from_id);
+                            let receiver_addr = receiver_peer
+                                .as_ref()
+                                .map(|peer| peer.addr.clone())
                                 .unwrap_or_default();
-                            let parallel_v2 = state.peer_manager.get_all_peers().iter()
-                                .find(|p| p.id == from_id)
-                                .is_some_and(|peer| peer.capabilities.iter().any(
-                                    |capability| capability
-                                        == crate::network::conversation_file::PARALLEL_FILE_CAPABILITY,
-                                ));
+                            let receiver_capabilities = receiver_peer
+                                .map(|peer| peer.capabilities)
+                                .unwrap_or_default();
 
                             if receiver_addr.is_empty() {
                                 eprintln!("[WebSocket] file_request: 找不到对方地址");
@@ -2745,7 +2781,7 @@ async fn handle_websocket(
                                     sender_msg_id,
                                     from_id,
                                     &receiver_addr,
-                                    parallel_v2,
+                                    &receiver_capabilities,
                                 )
                                 .await
                                 {
@@ -3312,12 +3348,29 @@ async fn prepare_parallel_upload_http(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<crate::network::conversation_file::ParallelPrepareRequest>,
 ) -> ApiResponse {
+    prepare_parallel_upload_for_version(state, payload, 2).await
+}
+
+async fn prepare_parallel_upload_v3_http(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<crate::network::conversation_file::ParallelPrepareRequest>,
+) -> ApiResponse {
+    prepare_parallel_upload_for_version(state, payload, 3).await
+}
+
+async fn prepare_parallel_upload_for_version(
+    state: Arc<AppState>,
+    payload: crate::network::conversation_file::ParallelPrepareRequest,
+    protocol_version: u8,
+) -> ApiResponse {
     use crate::network::conversation_file::{
         create_or_resume_parallel_manifest, load_parallel_manifest, valid_parallel_prepare,
         ParallelTransferManifest,
     };
 
-    if !valid_parallel_prepare(&payload) || payload.file_size > MAX_BROWSER_UPLOAD_BYTES {
+    if !valid_parallel_prepare(&payload, protocol_version)
+        || payload.file_size > MAX_BROWSER_UPLOAD_BYTES
+    {
         return api_error(StatusCode::BAD_REQUEST, "并行传输参数无效");
     }
     let Some(requested_file_name) = safe_file_name(&payload.file_name) else {
@@ -3501,7 +3554,7 @@ async fn prepare_parallel_upload_http(
     }
 
     let manifest = ParallelTransferManifest {
-        version: 2,
+        version: protocol_version,
         sender_id: payload.sender_id.clone(),
         conversation_id: payload.conversation_id.clone(),
         client_message_id: payload.client_message_id.clone(),
@@ -3782,6 +3835,24 @@ async fn receive_parallel_upload_http(
     Path((transfer_id, chunk_index)): Path<(String, usize)>,
     request: Request,
 ) -> ApiResponse {
+    receive_parallel_upload_for_version(state, transfer_id, chunk_index, request, 2).await
+}
+
+async fn receive_parallel_upload_v3_http(
+    State(state): State<Arc<AppState>>,
+    Path((transfer_id, chunk_index)): Path<(String, usize)>,
+    request: Request,
+) -> ApiResponse {
+    receive_parallel_upload_for_version(state, transfer_id, chunk_index, request, 3).await
+}
+
+async fn receive_parallel_upload_for_version(
+    state: Arc<AppState>,
+    transfer_id: String,
+    chunk_index: usize,
+    request: Request,
+    protocol_version: u8,
+) -> ApiResponse {
     let download_root = match crate::db::get_download_path(&state.pool).await {
         Ok(path) => std::path::PathBuf::from(path),
         Err(error) => return backend_error(error),
@@ -3806,6 +3877,9 @@ async fn receive_parallel_upload_http(
             Ok(None) => return api_error(StatusCode::NOT_FOUND, "并行传输尚未准备"),
             Err(error) => return backend_error(error),
         };
+    if manifest.version != protocol_version {
+        return api_error(StatusCode::BAD_REQUEST, "并行传输协议版本不匹配");
+    }
     let Some(chunk) = manifest
         .chunks
         .get(chunk_index)
@@ -5878,6 +5952,154 @@ mod websocket_protocol_tests {
 
             assert_eq!(payload.port.as_deref(), Some("8888"));
         }
+    }
+
+    #[test]
+    fn web_settings_request_accepts_max_parallel_channels() {
+        let payload: UpdateSettingsRequest = serde_json::from_value(serde_json::json!({
+            "max_parallel_channels": 16
+        }))
+        .unwrap();
+
+        assert_eq!(payload.max_parallel_channels, Some(16));
+    }
+
+    #[tokio::test]
+    async fn web_settings_update_persists_only_valid_max_parallel_channels() {
+        let app_dir = std::env::temp_dir().join(format!(
+            "xchat-web-parallel-settings-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let pool = crate::db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        let (ws_broadcast, _) = broadcast::channel(8);
+        let state = Arc::new(AppState {
+            pool: pool.clone(),
+            peer_manager: Arc::new(PeerManager::new()),
+            media_token: String::new(),
+            ws_broadcast,
+            #[cfg(feature = "desktop")]
+            app_handle: None,
+        });
+
+        let valid: UpdateSettingsRequest =
+            serde_json::from_value(serde_json::json!({ "max_parallel_channels": 8 })).unwrap();
+        let response = update_settings_http(State(state.clone()), Json(valid))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            crate::network::transfer::load_max_parallel_channels(&pool)
+                .await
+                .unwrap(),
+            8
+        );
+
+        let invalid: UpdateSettingsRequest =
+            serde_json::from_value(serde_json::json!({ "max_parallel_channels": 12 })).unwrap();
+        let response = update_settings_http(State(state), Json(invalid))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            crate::network::transfer::load_max_parallel_channels(&pool)
+                .await
+                .unwrap(),
+            8
+        );
+
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn v3_prepare_persists_version_and_v2_routes_reject_its_manifest() {
+        let app_dir = std::env::temp_dir().join(format!(
+            "xchat-web-parallel-v3-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let pool = crate::db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        let download_dir = app_dir.join("downloads");
+        crate::db::update_download_path(
+            &pool,
+            download_dir.to_string_lossy().into_owned(),
+        )
+        .await
+        .unwrap();
+        crate::db::set_auto_download(&pool, true).await.unwrap();
+        crate::db::save_or_update_user(
+            &pool,
+            "peer-a".into(),
+            "Alice".into(),
+            "127.0.0.1:9".into(),
+            true,
+            0,
+        )
+        .await
+        .unwrap();
+        let conversation = crate::db::ensure_direct_conversation(&pool, "peer-a")
+            .await
+            .unwrap();
+        let self_id = crate::db::get_user_id(&pool).await.unwrap();
+        let transfer_id =
+            crate::network::conversation_file::recipient_transfer_id("parallel-v3", &self_id);
+        let file_size = 4 * 1024 * 1024 + 17;
+        let payload = crate::network::conversation_file::ParallelPrepareRequest {
+            sender_id: "peer-a".into(),
+            conversation_id: conversation.id,
+            client_message_id: "parallel-v3".into(),
+            transfer_id: transfer_id.clone(),
+            sender_msg_id: "sender-v3".into(),
+            file_name: "report.bin".into(),
+            file_size,
+            file_sha256: "0".repeat(64),
+            chunks: crate::network::conversation_file::flexible_parallel_chunk_ranges(
+                file_size, 8,
+            ),
+        };
+        let (ws_broadcast, _) = broadcast::channel(8);
+        let state = Arc::new(AppState {
+            pool: pool.clone(),
+            peer_manager: Arc::new(PeerManager::new()),
+            media_token: String::new(),
+            ws_broadcast,
+            #[cfg(feature = "desktop")]
+            app_handle: None,
+        });
+
+        let response =
+            prepare_parallel_upload_v3_http(State(state.clone()), Json(payload.clone())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let manifest = crate::network::conversation_file::load_parallel_manifest(
+            &download_dir,
+            &transfer_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(manifest.version, 3);
+        assert!(manifest.chunks.len() > 4);
+
+        let response =
+            prepare_parallel_upload_http(State(state.clone()), Json(payload)).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let request = Request::builder()
+            .header(header::CONTENT_LENGTH, manifest.chunks[0].length)
+            .body(Body::empty())
+            .unwrap();
+        let response = receive_parallel_upload_http(
+            State(state),
+            Path((transfer_id, 0)),
+            request,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
     }
 
     #[test]

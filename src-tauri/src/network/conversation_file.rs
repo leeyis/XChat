@@ -2,7 +2,7 @@ use crate::{
     db::{self, ConversationMemberRecord, ConversationRecord, MessageRecord, TransferRecord},
     peers::PeerManager,
 };
-use futures_util::{stream::FuturesUnordered, StreamExt};
+use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Pool, Sqlite};
@@ -28,7 +28,11 @@ use super::{
 
 const CHUNK_SIZE: usize = 4 * 1024 * 1024;
 const PARALLEL_STREAM_BUFFER: usize = 256 * 1024;
+const PARALLEL_PARTS_PER_CHANNEL: usize = 4;
+const MAX_PARALLEL_PARTS: usize = 4096;
 pub const PARALLEL_FILE_CAPABILITY: &str = "parallel_file_v2";
+pub const PARALLEL_FILE_V3_CAPABILITY: &str = "parallel_file_v3:16";
+const PARALLEL_FILE_V3_CAPABILITY_PREFIX: &str = "parallel_file_v3:";
 type ReceiveTransferLock = tokio::sync::Mutex<()>;
 static RECEIVE_TRANSFER_LOCKS: OnceLock<Mutex<HashMap<String, Weak<ReceiveTransferLock>>>> =
     OnceLock::new();
@@ -73,8 +77,40 @@ struct UploadJob {
     message_id: i64,
     source: ValidatedSource,
     group_sync: Option<ProtocolMessage>,
-    parallel_v2: bool,
+    upload_plan: UploadPlan,
+    concurrency: super::transfer::TransferConcurrencyGeneration,
     file_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UploadProtocol {
+    SequentialV1,
+    FixedV2,
+    FlexibleV3,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UploadPlan {
+    protocol: UploadProtocol,
+    channels: u8,
+}
+
+impl UploadPlan {
+    const fn new(protocol: UploadProtocol, channels: u8) -> Self {
+        Self { protocol, channels }
+    }
+
+    fn is_parallel(self) -> bool {
+        self.protocol != UploadProtocol::SequentialV1
+    }
+
+    fn manifest_version(self) -> Option<u8> {
+        match self.protocol {
+            UploadProtocol::SequentialV1 => None,
+            UploadProtocol::FixedV2 => Some(2),
+            UploadProtocol::FlexibleV3 => Some(3),
+        }
+    }
 }
 
 enum UploadOutcome {
@@ -82,6 +118,25 @@ enum UploadOutcome {
     AwaitingAcceptance(i64),
     Cancelled(i64),
     Failed(i64, String),
+}
+
+async fn await_with_transfer_cancellation<F>(
+    future: F,
+    token: &super::transfer::TransferCancellationToken,
+) -> Option<F::Output>
+where
+    F: std::future::Future,
+{
+    tokio::pin!(future);
+    loop {
+        if token.load(Ordering::Acquire) {
+            return None;
+        }
+        tokio::select! {
+            output = &mut future => return Some(output),
+            _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -136,10 +191,90 @@ struct ParallelPrepareResponse {
     received: u64,
 }
 
-fn supports_parallel_file(capabilities: &[String]) -> bool {
+fn advertised_v3_limit(capabilities: &[String]) -> Option<u8> {
     capabilities
         .iter()
+        .filter_map(|capability| capability.strip_prefix(PARALLEL_FILE_V3_CAPABILITY_PREFIX))
+        .filter_map(|value| value.parse::<u8>().ok())
+        .filter_map(|value| super::transfer::validate_max_parallel_channels(value).ok())
+        .max()
+}
+
+fn negotiate_upload_plan(capabilities: &[String], local_limit: u8) -> UploadPlan {
+    let local_limit = super::transfer::validate_max_parallel_channels(local_limit)
+        .unwrap_or(super::transfer::DEFAULT_MAX_PARALLEL_CHANNELS);
+    let remote_v3_limit = advertised_v3_limit(capabilities);
+    if let Some(remote_limit) = remote_v3_limit {
+        return UploadPlan::new(UploadProtocol::FlexibleV3, local_limit.min(remote_limit));
+    }
+    if capabilities
+        .iter()
         .any(|capability| capability == PARALLEL_FILE_CAPABILITY)
+    {
+        return UploadPlan::new(UploadProtocol::FixedV2, 4);
+    }
+    UploadPlan::new(UploadProtocol::SequentialV1, 1)
+}
+
+fn encoded_v3_channels(transfer_id: &str) -> Option<u8> {
+    let (_, suffix) = transfer_id.rsplit_once(":retry:v3c")?;
+    let (channels, nonce) = suffix.split_once('-')?;
+    if nonce.is_empty() {
+        return None;
+    }
+    super::transfer::validate_max_parallel_channels(channels.parse().ok()?).ok()
+}
+
+fn transfer_id_matches_upload_plan(transfer_id: &str, upload_plan: UploadPlan) -> bool {
+    match upload_plan.protocol {
+        UploadProtocol::FlexibleV3 => {
+            encoded_v3_channels(transfer_id) == Some(upload_plan.channels)
+        }
+        UploadProtocol::SequentialV1 | UploadProtocol::FixedV2 => {
+            encoded_v3_channels(transfer_id).is_none()
+        }
+    }
+}
+
+fn new_transfer_id_for_plan(
+    client_message_id: &str,
+    peer_id: &str,
+    upload_plan: UploadPlan,
+    retry: bool,
+) -> String {
+    let base = recipient_transfer_id(client_message_id, peer_id);
+    match upload_plan.protocol {
+        UploadProtocol::FlexibleV3 => format!(
+            "{base}:retry:v3c{}-{}",
+            upload_plan.channels,
+            uuid::Uuid::new_v4()
+        ),
+        UploadProtocol::SequentialV1 | UploadProtocol::FixedV2 if retry => {
+            format!("{base}:retry:{}", uuid::Uuid::new_v4())
+        }
+        UploadProtocol::SequentialV1 | UploadProtocol::FixedV2 => base,
+    }
+}
+
+fn upload_plan_for_resume(
+    transfer_id: &str,
+    capabilities: &[String],
+    local_limit: u8,
+) -> UploadPlan {
+    if let Some(channels) = encoded_v3_channels(transfer_id) {
+        if advertised_v3_limit(capabilities).is_some_and(|remote| remote >= channels) {
+            return UploadPlan::new(UploadProtocol::FlexibleV3, channels);
+        }
+        return negotiate_upload_plan(capabilities, local_limit);
+    }
+    if capabilities
+        .iter()
+        .any(|capability| capability == PARALLEL_FILE_CAPABILITY)
+    {
+        UploadPlan::new(UploadProtocol::FixedV2, 4)
+    } else {
+        UploadPlan::new(UploadProtocol::SequentialV1, 1)
+    }
 }
 
 pub async fn send_path(
@@ -174,11 +309,26 @@ pub async fn send_path(
             })
         })
         .collect();
+    let local_limit = super::transfer::load_max_parallel_channels(pool).await?;
+    let concurrency = super::transfer::concurrency_controller().generation(local_limit)?;
+    let upload_plans: HashMap<_, _> = recipient_ids
+        .iter()
+        .map(|peer_id| {
+            let capabilities = peers
+                .get(peer_id)
+                .map(|peer| peer.capabilities.as_slice())
+                .unwrap_or_default();
+            (
+                peer_id.clone(),
+                negotiate_upload_plan(capabilities, local_limit),
+            )
+        })
+        .collect();
     let parallel_hash = if recipient_ids.iter().any(|peer_id| {
         online_addresses.contains_key(peer_id)
-            && peers
+            && upload_plans
                 .get(peer_id)
-                .is_some_and(|peer| supports_parallel_file(&peer.capabilities))
+                .is_some_and(|plan| plan.is_parallel())
     }) {
         Some(sha256_file(Path::new(&source.path)).await?)
     } else {
@@ -220,7 +370,12 @@ pub async fn send_path(
     let mut transfers = Vec::with_capacity(recipient_ids.len());
     let mut jobs = Vec::with_capacity(online_addresses.len());
     for peer_id in recipient_ids {
-        let transfer_id = recipient_transfer_id(&client_message_id, &peer_id);
+        let upload_plan = upload_plans
+            .get(&peer_id)
+            .copied()
+            .unwrap_or_else(|| UploadPlan::new(UploadProtocol::SequentialV1, 1));
+        let transfer_id =
+            new_transfer_id_for_plan(&client_message_id, &peer_id, upload_plan, false);
         let status = if online_addresses.contains_key(&peer_id) {
             "queued"
         } else {
@@ -239,9 +394,6 @@ pub async fn send_path(
         .await?;
 
         if let Some(peer_addr) = online_addresses.get(&peer_id) {
-            let parallel_v2 = peers
-                .get(&peer_id)
-                .is_some_and(|peer| supports_parallel_file(&peer.capabilities));
             jobs.push(UploadJob {
                 transfer_id,
                 peer_id: peer_id.clone(),
@@ -251,8 +403,12 @@ pub async fn send_path(
                 message_id: message.id,
                 source: source.clone(),
                 group_sync: group_sync.clone(),
-                parallel_v2,
-                file_sha256: parallel_v2.then(|| parallel_hash.clone()).flatten(),
+                upload_plan,
+                concurrency: concurrency.clone(),
+                file_sha256: upload_plan
+                    .is_parallel()
+                    .then(|| parallel_hash.clone())
+                    .flatten(),
             });
         }
         transfers.push(transfer);
@@ -276,18 +432,13 @@ pub async fn resume_waiting_for_peer(
     if peer_id.is_empty() || peer_addr.is_empty() {
         return Err("peer id and address are required".to_string());
     }
-    if !peer_manager
-        .get_active_peers()
-        .iter()
-        .any(|peer| peer.id == peer_id)
-    {
+    let active_peers = peer_manager.get_active_peers();
+    let Some(peer) = active_peers.iter().find(|peer| peer.id == peer_id) else {
         return Err("peer is not online".to_string());
-    }
-    let parallel_v2 = peer_manager
-        .get_active_peers()
-        .iter()
-        .find(|peer| peer.id == peer_id)
-        .is_some_and(|peer| supports_parallel_file(&peer.capabilities));
+    };
+    let local_limit = super::transfer::load_max_parallel_channels(pool).await?;
+    let upload_plan = negotiate_upload_plan(&peer.capabilities, local_limit);
+    let concurrency = super::transfer::concurrency_controller().generation(local_limit)?;
 
     let transfers = sqlx::query_as::<_, TransferRecord>(
         "SELECT id, message_id, conversation_id, peer_id, direction, status,
@@ -302,11 +453,19 @@ pub async fn resume_waiting_for_peer(
     .map_err(|error| format!("查询待恢复文件传输失败: {error}"))?;
 
     for transfer in transfers {
-        match prepare_resume_job(pool, &transfer, peer_addr, parallel_v2).await {
+        match prepare_waiting_resume_job(
+            pool,
+            &transfer,
+            peer_addr,
+            upload_plan,
+            concurrency.clone(),
+        )
+        .await
+        {
             Ok(job) => {
                 let claimed = db::update_transfer(
                     pool,
-                    &transfer.id,
+                    &job.transfer_id,
                     "queued",
                     transfer.bytes_transferred,
                     None,
@@ -345,12 +504,43 @@ pub async fn resume_waiting_for_peer(
     Ok(())
 }
 
+async fn prepare_waiting_resume_job(
+    pool: &Pool<Sqlite>,
+    transfer: &TransferRecord,
+    peer_addr: &str,
+    upload_plan: UploadPlan,
+    concurrency: super::transfer::TransferConcurrencyGeneration,
+) -> Result<UploadJob, String> {
+    let mut job = prepare_resume_job(pool, transfer, peer_addr, upload_plan, concurrency).await?;
+    if transfer_id_matches_upload_plan(&job.transfer_id, upload_plan) {
+        return Ok(job);
+    }
+
+    let replacement_id =
+        new_transfer_id_for_plan(&job.client_message_id, &job.peer_id, upload_plan, true);
+    let result = sqlx::query(
+        "UPDATE transfers SET id = ?, updated_at = ?
+         WHERE id = ? AND direction = 'send' AND status = 'waiting_peer'",
+    )
+    .bind(&replacement_id)
+    .bind(unix_timestamp())
+    .bind(&job.transfer_id)
+    .execute(pool)
+    .await
+    .map_err(|error| format!("更新待发送传输协议失败: {error}"))?;
+    if result.rows_affected() != 1 {
+        return Err("待发送传输状态已变化".to_string());
+    }
+    job.transfer_id = replacement_id;
+    Ok(job)
+}
+
 pub async fn resume_transfer(
     pool: &Pool<Sqlite>,
     message_id: i64,
     peer_id: &str,
     peer_addr: &str,
-    parallel_v2: bool,
+    peer_capabilities: &[String],
 ) -> Result<TransferRecord, String> {
     // ponytail: retries are rare; use one process lock until profiling justifies keyed locks.
     let _resume_guard = RESUME_TRANSFER_LOCK
@@ -399,8 +589,12 @@ pub async fn resume_transfer(
         .find(|transfer| transfer.status == "awaiting_acceptance")
         .or_else(|| transfers.first())
         .ok_or_else(|| "resumable file transfer not found".to_string())?;
-    let mut job = prepare_resume_job(pool, previous, peer_addr, parallel_v2).await?;
-    let transfer = if previous.status == "awaiting_acceptance" {
+    let local_limit = super::transfer::load_max_parallel_channels(pool).await?;
+    let upload_plan = upload_plan_for_resume(&previous.id, peer_capabilities, local_limit);
+    let concurrency = super::transfer::concurrency_controller().generation(local_limit)?;
+    let mut job = prepare_resume_job(pool, previous, peer_addr, upload_plan, concurrency).await?;
+    let layout_matches = transfer_id_matches_upload_plan(&previous.id, upload_plan);
+    let transfer = if previous.status == "awaiting_acceptance" && layout_matches {
         db::transition_transfer_status(
             pool,
             &previous.id,
@@ -411,14 +605,21 @@ pub async fn resume_transfer(
         )
         .await?
         .ok_or_else(|| "file transfer is no longer resumable".to_string())?
-    } else if previous.status == "failed" && parallel_v2 {
+    } else if previous.status == "failed" && upload_plan.is_parallel() && layout_matches {
         reset_send_transfer_for_retry(pool, &previous.id, "queued").await?
-    } else if previous.status == "failed" {
-        let transfer_id = format!(
-            "{}:retry:{}",
-            recipient_transfer_id(&job.client_message_id, peer_id),
-            uuid::Uuid::new_v4()
-        );
+    } else if matches!(previous.status.as_str(), "failed" | "awaiting_acceptance") {
+        if previous.status == "awaiting_acceptance" {
+            db::update_transfer(
+                pool,
+                &previous.id,
+                "cancelled",
+                previous.bytes_transferred,
+                None,
+            )
+            .await?;
+        }
+        let transfer_id =
+            new_transfer_id_for_plan(&job.client_message_id, peer_id, upload_plan, true);
         job.transfer_id = transfer_id.clone();
         db::create_transfer(
             pool,
@@ -628,11 +829,28 @@ pub async fn retry_message(
         .into_iter()
         .map(|peer| (peer.id.clone(), peer))
         .collect();
+    let local_limit = super::transfer::load_max_parallel_channels(pool).await?;
+    let concurrency = super::transfer::concurrency_controller().generation(local_limit)?;
+    let upload_plans: HashMap<_, _> = retry_recipients
+        .iter()
+        .map(|peer_id| {
+            let capabilities = peers
+                .get(peer_id)
+                .map(|peer| peer.capabilities.as_slice())
+                .unwrap_or_default();
+            (
+                peer_id.clone(),
+                negotiate_upload_plan(capabilities, local_limit),
+            )
+        })
+        .collect();
     let parallel_hash = if retry_recipients.iter().any(|peer_id| {
         peers.get(peer_id).is_some_and(|peer| {
             !peer.is_offline
                 && !peer.addr.trim().is_empty()
-                && supports_parallel_file(&peer.capabilities)
+                && upload_plans
+                    .get(peer_id)
+                    .is_some_and(|plan| plan.is_parallel())
         })
     }) {
         Some(sha256_file(Path::new(&source.path)).await?)
@@ -643,9 +861,10 @@ pub async fn retry_message(
     let mut transfers = Vec::with_capacity(retry_recipients.len());
     let mut jobs = Vec::new();
     for peer_id in retry_recipients {
-        let parallel_v2 = peers
+        let upload_plan = upload_plans
             .get(&peer_id)
-            .is_some_and(|peer| supports_parallel_file(&peer.capabilities));
+            .copied()
+            .unwrap_or_else(|| UploadPlan::new(UploadProtocol::SequentialV1, 1));
         let peer_addr = peers.get(&peer_id).and_then(|peer| {
             (!peer.is_offline && !peer.addr.trim().is_empty()).then(|| peer.addr.clone())
         });
@@ -654,23 +873,27 @@ pub async fn retry_message(
         } else {
             "waiting_peer"
         };
-        let reusable = parallel_v2.then(|| {
-            existing
-                .iter()
-                .filter(|transfer| transfer.peer_id == peer_id && transfer.status == "failed")
-                .max_by_key(|transfer| transfer.updated_at)
-        }).flatten();
+        let reusable = upload_plan
+            .is_parallel()
+            .then(|| {
+                existing
+                    .iter()
+                    .filter(|transfer| {
+                        transfer.peer_id == peer_id
+                            && transfer.status == "failed"
+                            && transfer_id_matches_upload_plan(&transfer.id, upload_plan)
+                    })
+                    .max_by_key(|transfer| transfer.updated_at)
+            })
+            .flatten();
         let (transfer_id, transfer) = if let Some(previous) = reusable {
             (
                 previous.id.clone(),
                 reset_send_transfer_for_retry(pool, &previous.id, status).await?,
             )
         } else {
-            let transfer_id = format!(
-                "{}:retry:{}",
-                recipient_transfer_id(client_message_id, &peer_id),
-                uuid::Uuid::new_v4()
-            );
+            let transfer_id =
+                new_transfer_id_for_plan(client_message_id, &peer_id, upload_plan, true);
             let transfer = db::create_transfer(
                 pool,
                 &transfer_id,
@@ -694,8 +917,12 @@ pub async fn retry_message(
                 message_id,
                 source: source.clone(),
                 group_sync: group_sync.clone(),
-                parallel_v2,
-                file_sha256: parallel_v2.then(|| parallel_hash.clone()).flatten(),
+                upload_plan,
+                concurrency: concurrency.clone(),
+                file_sha256: upload_plan
+                    .is_parallel()
+                    .then(|| parallel_hash.clone())
+                    .flatten(),
             });
         }
         transfers.push(transfer);
@@ -736,7 +963,8 @@ async fn prepare_resume_job(
     pool: &Pool<Sqlite>,
     transfer: &TransferRecord,
     peer_addr: &str,
-    parallel_v2: bool,
+    upload_plan: UploadPlan,
+    concurrency: super::transfer::TransferConcurrencyGeneration,
 ) -> Result<UploadJob, String> {
     let message_id = transfer
         .message_id
@@ -774,7 +1002,7 @@ async fn prepare_resume_job(
     if source.size != transfer.bytes_total {
         return Err("source file size changed".to_string());
     }
-    let file_sha256 = if parallel_v2 {
+    let file_sha256 = if upload_plan.is_parallel() {
         Some(sha256_file(Path::new(&source.path)).await?)
     } else {
         None
@@ -789,7 +1017,8 @@ async fn prepare_resume_job(
         message_id,
         source,
         group_sync: group_sync_message(&conversation, &members)?,
-        parallel_v2,
+        upload_plan,
+        concurrency,
         file_sha256,
     })
 }
@@ -1034,7 +1263,7 @@ async fn upload_chunks(
     if token.load(Ordering::Acquire) {
         return UploadOutcome::Cancelled(0);
     }
-    if job.parallel_v2 {
+    if job.upload_plan.is_parallel() {
         return upload_parallel_chunks(pool, job, token).await;
     }
 
@@ -1131,17 +1360,39 @@ async fn upload_chunks(
             }
         }
 
-        let response = match client.post(&upload_url).multipart(form).send().await {
-            Ok(response) => response,
-            Err(error) => {
+        let permit = match job.concurrency.acquire(token).await {
+            Ok(permit) => permit,
+            Err(super::transfer::TransferPermitError::Cancelled) => {
+                return UploadOutcome::Cancelled(bytes_transferred);
+            }
+            Err(super::transfer::TransferPermitError::Closed) => {
+                return UploadOutcome::Failed(
+                    bytes_transferred,
+                    "文件传输并发控制器已关闭".to_string(),
+                );
+            }
+        };
+        let response = match await_with_transfer_cancellation(
+            client.post(&upload_url).multipart(form).send(),
+            token,
+        )
+        .await
+        {
+            Some(Ok(response)) => response,
+            Some(Err(error)) => {
                 if token.load(Ordering::Acquire) {
                     return UploadOutcome::Cancelled(bytes_transferred);
                 }
                 return UploadOutcome::Failed(bytes_transferred, format!("上传分块失败: {error}"));
             }
+            None => return UploadOutcome::Cancelled(bytes_transferred),
         };
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = match await_with_transfer_cancellation(response.text(), token).await {
+            Some(body) => body.unwrap_or_default(),
+            None => return UploadOutcome::Cancelled(bytes_transferred),
+        };
+        drop(permit);
         if !status.is_success() {
             if token.load(Ordering::Acquire) {
                 return UploadOutcome::Cancelled(bytes_transferred);
@@ -1205,8 +1456,19 @@ async fn upload_parallel_chunks(
     let Some(file_sha256) = job.file_sha256.clone() else {
         return UploadOutcome::Failed(0, "并行传输缺少文件摘要".to_string());
     };
+    let Some(protocol_version) = job.upload_plan.manifest_version() else {
+        return UploadOutcome::Failed(0, "并行传输协议无效".to_string());
+    };
     let file_size = job.source.size.max(0) as u64;
-    let chunks = parallel_chunk_ranges(file_size);
+    let chunks = match job.upload_plan.protocol {
+        UploadProtocol::FixedV2 => parallel_chunk_ranges(file_size),
+        UploadProtocol::FlexibleV3 => {
+            flexible_parallel_chunk_ranges(file_size, job.upload_plan.channels)
+        }
+        UploadProtocol::SequentialV1 => {
+            return UploadOutcome::Failed(0, "并行传输协议无效".to_string());
+        }
+    };
     let sender_id = match db::get_user_id(pool).await {
         Ok(id) => id,
         Err(error) => return UploadOutcome::Failed(0, error),
@@ -1235,19 +1497,28 @@ async fn upload_parallel_chunks(
         "http://{}",
         job.peer_addr.trim_end_matches('/')
     );
-    let response = match client
-        .post(format!("{base_url}/api/uploads/v2/prepare"))
-        .json(&request)
-        .send()
-        .await
+    let response = match await_with_transfer_cancellation(
+        client
+            .post(format!(
+                "{base_url}/api/uploads/v{protocol_version}/prepare"
+            ))
+            .json(&request)
+            .send(),
+        token,
+    )
+    .await
     {
-        Ok(response) => response,
-        Err(error) => {
+        Some(Ok(response)) => response,
+        Some(Err(error)) => {
             return UploadOutcome::Failed(0, format!("准备并行传输失败: {error}"));
         }
+        None => return UploadOutcome::Cancelled(0),
     };
     let status = response.status();
-    let body = response.text().await.unwrap_or_default();
+    let body = match await_with_transfer_cancellation(response.text(), token).await {
+        Some(body) => body.unwrap_or_default(),
+        None => return UploadOutcome::Cancelled(0),
+    };
     if !status.is_success() {
         let detail: String = body.chars().take(512).collect();
         return UploadOutcome::Failed(0, format!("接收端拒绝并行传输 ({status}): {detail}"));
@@ -1285,21 +1556,25 @@ async fn upload_parallel_chunks(
     }
 
     let progress = Arc::new(AtomicI64::new(prepared.received as i64));
-    let mut uploads = FuturesUnordered::new();
-    for chunk in missing {
-        uploads.push(upload_parallel_range(
-            client.clone(),
-            base_url.clone(),
-            job.transfer_id.clone(),
-            job.source.path.clone(),
-            chunk,
-            progress.clone(),
-        ));
-    }
+    let mut uploads = stream::iter(missing)
+        .map(|chunk| {
+            upload_parallel_range(
+                client.clone(),
+                base_url.clone(),
+                protocol_version,
+                job.transfer_id.clone(),
+                job.source.path.clone(),
+                chunk,
+                progress.clone(),
+                job.concurrency.clone(),
+                token.clone(),
+            )
+        })
+        .buffer_unordered(usize::from(job.upload_plan.channels));
     let mut interval = tokio::time::interval(Duration::from_millis(500));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    while !uploads.is_empty() {
+    loop {
         tokio::select! {
             _ = interval.tick() => {
                 let bytes = progress.load(Ordering::Acquire).min(job.source.size);
@@ -1342,11 +1617,20 @@ async fn upload_parallel_chunks(
 async fn upload_parallel_range(
     client: reqwest::Client,
     base_url: String,
+    protocol_version: u8,
     transfer_id: String,
     source_path: String,
     chunk: ParallelChunkRange,
     progress: Arc<AtomicI64>,
+    concurrency: super::transfer::TransferConcurrencyGeneration,
+    token: super::transfer::TransferCancellationToken,
 ) -> Result<(), String> {
+    let _permit = concurrency.acquire(&token).await.map_err(|error| match error {
+        super::transfer::TransferPermitError::Cancelled => "transfer cancelled".to_string(),
+        super::transfer::TransferPermitError::Closed => {
+            "文件传输并发控制器已关闭".to_string()
+        }
+    })?;
     let mut file = tokio::fs::File::open(&source_path)
         .await
         .map_err(|error| format!("打开并行上传源文件失败: {error}"))?;
@@ -1362,19 +1646,26 @@ async fn upload_parallel_range(
             result
         });
     let url = format!(
-        "{base_url}/api/uploads/v2/{}/{}",
+        "{base_url}/api/uploads/v{protocol_version}/{}/{}",
         urlencoding::encode(&transfer_id),
         chunk.index
     );
-    let response = client
-        .post(url)
-        .header(reqwest::header::CONTENT_LENGTH, chunk.length)
-        .body(reqwest::Body::wrap_stream(stream))
-        .send()
-        .await
+    let response = await_with_transfer_cancellation(
+        client
+            .post(url)
+            .header(reqwest::header::CONTENT_LENGTH, chunk.length)
+            .body(reqwest::Body::wrap_stream(stream))
+            .send(),
+        &token,
+    )
+    .await
+    .ok_or_else(|| "transfer cancelled".to_string())?
         .map_err(|error| format!("上传并行分块 {} 失败: {error}", chunk.index))?;
     let status = response.status();
-    let body = response.text().await.unwrap_or_default();
+    let body = await_with_transfer_cancellation(response.text(), &token)
+        .await
+        .ok_or_else(|| "transfer cancelled".to_string())?
+        .unwrap_or_default();
     if !status.is_success() {
         let detail: String = body.chars().take(512).collect();
         return Err(format!(
@@ -1607,7 +1898,87 @@ pub(crate) fn parallel_chunk_ranges(file_size: u64) -> Vec<ParallelChunkRange> {
         .collect()
 }
 
-pub(crate) fn valid_parallel_prepare(request: &ParallelPrepareRequest) -> bool {
+pub(crate) fn flexible_parallel_chunk_ranges(
+    file_size: u64,
+    channels: u8,
+) -> Vec<ParallelChunkRange> {
+    if file_size <= CHUNK_SIZE as u64 {
+        return vec![ParallelChunkRange {
+            index: 0,
+            offset: 0,
+            length: file_size,
+        }];
+    }
+
+    let parts_for_size = file_size / CHUNK_SIZE as u64
+        + u64::from(file_size % CHUNK_SIZE as u64 != 0);
+    let parts_for_fairness = usize::from(channels.max(1)) * PARALLEL_PARTS_PER_CHANNEL;
+    let part_count = parts_for_size
+        .max(parts_for_fairness as u64)
+        .min(MAX_PARALLEL_PARTS as u64)
+        .min(file_size) as usize;
+    let base = file_size / part_count as u64;
+    let remainder = file_size % part_count as u64;
+    let mut offset = 0;
+    (0..part_count)
+        .map(|index| {
+            let length = base + u64::from((index as u64) < remainder);
+            let range = ParallelChunkRange {
+                index,
+                offset,
+                length,
+            };
+            offset += length;
+            range
+        })
+        .collect()
+}
+
+pub(crate) fn valid_flexible_parallel_chunks(
+    file_size: u64,
+    chunks: &[ParallelChunkRange],
+) -> bool {
+    if file_size == 0 {
+        return chunks
+            == [ParallelChunkRange {
+                index: 0,
+                offset: 0,
+                length: 0,
+            }];
+    }
+    if chunks.is_empty() || chunks.len() > MAX_PARALLEL_PARTS {
+        return false;
+    }
+
+    let mut expected_offset = 0u64;
+    for (expected_index, chunk) in chunks.iter().enumerate() {
+        if chunk.index != expected_index || chunk.offset != expected_offset || chunk.length == 0 {
+            return false;
+        }
+        let Some(next_offset) = expected_offset.checked_add(chunk.length) else {
+            return false;
+        };
+        if next_offset > file_size {
+            return false;
+        }
+        expected_offset = next_offset;
+    }
+    expected_offset == file_size
+}
+
+fn valid_parallel_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+pub(crate) fn valid_parallel_prepare(request: &ParallelPrepareRequest, version: u8) -> bool {
+    let chunks_valid = match version {
+        2 => request.chunks == parallel_chunk_ranges(request.file_size),
+        3 => valid_flexible_parallel_chunks(request.file_size, &request.chunks),
+        _ => false,
+    };
     !request.sender_id.trim().is_empty()
         && !request.conversation_id.trim().is_empty()
         && !request.client_message_id.trim().is_empty()
@@ -1616,12 +1987,18 @@ pub(crate) fn valid_parallel_prepare(request: &ParallelPrepareRequest) -> bool {
         && request.transfer_id.len() <= 256
         && !request.sender_msg_id.trim().is_empty()
         && request.sender_msg_id.len() <= 64
-        && request.file_sha256.len() == 64
-        && request
-            .file_sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        && request.chunks == parallel_chunk_ranges(request.file_size)
+        && valid_parallel_sha256(&request.file_sha256)
+        && chunks_valid
+}
+
+fn valid_parallel_manifest(manifest: &ParallelTransferManifest, transfer_id: &str) -> bool {
+    manifest.transfer_id == transfer_id
+        && valid_parallel_sha256(&manifest.file_sha256)
+        && match manifest.version {
+            2 => manifest.chunks == parallel_chunk_ranges(manifest.file_size),
+            3 => valid_flexible_parallel_chunks(manifest.file_size, &manifest.chunks),
+            _ => false,
+        }
 }
 
 pub(crate) async fn sha256_file(path: &Path) -> Result<String, String> {
@@ -1675,11 +2052,7 @@ pub(crate) async fn load_parallel_manifest(
     };
     let manifest: ParallelTransferManifest = serde_json::from_slice(&bytes)
         .map_err(|error| format!("解析并行传输清单失败: {error}"))?;
-    if manifest.version != 2
-        || manifest.transfer_id != transfer_id
-        || manifest.file_sha256.len() != 64
-        || manifest.chunks != parallel_chunk_ranges(manifest.file_size)
-    {
+    if !valid_parallel_manifest(&manifest, transfer_id) {
         return Err("并行传输清单无效".to_string());
     }
     Ok(Some(manifest))
@@ -1689,6 +2062,9 @@ pub(crate) async fn create_or_resume_parallel_manifest(
     download_root: &Path,
     manifest: ParallelTransferManifest,
 ) -> Result<(ParallelTransferManifest, Vec<usize>, u64), String> {
+    if !valid_parallel_manifest(&manifest, &manifest.transfer_id) {
+        return Err("并行传输清单无效".to_string());
+    }
     if let Some(existing) = load_parallel_manifest(download_root, &manifest.transfer_id).await? {
         if existing != manifest {
             return Err("并行传输清单与已有内容冲突".to_string());
@@ -2273,6 +2649,217 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn upload_protocol_negotiation_preserves_v1_v2_and_bounds_v3() {
+        assert_eq!(
+            negotiate_upload_plan(&[], 16),
+            UploadPlan::new(UploadProtocol::SequentialV1, 1)
+        );
+        assert_eq!(
+            negotiate_upload_plan(&[PARALLEL_FILE_CAPABILITY.into()], 16),
+            UploadPlan::new(UploadProtocol::FixedV2, 4)
+        );
+        assert_eq!(
+            negotiate_upload_plan(&[PARALLEL_FILE_V3_CAPABILITY.into()], 8),
+            UploadPlan::new(UploadProtocol::FlexibleV3, 8)
+        );
+        assert_eq!(
+            negotiate_upload_plan(&["parallel_file_v3:4".into()], 16),
+            UploadPlan::new(UploadProtocol::FlexibleV3, 4)
+        );
+        assert_eq!(
+            negotiate_upload_plan(
+                &[
+                    PARALLEL_FILE_CAPABILITY.into(),
+                    "parallel_file_v3:not-a-number".into(),
+                    "parallel_file_v3:99".into(),
+                ],
+                16,
+            ),
+            UploadPlan::new(UploadProtocol::FixedV2, 4)
+        );
+    }
+
+    #[test]
+    fn v3_transfer_ids_only_resume_the_same_manifest_layout() {
+        let v2 = UploadPlan::new(UploadProtocol::FixedV2, 4);
+        let v3_eight = UploadPlan::new(UploadProtocol::FlexibleV3, 8);
+        let v3_sixteen = UploadPlan::new(UploadProtocol::FlexibleV3, 16);
+        let base = recipient_transfer_id("message-1", "peer-1");
+
+        assert_eq!(
+            new_transfer_id_for_plan("message-1", "peer-1", v2, false),
+            base
+        );
+        let v3_id = new_transfer_id_for_plan("message-1", "peer-1", v3_eight, false);
+        assert!(v3_id.starts_with(&format!("{base}:retry:v3c8-")));
+        assert!(transfer_id_matches_upload_plan(&v3_id, v3_eight));
+        assert!(!transfer_id_matches_upload_plan(&v3_id, v3_sixteen));
+        assert!(!transfer_id_matches_upload_plan(&v3_id, v2));
+        assert!(transfer_id_matches_upload_plan(&base, v2));
+    }
+
+    #[test]
+    fn resume_keeps_existing_v2_or_v3_layout_after_capability_or_setting_changes() {
+        let capabilities = vec![
+            PARALLEL_FILE_CAPABILITY.to_string(),
+            PARALLEL_FILE_V3_CAPABILITY.to_string(),
+        ];
+        let legacy_v2 = recipient_transfer_id("message-1", "peer-1");
+        assert_eq!(
+            upload_plan_for_resume(&legacy_v2, &capabilities, 16),
+            UploadPlan::new(UploadProtocol::FixedV2, 4)
+        );
+
+        let v3_eight = new_transfer_id_for_plan(
+            "message-2",
+            "peer-1",
+            UploadPlan::new(UploadProtocol::FlexibleV3, 8),
+            false,
+        );
+        assert_eq!(
+            upload_plan_for_resume(&v3_eight, &capabilities, 16),
+            UploadPlan::new(UploadProtocol::FlexibleV3, 8)
+        );
+    }
+
+    #[test]
+    fn v3_ranges_are_bounded_contiguous_and_cover_the_file() {
+        for channels in [4, 8, 16] {
+            for size in [
+                0,
+                1,
+                CHUNK_SIZE as u64,
+                CHUNK_SIZE as u64 + 1,
+                CHUNK_SIZE as u64 * 17 + 31,
+            ] {
+                let ranges = flexible_parallel_chunk_ranges(size, channels);
+                assert!(valid_flexible_parallel_chunks(size, &ranges));
+                assert!(ranges.len() <= MAX_PARALLEL_PARTS);
+                assert_eq!(ranges.first().unwrap().offset, 0);
+                assert_eq!(
+                    ranges.iter().map(|range| range.length).sum::<u64>(),
+                    size
+                );
+                if size > CHUNK_SIZE as u64 {
+                    assert!(ranges.len() >= usize::from(channels) * 4);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn v3_chunk_validation_rejects_unsafe_layouts_and_v2_remains_fixed() {
+        let size = CHUNK_SIZE as u64 + 17;
+        let valid = flexible_parallel_chunk_ranges(size, 8);
+        assert!(valid_flexible_parallel_chunks(size, &valid));
+
+        let mut gap = valid.clone();
+        gap[1].offset += 1;
+        assert!(!valid_flexible_parallel_chunks(size, &gap));
+
+        let mut overlap = valid.clone();
+        overlap[1].offset -= 1;
+        assert!(!valid_flexible_parallel_chunks(size, &overlap));
+
+        let mut duplicate_index = valid.clone();
+        duplicate_index[1].index = 0;
+        assert!(!valid_flexible_parallel_chunks(size, &duplicate_index));
+
+        let mut zero_length = valid.clone();
+        zero_length[0].length = 0;
+        assert!(!valid_flexible_parallel_chunks(size, &zero_length));
+
+        assert!(!valid_flexible_parallel_chunks(
+            u64::MAX,
+            &[ParallelChunkRange {
+                index: 0,
+                offset: u64::MAX,
+                length: 2,
+            }],
+        ));
+        assert!(!valid_flexible_parallel_chunks(
+            MAX_PARALLEL_PARTS as u64 + 1,
+            &(0..=MAX_PARALLEL_PARTS)
+                .map(|index| ParallelChunkRange {
+                    index,
+                    offset: index as u64,
+                    length: 1,
+                })
+                .collect::<Vec<_>>(),
+        ));
+
+        let request = ParallelPrepareRequest {
+            sender_id: "sender".into(),
+            conversation_id: "conversation".into(),
+            client_message_id: "message".into(),
+            transfer_id: "message:receiver".into(),
+            sender_msg_id: "42".into(),
+            file_name: "source.bin".into(),
+            file_size: size,
+            file_sha256: "0".repeat(64),
+            chunks: valid,
+        };
+        assert!(!valid_parallel_prepare(&request, 2));
+        assert!(valid_parallel_prepare(&request, 3));
+
+        let mut v2 = request;
+        v2.chunks = parallel_chunk_ranges(size);
+        assert!(valid_parallel_prepare(&v2, 2));
+        assert!(valid_parallel_prepare(&v2, 3));
+    }
+
+    #[tokio::test]
+    async fn v3_manifest_loads_but_invalid_flexible_layout_is_rejected() {
+        let root = std::env::temp_dir().join(format!(
+            "xchat-parallel-v3-manifest-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        let transfer_id = "message:receiver";
+        let directory = parallel_transfer_dir(&root, transfer_id);
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let mut manifest = ParallelTransferManifest {
+            version: 3,
+            sender_id: "sender".into(),
+            conversation_id: "conversation".into(),
+            client_message_id: "message".into(),
+            transfer_id: transfer_id.into(),
+            sender_msg_id: "42".into(),
+            file_name: "source.bin".into(),
+            final_file_name: "source.bin".into(),
+            file_size: CHUNK_SIZE as u64 + 17,
+            file_sha256: "0".repeat(64),
+            chunks: flexible_parallel_chunk_ranges(CHUNK_SIZE as u64 + 17, 8),
+            message_id: 7,
+        };
+        tokio::fs::write(
+            parallel_manifest_path(&root, transfer_id),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            load_parallel_manifest(&root, transfer_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            manifest
+        );
+
+        manifest.chunks[1].offset += 1;
+        tokio::fs::write(
+            parallel_manifest_path(&root, transfer_id),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(load_parallel_manifest(&root, transfer_id).await.is_err());
+
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
     #[tokio::test]
     async fn parallel_manifest_rejects_conflicts_and_merges_verified_parts() {
         let root =
@@ -2451,6 +3038,464 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_v3_uploads_share_global_limit_and_both_make_progress() {
+        #[derive(Clone)]
+        struct Probe {
+            active: Arc<std::sync::atomic::AtomicUsize>,
+            peak: Arc<std::sync::atomic::AtomicUsize>,
+            order: Arc<Mutex<Vec<String>>>,
+        }
+
+        let probe = Probe {
+            active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            peak: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            order: Arc::new(Mutex::new(Vec::new())),
+        };
+        let prepare = axum::routing::post(
+            |axum::Json(payload): axum::Json<ParallelPrepareRequest>| async move {
+                axum::Json(serde_json::json!({
+                    "status": "ready",
+                    "received": 0,
+                    "missing_chunks": payload
+                        .chunks
+                        .iter()
+                        .map(|chunk| chunk.index)
+                        .collect::<Vec<_>>(),
+                }))
+            },
+        );
+        let chunk_probe = probe.clone();
+        let chunks = axum::routing::post(
+            move |axum::extract::Path((transfer_id, _chunk_index)): axum::extract::Path<(
+                String,
+                usize,
+            )>,
+                  request: axum::extract::Request| {
+                let probe = chunk_probe.clone();
+                async move {
+                    let active = probe
+                        .active
+                        .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+                        + 1;
+                    probe
+                        .peak
+                        .fetch_max(active, std::sync::atomic::Ordering::AcqRel);
+                    probe
+                        .order
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(transfer_id);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    let _ = axum::body::to_bytes(request.into_body(), usize::MAX).await;
+                    probe
+                        .active
+                        .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                    axum::Json(serde_json::json!({ "status": "receiving" }))
+                }
+            },
+        );
+        let router = axum::Router::new()
+            .route(
+                "/api/peer_identity",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "device_id": "peer-a",
+                        "name": "Alice",
+                    }))
+                }),
+            )
+            .route("/api/uploads/v3/prepare", prepare)
+            .route("/api/uploads/v3/:transfer_id/:chunk_index", chunks);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let app_dir = std::env::temp_dir().join(format!(
+            "xchat-global-parallel-limit-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let pool = db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        db::save_or_update_user(
+            &pool,
+            "peer-a".into(),
+            "Alice".into(),
+            address.to_string(),
+            true,
+            0,
+        )
+        .await
+        .unwrap();
+        let conversation = db::ensure_direct_conversation(&pool, "peer-a")
+            .await
+            .unwrap();
+        let file_size = CHUNK_SIZE + 17;
+        let source_a = app_dir.join("source-a.bin");
+        let source_b = app_dir.join("source-b.bin");
+        let data = vec![7u8; file_size];
+        tokio::fs::write(&source_a, &data).await.unwrap();
+        tokio::fs::write(&source_b, &data).await.unwrap();
+        let controller = crate::network::transfer::TransferConcurrencyController::default();
+        for limit in crate::network::transfer::MAX_PARALLEL_CHANNEL_OPTIONS {
+            probe
+                .peak
+                .store(0, std::sync::atomic::Ordering::Release);
+            probe
+                .order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clear();
+            let generation = controller.generation(limit).unwrap();
+            let transfer_a = format!("transfer-a-{limit}");
+            let transfer_b = format!("transfer-b-{limit}");
+            for transfer_id in [&transfer_a, &transfer_b] {
+                db::create_transfer(
+                    &pool,
+                    transfer_id,
+                    None,
+                    &conversation.id,
+                    "peer-a",
+                    "send",
+                    "transferring",
+                    file_size as i64,
+                )
+                .await
+                .unwrap();
+            }
+            let make_job = |transfer_id: &str, source: &Path| UploadJob {
+                transfer_id: transfer_id.into(),
+                peer_id: "peer-a".into(),
+                peer_addr: address.to_string(),
+                conversation_id: conversation.id.clone(),
+                client_message_id: transfer_id.into(),
+                message_id: 1,
+                source: ValidatedSource {
+                    path: source.to_string_lossy().into_owned(),
+                    file_name: source.file_name().unwrap().to_string_lossy().into_owned(),
+                    size: file_size as i64,
+                },
+                group_sync: None,
+                upload_plan: UploadPlan::new(UploadProtocol::FlexibleV3, limit),
+                concurrency: generation.clone(),
+                file_sha256: Some("0".repeat(64)),
+            };
+            let token_a = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let token_b = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let job_a = make_job(&transfer_a, &source_a);
+            let job_b = make_job(&transfer_b, &source_b);
+
+            let (outcome_a, outcome_b) = tokio::join!(
+                upload_parallel_chunks(&pool, &job_a, &token_a),
+                upload_parallel_chunks(&pool, &job_b, &token_b),
+            );
+
+            for outcome in [outcome_a, outcome_b] {
+                match outcome {
+                    UploadOutcome::Completed(bytes) => assert_eq!(bytes, file_size as i64),
+                    UploadOutcome::Failed(_, error) => panic!("parallel upload failed: {error}"),
+                    UploadOutcome::AwaitingAcceptance(_) => {
+                        panic!("parallel upload unexpectedly awaited acceptance")
+                    }
+                    UploadOutcome::Cancelled(_) => {
+                        panic!("parallel upload was unexpectedly cancelled")
+                    }
+                }
+            }
+            assert!(
+                probe.peak.load(std::sync::atomic::Ordering::Acquire)
+                    <= usize::from(limit),
+                "limit {limit} was exceeded"
+            );
+            let order = probe
+                .order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let first_b = order
+                .iter()
+                .position(|transfer_id| transfer_id == &transfer_b)
+                .unwrap();
+            assert!(
+                first_b
+                    < flexible_parallel_chunk_ranges(file_size as u64, limit).len(),
+                "the second transfer must start before the first consumes its full queue at limit {limit}"
+            );
+        }
+
+        server.abort();
+        pool.close().await;
+        tokio::fs::remove_dir_all(app_dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sequential_v1_and_fixed_v2_use_the_same_global_permit_pool() {
+        let data_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let v1_requests = data_requests.clone();
+        let v2_requests = data_requests.clone();
+        let router = axum::Router::new()
+            .route(
+                "/api/peer_identity",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "device_id": "peer-a",
+                        "name": "Alice",
+                    }))
+                }),
+            )
+            .route(
+                "/api/upload",
+                axum::routing::post(move |request: axum::extract::Request| {
+                    let requests = v1_requests.clone();
+                    async move {
+                        requests.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                        let _ = axum::body::to_bytes(request.into_body(), usize::MAX).await;
+                        axum::Json(serde_json::json!({ "status": "receiving" }))
+                    }
+                }),
+            )
+            .route(
+                "/api/uploads/v2/prepare",
+                axum::routing::post(|| async {
+                    axum::Json(serde_json::json!({
+                        "status": "ready",
+                        "received": 0,
+                        "missing_chunks": [0],
+                    }))
+                }),
+            )
+            .route(
+                "/api/uploads/v2/:transfer_id/:chunk_index",
+                axum::routing::post(move |request: axum::extract::Request| {
+                    let requests = v2_requests.clone();
+                    async move {
+                        requests.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                        let _ = axum::body::to_bytes(request.into_body(), usize::MAX).await;
+                        axum::Json(serde_json::json!({ "status": "receiving" }))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let app_dir = std::env::temp_dir().join(format!(
+            "xchat-shared-legacy-limit-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let pool = db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        db::save_or_update_user(
+            &pool,
+            "peer-a".into(),
+            "Alice".into(),
+            address.to_string(),
+            true,
+            0,
+        )
+        .await
+        .unwrap();
+        let conversation = db::ensure_direct_conversation(&pool, "peer-a")
+            .await
+            .unwrap();
+        let source = app_dir.join("source.bin");
+        tokio::fs::write(&source, b"payload").await.unwrap();
+        let generation = crate::network::transfer::TransferConcurrencyController::default()
+            .generation(4)
+            .unwrap();
+        let blocker = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut held = Vec::new();
+        for _ in 0..4 {
+            held.push(generation.acquire(&blocker).await.unwrap());
+        }
+        for transfer_id in ["v1-transfer", "v2-transfer"] {
+            db::create_transfer(
+                &pool,
+                transfer_id,
+                None,
+                &conversation.id,
+                "peer-a",
+                "send",
+                "transferring",
+                7,
+            )
+            .await
+            .unwrap();
+        }
+        let make_job = |transfer_id: &str, upload_plan: UploadPlan| UploadJob {
+            transfer_id: transfer_id.into(),
+            peer_id: "peer-a".into(),
+            peer_addr: address.to_string(),
+            conversation_id: conversation.id.clone(),
+            client_message_id: transfer_id.into(),
+            message_id: 1,
+            source: ValidatedSource {
+                path: source.to_string_lossy().into_owned(),
+                file_name: "source.bin".into(),
+                size: 7,
+            },
+            group_sync: None,
+            upload_plan,
+            concurrency: generation.clone(),
+            file_sha256: upload_plan
+                .is_parallel()
+                .then(|| "0".repeat(64)),
+        };
+        let v1_job = make_job(
+            "v1-transfer",
+            UploadPlan::new(UploadProtocol::SequentialV1, 1),
+        );
+        let v2_job = make_job(
+            "v2-transfer",
+            UploadPlan::new(UploadProtocol::FixedV2, 4),
+        );
+        let pool_v1 = pool.clone();
+        let v1 = tokio::spawn(async move {
+            upload_chunks(
+                &pool_v1,
+                &v1_job,
+                &Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .await
+        });
+        let pool_v2 = pool.clone();
+        let v2 = tokio::spawn(async move {
+            upload_chunks(
+                &pool_v2,
+                &v2_job,
+                &Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            data_requests.load(std::sync::atomic::Ordering::Acquire),
+            0,
+            "neither legacy protocol may bypass an exhausted global pool"
+        );
+        drop(held);
+        for outcome in [v1.await.unwrap(), v2.await.unwrap()] {
+            assert!(matches!(outcome, UploadOutcome::Completed(7)));
+        }
+        assert_eq!(
+            data_requests.load(std::sync::atomic::Ordering::Acquire),
+            2
+        );
+
+        server.abort();
+        pool.close().await;
+        tokio::fs::remove_dir_all(app_dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_in_flight_request_releases_its_global_permit() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let request_started = started.clone();
+        let router = axum::Router::new()
+            .route(
+                "/api/peer_identity",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "device_id": "peer-a",
+                        "name": "Alice",
+                    }))
+                }),
+            )
+            .route(
+                "/api/upload",
+                axum::routing::post(move |request: axum::extract::Request| {
+                    let started = request_started.clone();
+                    async move {
+                        let _ = axum::body::to_bytes(request.into_body(), usize::MAX).await;
+                        started.notify_one();
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        axum::Json(serde_json::json!({ "status": "receiving" }))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let app_dir = std::env::temp_dir().join(format!(
+            "xchat-cancel-in-flight-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let pool = db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        let source = app_dir.join("source.bin");
+        tokio::fs::write(&source, b"payload").await.unwrap();
+        let generation = crate::network::transfer::TransferConcurrencyController::default()
+            .generation(4)
+            .unwrap();
+        let blocker = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut held = Vec::new();
+        for _ in 0..3 {
+            held.push(generation.acquire(&blocker).await.unwrap());
+        }
+        let token = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let job = UploadJob {
+            transfer_id: "cancel-in-flight".into(),
+            peer_id: "peer-a".into(),
+            peer_addr: address.to_string(),
+            conversation_id: "conversation".into(),
+            client_message_id: "cancel-in-flight".into(),
+            message_id: 1,
+            source: ValidatedSource {
+                path: source.to_string_lossy().into_owned(),
+                file_name: "source.bin".into(),
+                size: 7,
+            },
+            group_sync: None,
+            upload_plan: UploadPlan::new(UploadProtocol::SequentialV1, 1),
+            concurrency: generation.clone(),
+            file_sha256: None,
+        };
+        let upload_pool = pool.clone();
+        let upload_token = token.clone();
+        let mut upload = tokio::spawn(async move {
+            upload_chunks(&upload_pool, &job, &upload_token).await
+        });
+        tokio::time::timeout(Duration::from_secs(1), started.notified())
+            .await
+            .expect("the request should reach the receiver");
+
+        token.store(true, Ordering::Release);
+        let outcome = tokio::time::timeout(Duration::from_secs(1), &mut upload)
+            .await
+            .expect("an in-flight request should stop promptly")
+            .unwrap();
+        assert!(matches!(outcome, UploadOutcome::Cancelled(0)));
+        let replacement = tokio::time::timeout(
+            Duration::from_secs(1),
+            generation.acquire(&Arc::new(std::sync::atomic::AtomicBool::new(false))),
+        )
+        .await
+        .expect("cancellation must release the request permit")
+        .unwrap();
+        drop(replacement);
+        drop(held);
+
+        server.abort();
+        pool.close().await;
+        tokio::fs::remove_dir_all(app_dir).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn parallel_sender_failure_marks_receiver_failed() {
         let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let terminal_tx = status_tx.clone();
@@ -2579,7 +3624,10 @@ mod tests {
                     size: 7,
                 },
                 group_sync: None,
-                parallel_v2: true,
+                upload_plan: UploadPlan::new(UploadProtocol::FixedV2, 4),
+                concurrency: crate::network::transfer::TransferConcurrencyController::default()
+                    .generation(4)
+                    .unwrap(),
                 file_sha256: Some(sha256_file(&source_path).await.unwrap()),
             },
         )
@@ -2779,7 +3827,7 @@ mod tests {
             awaiting.message.id,
             "peer-a",
             "127.0.0.1:1",
-            false,
+            &[],
         )
         .await
         .unwrap();
