@@ -191,15 +191,19 @@ struct ParallelPrepareResponse {
     received: u64,
 }
 
-fn negotiate_upload_plan(capabilities: &[String], local_limit: u8) -> UploadPlan {
-    let local_limit = super::transfer::validate_max_parallel_channels(local_limit)
-        .unwrap_or(super::transfer::DEFAULT_MAX_PARALLEL_CHANNELS);
-    let remote_v3_limit = capabilities
+fn advertised_v3_limit(capabilities: &[String]) -> Option<u8> {
+    capabilities
         .iter()
         .filter_map(|capability| capability.strip_prefix(PARALLEL_FILE_V3_CAPABILITY_PREFIX))
         .filter_map(|value| value.parse::<u8>().ok())
         .filter_map(|value| super::transfer::validate_max_parallel_channels(value).ok())
-        .max();
+        .max()
+}
+
+fn negotiate_upload_plan(capabilities: &[String], local_limit: u8) -> UploadPlan {
+    let local_limit = super::transfer::validate_max_parallel_channels(local_limit)
+        .unwrap_or(super::transfer::DEFAULT_MAX_PARALLEL_CHANNELS);
+    let remote_v3_limit = advertised_v3_limit(capabilities);
     if let Some(remote_limit) = remote_v3_limit {
         return UploadPlan::new(UploadProtocol::FlexibleV3, local_limit.min(remote_limit));
     }
@@ -210,6 +214,67 @@ fn negotiate_upload_plan(capabilities: &[String], local_limit: u8) -> UploadPlan
         return UploadPlan::new(UploadProtocol::FixedV2, 4);
     }
     UploadPlan::new(UploadProtocol::SequentialV1, 1)
+}
+
+fn encoded_v3_channels(transfer_id: &str) -> Option<u8> {
+    let (_, suffix) = transfer_id.rsplit_once(":retry:v3c")?;
+    let (channels, nonce) = suffix.split_once('-')?;
+    if nonce.is_empty() {
+        return None;
+    }
+    super::transfer::validate_max_parallel_channels(channels.parse().ok()?).ok()
+}
+
+fn transfer_id_matches_upload_plan(transfer_id: &str, upload_plan: UploadPlan) -> bool {
+    match upload_plan.protocol {
+        UploadProtocol::FlexibleV3 => {
+            encoded_v3_channels(transfer_id) == Some(upload_plan.channels)
+        }
+        UploadProtocol::SequentialV1 | UploadProtocol::FixedV2 => {
+            encoded_v3_channels(transfer_id).is_none()
+        }
+    }
+}
+
+fn new_transfer_id_for_plan(
+    client_message_id: &str,
+    peer_id: &str,
+    upload_plan: UploadPlan,
+    retry: bool,
+) -> String {
+    let base = recipient_transfer_id(client_message_id, peer_id);
+    match upload_plan.protocol {
+        UploadProtocol::FlexibleV3 => format!(
+            "{base}:retry:v3c{}-{}",
+            upload_plan.channels,
+            uuid::Uuid::new_v4()
+        ),
+        UploadProtocol::SequentialV1 | UploadProtocol::FixedV2 if retry => {
+            format!("{base}:retry:{}", uuid::Uuid::new_v4())
+        }
+        UploadProtocol::SequentialV1 | UploadProtocol::FixedV2 => base,
+    }
+}
+
+fn upload_plan_for_resume(
+    transfer_id: &str,
+    capabilities: &[String],
+    local_limit: u8,
+) -> UploadPlan {
+    if let Some(channels) = encoded_v3_channels(transfer_id) {
+        if advertised_v3_limit(capabilities).is_some_and(|remote| remote >= channels) {
+            return UploadPlan::new(UploadProtocol::FlexibleV3, channels);
+        }
+        return negotiate_upload_plan(capabilities, local_limit);
+    }
+    if capabilities
+        .iter()
+        .any(|capability| capability == PARALLEL_FILE_CAPABILITY)
+    {
+        UploadPlan::new(UploadProtocol::FixedV2, 4)
+    } else {
+        UploadPlan::new(UploadProtocol::SequentialV1, 1)
+    }
 }
 
 pub async fn send_path(
@@ -305,7 +370,12 @@ pub async fn send_path(
     let mut transfers = Vec::with_capacity(recipient_ids.len());
     let mut jobs = Vec::with_capacity(online_addresses.len());
     for peer_id in recipient_ids {
-        let transfer_id = recipient_transfer_id(&client_message_id, &peer_id);
+        let upload_plan = upload_plans
+            .get(&peer_id)
+            .copied()
+            .unwrap_or_else(|| UploadPlan::new(UploadProtocol::SequentialV1, 1));
+        let transfer_id =
+            new_transfer_id_for_plan(&client_message_id, &peer_id, upload_plan, false);
         let status = if online_addresses.contains_key(&peer_id) {
             "queued"
         } else {
@@ -324,10 +394,6 @@ pub async fn send_path(
         .await?;
 
         if let Some(peer_addr) = online_addresses.get(&peer_id) {
-            let upload_plan = upload_plans
-                .get(&peer_id)
-                .copied()
-                .unwrap_or_else(|| UploadPlan::new(UploadProtocol::SequentialV1, 1));
             jobs.push(UploadJob {
                 transfer_id,
                 peer_id: peer_id.clone(),
@@ -387,7 +453,7 @@ pub async fn resume_waiting_for_peer(
     .map_err(|error| format!("查询待恢复文件传输失败: {error}"))?;
 
     for transfer in transfers {
-        match prepare_resume_job(
+        match prepare_waiting_resume_job(
             pool,
             &transfer,
             peer_addr,
@@ -399,7 +465,7 @@ pub async fn resume_waiting_for_peer(
             Ok(job) => {
                 let claimed = db::update_transfer(
                     pool,
-                    &transfer.id,
+                    &job.transfer_id,
                     "queued",
                     transfer.bytes_transferred,
                     None,
@@ -436,6 +502,37 @@ pub async fn resume_waiting_for_peer(
         }
     }
     Ok(())
+}
+
+async fn prepare_waiting_resume_job(
+    pool: &Pool<Sqlite>,
+    transfer: &TransferRecord,
+    peer_addr: &str,
+    upload_plan: UploadPlan,
+    concurrency: super::transfer::TransferConcurrencyGeneration,
+) -> Result<UploadJob, String> {
+    let mut job = prepare_resume_job(pool, transfer, peer_addr, upload_plan, concurrency).await?;
+    if transfer_id_matches_upload_plan(&job.transfer_id, upload_plan) {
+        return Ok(job);
+    }
+
+    let replacement_id =
+        new_transfer_id_for_plan(&job.client_message_id, &job.peer_id, upload_plan, true);
+    let result = sqlx::query(
+        "UPDATE transfers SET id = ?, updated_at = ?
+         WHERE id = ? AND direction = 'send' AND status = 'waiting_peer'",
+    )
+    .bind(&replacement_id)
+    .bind(unix_timestamp())
+    .bind(&job.transfer_id)
+    .execute(pool)
+    .await
+    .map_err(|error| format!("更新待发送传输协议失败: {error}"))?;
+    if result.rows_affected() != 1 {
+        return Err("待发送传输状态已变化".to_string());
+    }
+    job.transfer_id = replacement_id;
+    Ok(job)
 }
 
 pub async fn resume_transfer(
@@ -493,10 +590,11 @@ pub async fn resume_transfer(
         .or_else(|| transfers.first())
         .ok_or_else(|| "resumable file transfer not found".to_string())?;
     let local_limit = super::transfer::load_max_parallel_channels(pool).await?;
-    let upload_plan = negotiate_upload_plan(peer_capabilities, local_limit);
+    let upload_plan = upload_plan_for_resume(&previous.id, peer_capabilities, local_limit);
     let concurrency = super::transfer::concurrency_controller().generation(local_limit)?;
     let mut job = prepare_resume_job(pool, previous, peer_addr, upload_plan, concurrency).await?;
-    let transfer = if previous.status == "awaiting_acceptance" {
+    let layout_matches = transfer_id_matches_upload_plan(&previous.id, upload_plan);
+    let transfer = if previous.status == "awaiting_acceptance" && layout_matches {
         db::transition_transfer_status(
             pool,
             &previous.id,
@@ -507,14 +605,21 @@ pub async fn resume_transfer(
         )
         .await?
         .ok_or_else(|| "file transfer is no longer resumable".to_string())?
-    } else if previous.status == "failed" && upload_plan.is_parallel() {
+    } else if previous.status == "failed" && upload_plan.is_parallel() && layout_matches {
         reset_send_transfer_for_retry(pool, &previous.id, "queued").await?
-    } else if previous.status == "failed" {
-        let transfer_id = format!(
-            "{}:retry:{}",
-            recipient_transfer_id(&job.client_message_id, peer_id),
-            uuid::Uuid::new_v4()
-        );
+    } else if matches!(previous.status.as_str(), "failed" | "awaiting_acceptance") {
+        if previous.status == "awaiting_acceptance" {
+            db::update_transfer(
+                pool,
+                &previous.id,
+                "cancelled",
+                previous.bytes_transferred,
+                None,
+            )
+            .await?;
+        }
+        let transfer_id =
+            new_transfer_id_for_plan(&job.client_message_id, peer_id, upload_plan, true);
         job.transfer_id = transfer_id.clone();
         db::create_transfer(
             pool,
@@ -774,7 +879,9 @@ pub async fn retry_message(
                 existing
                     .iter()
                     .filter(|transfer| {
-                        transfer.peer_id == peer_id && transfer.status == "failed"
+                        transfer.peer_id == peer_id
+                            && transfer.status == "failed"
+                            && transfer_id_matches_upload_plan(&transfer.id, upload_plan)
                     })
                     .max_by_key(|transfer| transfer.updated_at)
             })
@@ -785,11 +892,8 @@ pub async fn retry_message(
                 reset_send_transfer_for_retry(pool, &previous.id, status).await?,
             )
         } else {
-            let transfer_id = format!(
-                "{}:retry:{}",
-                recipient_transfer_id(client_message_id, &peer_id),
-                uuid::Uuid::new_v4()
-            );
+            let transfer_id =
+                new_transfer_id_for_plan(client_message_id, &peer_id, upload_plan, true);
             let transfer = db::create_transfer(
                 pool,
                 &transfer_id,
@@ -2577,6 +2681,49 @@ mod tests {
     }
 
     #[test]
+    fn v3_transfer_ids_only_resume_the_same_manifest_layout() {
+        let v2 = UploadPlan::new(UploadProtocol::FixedV2, 4);
+        let v3_eight = UploadPlan::new(UploadProtocol::FlexibleV3, 8);
+        let v3_sixteen = UploadPlan::new(UploadProtocol::FlexibleV3, 16);
+        let base = recipient_transfer_id("message-1", "peer-1");
+
+        assert_eq!(
+            new_transfer_id_for_plan("message-1", "peer-1", v2, false),
+            base
+        );
+        let v3_id = new_transfer_id_for_plan("message-1", "peer-1", v3_eight, false);
+        assert!(v3_id.starts_with(&format!("{base}:retry:v3c8-")));
+        assert!(transfer_id_matches_upload_plan(&v3_id, v3_eight));
+        assert!(!transfer_id_matches_upload_plan(&v3_id, v3_sixteen));
+        assert!(!transfer_id_matches_upload_plan(&v3_id, v2));
+        assert!(transfer_id_matches_upload_plan(&base, v2));
+    }
+
+    #[test]
+    fn resume_keeps_existing_v2_or_v3_layout_after_capability_or_setting_changes() {
+        let capabilities = vec![
+            PARALLEL_FILE_CAPABILITY.to_string(),
+            PARALLEL_FILE_V3_CAPABILITY.to_string(),
+        ];
+        let legacy_v2 = recipient_transfer_id("message-1", "peer-1");
+        assert_eq!(
+            upload_plan_for_resume(&legacy_v2, &capabilities, 16),
+            UploadPlan::new(UploadProtocol::FixedV2, 4)
+        );
+
+        let v3_eight = new_transfer_id_for_plan(
+            "message-2",
+            "peer-1",
+            UploadPlan::new(UploadProtocol::FlexibleV3, 8),
+            false,
+        );
+        assert_eq!(
+            upload_plan_for_resume(&v3_eight, &capabilities, 16),
+            UploadPlan::new(UploadProtocol::FlexibleV3, 8)
+        );
+    }
+
+    #[test]
     fn v3_ranges_are_bounded_contiguous_and_cover_the_file() {
         for channels in [4, 8, 16] {
             for size in [
@@ -2993,73 +3140,91 @@ mod tests {
         let data = vec![7u8; file_size];
         tokio::fs::write(&source_a, &data).await.unwrap();
         tokio::fs::write(&source_b, &data).await.unwrap();
-        let generation = crate::network::transfer::TransferConcurrencyController::default()
-            .generation(4)
-            .unwrap();
-        for transfer_id in ["transfer-a", "transfer-b"] {
-            db::create_transfer(
-                &pool,
-                transfer_id,
-                None,
-                &conversation.id,
-                "peer-a",
-                "send",
-                "transferring",
-                file_size as i64,
-            )
-            .await
-            .unwrap();
-        }
-        let make_job = |transfer_id: &str, source: &Path| UploadJob {
-            transfer_id: transfer_id.into(),
-            peer_id: "peer-a".into(),
-            peer_addr: address.to_string(),
-            conversation_id: conversation.id.clone(),
-            client_message_id: transfer_id.into(),
-            message_id: 1,
-            source: ValidatedSource {
-                path: source.to_string_lossy().into_owned(),
-                file_name: source.file_name().unwrap().to_string_lossy().into_owned(),
-                size: file_size as i64,
-            },
-            group_sync: None,
-            upload_plan: UploadPlan::new(UploadProtocol::FlexibleV3, 4),
-            concurrency: generation.clone(),
-            file_sha256: Some("0".repeat(64)),
-        };
-        let token_a = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let token_b = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let job_a = make_job("transfer-a", &source_a);
-        let job_b = make_job("transfer-b", &source_b);
-
-        let (outcome_a, outcome_b) = tokio::join!(
-            upload_parallel_chunks(&pool, &job_a, &token_a),
-            upload_parallel_chunks(&pool, &job_b, &token_b),
-        );
-
-        for outcome in [outcome_a, outcome_b] {
-            match outcome {
-                UploadOutcome::Completed(bytes) => assert_eq!(bytes, file_size as i64),
-                UploadOutcome::Failed(_, error) => panic!("parallel upload failed: {error}"),
-                UploadOutcome::AwaitingAcceptance(_) => {
-                    panic!("parallel upload unexpectedly awaited acceptance")
-                }
-                UploadOutcome::Cancelled(_) => panic!("parallel upload was unexpectedly cancelled"),
+        let controller = crate::network::transfer::TransferConcurrencyController::default();
+        for limit in crate::network::transfer::MAX_PARALLEL_CHANNEL_OPTIONS {
+            probe
+                .peak
+                .store(0, std::sync::atomic::Ordering::Release);
+            probe
+                .order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clear();
+            let generation = controller.generation(limit).unwrap();
+            let transfer_a = format!("transfer-a-{limit}");
+            let transfer_b = format!("transfer-b-{limit}");
+            for transfer_id in [&transfer_a, &transfer_b] {
+                db::create_transfer(
+                    &pool,
+                    transfer_id,
+                    None,
+                    &conversation.id,
+                    "peer-a",
+                    "send",
+                    "transferring",
+                    file_size as i64,
+                )
+                .await
+                .unwrap();
             }
+            let make_job = |transfer_id: &str, source: &Path| UploadJob {
+                transfer_id: transfer_id.into(),
+                peer_id: "peer-a".into(),
+                peer_addr: address.to_string(),
+                conversation_id: conversation.id.clone(),
+                client_message_id: transfer_id.into(),
+                message_id: 1,
+                source: ValidatedSource {
+                    path: source.to_string_lossy().into_owned(),
+                    file_name: source.file_name().unwrap().to_string_lossy().into_owned(),
+                    size: file_size as i64,
+                },
+                group_sync: None,
+                upload_plan: UploadPlan::new(UploadProtocol::FlexibleV3, limit),
+                concurrency: generation.clone(),
+                file_sha256: Some("0".repeat(64)),
+            };
+            let token_a = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let token_b = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let job_a = make_job(&transfer_a, &source_a);
+            let job_b = make_job(&transfer_b, &source_b);
+
+            let (outcome_a, outcome_b) = tokio::join!(
+                upload_parallel_chunks(&pool, &job_a, &token_a),
+                upload_parallel_chunks(&pool, &job_b, &token_b),
+            );
+
+            for outcome in [outcome_a, outcome_b] {
+                match outcome {
+                    UploadOutcome::Completed(bytes) => assert_eq!(bytes, file_size as i64),
+                    UploadOutcome::Failed(_, error) => panic!("parallel upload failed: {error}"),
+                    UploadOutcome::AwaitingAcceptance(_) => {
+                        panic!("parallel upload unexpectedly awaited acceptance")
+                    }
+                    UploadOutcome::Cancelled(_) => {
+                        panic!("parallel upload was unexpectedly cancelled")
+                    }
+                }
+            }
+            assert!(
+                probe.peak.load(std::sync::atomic::Ordering::Acquire)
+                    <= usize::from(limit),
+                "limit {limit} was exceeded"
+            );
+            let order = probe
+                .order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let first_b = order
+                .iter()
+                .position(|transfer_id| transfer_id == &transfer_b)
+                .unwrap();
+            assert!(
+                first_b
+                    < flexible_parallel_chunk_ranges(file_size as u64, limit).len(),
+                "the second transfer must start before the first consumes its full queue at limit {limit}"
+            );
         }
-        assert!(probe.peak.load(std::sync::atomic::Ordering::Acquire) <= 4);
-        let order = probe
-            .order
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let first_b = order
-            .iter()
-            .position(|transfer_id| transfer_id == "transfer-b")
-            .unwrap();
-        assert!(
-            first_b < flexible_parallel_chunk_ranges(file_size as u64, 4).len(),
-            "the second transfer must start before the first consumes its full queue"
-        );
 
         server.abort();
         pool.close().await;

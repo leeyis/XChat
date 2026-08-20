@@ -29,7 +29,6 @@ import {
   nativeCaptureShortcutAvailable,
   nativeDragDropTarget,
   discoveryInterfaceState,
-  discoverySettingsEqual,
   discoverySummary,
   formatMessageTime,
   messageTimeDividerIndices,
