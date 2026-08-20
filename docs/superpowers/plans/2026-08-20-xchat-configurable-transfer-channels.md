@@ -286,5 +286,5 @@ rtk cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --fea
 
 - [x] Inspect `rtk git diff main...HEAD`, confirm no unrelated user changes, and run the completion-verification skill.
 - [x] Perform a focused code review of protocol compatibility, validation boundaries, cancellation, permit lifetime, and settings parity; fix and re-run affected checks.
-- [ ] Merge the finished branch into local `main` with a non-interactive merge only after every required check passes.
-- [ ] Report the merge commit, verification commands, any unavailable platform target, and the real-device requirement: both devices need the new build to exercise configurable v3; mixed-version pairs intentionally use four channels.
+- [x] Merge the finished branch into local `main` with a non-interactive merge only after every required check passes.
+- [x] Report the merge commit, verification commands, any unavailable platform target, and the real-device requirement: both devices need the new build to exercise configurable v3; mixed-version pairs intentionally use four channels.
