@@ -210,16 +210,17 @@ rtk git commit -m "feat(transfer): enforce global fair concurrency"
 - Modify: `frontend/src/xchat.js`
 - Modify: `frontend/src/App.jsx`
 - Modify: `frontend/src/xchat.test.js`
+- Modify: `frontend/src/styles.test.js`
 - Modify only if generated production assets are repository-owned: `src/`
 
 ### RED
 
-- [ ] Add frontend tests proving:
+- [x] Add frontend tests proving:
   - absent/invalid settings normalize to `4`;
   - `4`, `8`, and `16` survive normalization;
   - both Tauri and HTTP adapters send the same `maxParallelChannels` update;
   - the setting participates in dirty-state/save/reset behavior.
-- [ ] Run the focused frontend suite and observe failure:
+- [x] Run the focused frontend suite and observe failure:
 
 ```bash
 rtk npm test -- --runInBand
@@ -227,19 +228,19 @@ rtk npm test -- --runInBand
 
 ### GREEN
 
-- [ ] Render the approved control directly below “自动接收文件” in the download-and-transfer section.
-- [ ] Use the exact Chinese copy from the prototype and equivalent English copy:
+- [x] Render the approved control directly below “自动接收文件” in the download-and-transfer section.
+- [x] Use the exact Chinese copy from the prototype and equivalent English copy:
   - label: `最大并行通道`
   - hint: `兼顾兼容性与资源占用。保存后对新开始的传输生效；旧版设备会自动使用 4 个通道。`
   - choices: `4（默认）`, `8`, `16`
-- [ ] Add the field to normalized settings, dirty keys, save/reset logic, and both adapters.
-- [ ] Build the frontend so the Tauri production asset directory reflects the source if that is the repository's established workflow.
-- [ ] Re-run frontend tests and build.
+- [x] Add the field to normalized settings, dirty keys, save/reset logic, and both adapters.
+- [x] Build the frontend so the Tauri production asset directory reflects the source if that is the repository's established workflow.
+- [x] Re-run frontend tests and build.
 
 ### Commit
 
 ```bash
-rtk git add frontend/src/xchat.js frontend/src/App.jsx frontend/src/xchat.test.js src
+rtk git add frontend/src/xchat.js frontend/src/App.jsx frontend/src/xchat.test.js frontend/src/styles.test.js src
 rtk git commit -m "feat(ui): configure transfer channel limit"
 ```
 

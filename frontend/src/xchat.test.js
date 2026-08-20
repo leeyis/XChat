@@ -43,10 +43,13 @@ import {
   normalizeConversation,
   normalizeDraftAttachment,
   normalizeMessage,
+  normalizeSettings,
   recommendedDiscoverySettings,
   numericMessageId,
   retainedMentionIds,
   runtimeCapabilities,
+  settingsFormDirty,
+  settingsPatch,
   shortcutLabelFromEvent,
   TauriAdapter,
   validServerPort,
@@ -136,6 +139,35 @@ test("server port validation accepts only integer ports from 1 through 65535", (
   }
 });
 
+test("parallel channel settings normalize to the supported 4, 8, and 16 values", () => {
+  for (const value of [undefined, null, 0, 12, 32, "8", "invalid"]) {
+    assert.equal(
+      normalizeSettings({ max_parallel_channels: value }).max_parallel_channels,
+      4,
+      String(value),
+    );
+  }
+  for (const value of [4, 8, 16]) {
+    assert.equal(
+      normalizeSettings({ max_parallel_channels: value }).max_parallel_channels,
+      value,
+    );
+  }
+});
+
+test("parallel channel changes participate in settings dirty, save, and reset state", () => {
+  const baseline = normalizeSettings({ max_parallel_channels: 4 });
+  const changed = { ...baseline, max_parallel_channels: 16 };
+
+  assert.equal(settingsFormDirty(baseline, baseline), false);
+  assert.equal(settingsFormDirty(changed, baseline), true);
+  assert.deepEqual(settingsPatch(changed, baseline), { max_parallel_channels: 16 });
+
+  const saved = normalizeSettings({ ...baseline, ...settingsPatch(changed, baseline) });
+  assert.equal(settingsFormDirty(changed, saved), false);
+  assert.equal(settingsFormDirty(baseline, baseline), false);
+});
+
 test("workspace settings normalize discovery defaults and backend interface facts", async () => {
   const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
   let workspace;
@@ -201,7 +233,7 @@ test("workspace settings normalize discovery defaults and backend interface fact
   }
 });
 
-test("desktop and web settings adapters send the same discovery selection", async () => {
+test("desktop and web settings adapters send the same discovery and channel selection", async () => {
   const discoverySettings = {
     local_discovery: false,
     vpn_discovery: true,
@@ -212,6 +244,7 @@ test("desktop and web settings adapters send the same discovery selection", asyn
     port: "8888",
     db_path: "/tmp/xchat",
     auto_download: false,
+    max_parallel_channels: 4,
     discovery_settings: recommendedDiscoverySettings(),
   };
 
@@ -224,7 +257,10 @@ test("desktop and web settings adapters send the same discovery selection", asyn
       },
     },
   });
-  await tauri.patchSettings({ discovery_settings: discoverySettings }, current);
+  await tauri.patchSettings(
+    { discovery_settings: discoverySettings, max_parallel_channels: 16 },
+    current,
+  );
   assert.deepEqual(tauriCalls, [[
     "update_settings",
     {
@@ -232,6 +268,7 @@ test("desktop and web settings adapters send the same discovery selection", asyn
       port: "8888",
       dbPath: "/tmp/xchat",
       autoDownload: false,
+      maxParallelChannels: 16,
       discoverySettings,
     },
   ]]);
@@ -242,7 +279,10 @@ test("desktop and web settings adapters send the same discovery selection", asyn
     webCalls.push(args);
     return Promise.resolve();
   };
-  await web.patchSettings({ discovery_settings: discoverySettings }, current);
+  await web.patchSettings(
+    { discovery_settings: discoverySettings, max_parallel_channels: 16 },
+    current,
+  );
   assert.deepEqual(webCalls, [[
     "/api/update_settings",
     "POST",
@@ -251,6 +291,7 @@ test("desktop and web settings adapters send the same discovery selection", asyn
       port: 8888,
       db_path: "/tmp/xchat",
       auto_download: false,
+      max_parallel_channels: 16,
       discovery_settings: discoverySettings,
     },
   ]]);

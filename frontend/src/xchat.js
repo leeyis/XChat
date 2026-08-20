@@ -973,8 +973,15 @@ export function canSaveVerifiedEndpoint(currentInput, testedInput, result) {
   );
 }
 
-function normalizeSettings(raw = {}) {
+const MAX_PARALLEL_CHANNEL_OPTIONS = [4, 8, 16];
+
+export function normalizeSettings(raw = {}) {
   const discovery_settings = normalizeDiscoverySettings(raw.discovery_settings);
+  const max_parallel_channels = MAX_PARALLEL_CHANNEL_OPTIONS.includes(
+    raw.max_parallel_channels,
+  )
+    ? raw.max_parallel_channels
+    : 4;
   return {
     name: raw.name ?? "",
     avatar: raw.avatar ?? storage.get("xchat.avatar") ?? "",
@@ -983,6 +990,7 @@ function normalizeSettings(raw = {}) {
     notifications_enabled: Boolean(raw.notifications_enabled ?? true),
     download_path: raw.download_path ?? "",
     auto_download: Boolean(raw.auto_download ?? false),
+    max_parallel_channels,
     port: String(raw.port ?? ""),
     db_path: raw.db_path ?? "",
     capture_shortcut:
@@ -995,6 +1003,57 @@ function normalizeSettings(raw = {}) {
     discovery_settings,
     network_interfaces: (raw.network_interfaces ?? []).map(normalizeNetworkInterface),
   };
+}
+
+export const SETTINGS_PATCH_KEYS = [
+  "name",
+  "avatar",
+  "theme",
+  "language",
+  "notifications_enabled",
+  "download_path",
+  "auto_download",
+  "max_parallel_channels",
+  "port",
+  "db_path",
+  "discovery_settings",
+  "capture_shortcut",
+];
+
+export function settingValueEqual(key, left, right, networkInterfaces = []) {
+  if (key === "port") return String(left ?? "") === String(right ?? "");
+  if (key === "discovery_settings") {
+    return discoverySettingsEqual(left, right, networkInterfaces);
+  }
+  return left === right;
+}
+
+export function settingsFormDirty(form, baseline) {
+  return SETTINGS_PATCH_KEYS.some(
+    (key) =>
+      !settingValueEqual(
+        key,
+        form[key],
+        baseline[key],
+        baseline.network_interfaces || [],
+      ),
+  );
+}
+
+export function settingsPatch(form, baseline) {
+  return Object.fromEntries(
+    SETTINGS_PATCH_KEYS
+      .filter(
+        (key) =>
+          !settingValueEqual(
+            key,
+            form[key],
+            baseline[key],
+            baseline.network_interfaces || [],
+          ),
+      )
+      .map((key) => [key, form[key]]),
+  );
 }
 
 function normalizeWorkspace(raw, previous, runtime) {
@@ -1518,9 +1577,14 @@ export class TauriAdapter {
       await this.invoke("update_my_name", { newName: patch.name });
     }
     if (
-      ["download_path", "port", "db_path", "auto_download", "discovery_settings"].some(
-        (key) => patch[key] !== undefined,
-      )
+      [
+        "download_path",
+        "port",
+        "db_path",
+        "auto_download",
+        "max_parallel_channels",
+        "discovery_settings",
+      ].some((key) => patch[key] !== undefined)
     ) {
       const next = { ...current, ...patch };
       await this.invoke("update_settings", {
@@ -1528,6 +1592,7 @@ export class TauriAdapter {
         port: String(next.port),
         dbPath: next.db_path,
         autoDownload: next.auto_download,
+        maxParallelChannels: next.max_parallel_channels,
         discoverySettings: next.discovery_settings,
       });
     }
@@ -2062,9 +2127,14 @@ export class HttpWsAdapter {
       await this.json("/api/update_my_name", "POST", { name: patch.name });
     }
     if (
-      ["download_path", "port", "db_path", "auto_download", "discovery_settings"].some(
-        (key) => patch[key] !== undefined,
-      )
+      [
+        "download_path",
+        "port",
+        "db_path",
+        "auto_download",
+        "max_parallel_channels",
+        "discovery_settings",
+      ].some((key) => patch[key] !== undefined)
     ) {
       const next = { ...current, ...patch };
       await this.json("/api/update_settings", "POST", {
@@ -2072,6 +2142,7 @@ export class HttpWsAdapter {
         port: Number(next.port),
         db_path: next.db_path,
         auto_download: next.auto_download,
+        max_parallel_channels: next.max_parallel_channels,
         discovery_settings: next.discovery_settings,
       });
     }
