@@ -2,7 +2,7 @@ use crate::{
     db::{self, ConversationMemberRecord, ConversationRecord, MessageRecord, TransferRecord},
     peers::PeerManager,
 };
-use futures_util::{stream::FuturesUnordered, StreamExt};
+use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Pool, Sqlite};
@@ -28,7 +28,11 @@ use super::{
 
 const CHUNK_SIZE: usize = 4 * 1024 * 1024;
 const PARALLEL_STREAM_BUFFER: usize = 256 * 1024;
+const PARALLEL_PARTS_PER_CHANNEL: usize = 4;
+const MAX_PARALLEL_PARTS: usize = 4096;
 pub const PARALLEL_FILE_CAPABILITY: &str = "parallel_file_v2";
+pub const PARALLEL_FILE_V3_CAPABILITY: &str = "parallel_file_v3:16";
+const PARALLEL_FILE_V3_CAPABILITY_PREFIX: &str = "parallel_file_v3:";
 type ReceiveTransferLock = tokio::sync::Mutex<()>;
 static RECEIVE_TRANSFER_LOCKS: OnceLock<Mutex<HashMap<String, Weak<ReceiveTransferLock>>>> =
     OnceLock::new();
@@ -73,8 +77,39 @@ struct UploadJob {
     message_id: i64,
     source: ValidatedSource,
     group_sync: Option<ProtocolMessage>,
-    parallel_v2: bool,
+    upload_plan: UploadPlan,
     file_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UploadProtocol {
+    SequentialV1,
+    FixedV2,
+    FlexibleV3,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UploadPlan {
+    protocol: UploadProtocol,
+    channels: u8,
+}
+
+impl UploadPlan {
+    const fn new(protocol: UploadProtocol, channels: u8) -> Self {
+        Self { protocol, channels }
+    }
+
+    fn is_parallel(self) -> bool {
+        self.protocol != UploadProtocol::SequentialV1
+    }
+
+    fn manifest_version(self) -> Option<u8> {
+        match self.protocol {
+            UploadProtocol::SequentialV1 => None,
+            UploadProtocol::FixedV2 => Some(2),
+            UploadProtocol::FlexibleV3 => Some(3),
+        }
+    }
 }
 
 enum UploadOutcome {
@@ -136,10 +171,25 @@ struct ParallelPrepareResponse {
     received: u64,
 }
 
-fn supports_parallel_file(capabilities: &[String]) -> bool {
-    capabilities
+fn negotiate_upload_plan(capabilities: &[String], local_limit: u8) -> UploadPlan {
+    let local_limit = super::transfer::validate_max_parallel_channels(local_limit)
+        .unwrap_or(super::transfer::DEFAULT_MAX_PARALLEL_CHANNELS);
+    let remote_v3_limit = capabilities
+        .iter()
+        .filter_map(|capability| capability.strip_prefix(PARALLEL_FILE_V3_CAPABILITY_PREFIX))
+        .filter_map(|value| value.parse::<u8>().ok())
+        .filter_map(|value| super::transfer::validate_max_parallel_channels(value).ok())
+        .max();
+    if let Some(remote_limit) = remote_v3_limit {
+        return UploadPlan::new(UploadProtocol::FlexibleV3, local_limit.min(remote_limit));
+    }
+    if capabilities
         .iter()
         .any(|capability| capability == PARALLEL_FILE_CAPABILITY)
+    {
+        return UploadPlan::new(UploadProtocol::FixedV2, 4);
+    }
+    UploadPlan::new(UploadProtocol::SequentialV1, 1)
 }
 
 pub async fn send_path(
@@ -174,11 +224,25 @@ pub async fn send_path(
             })
         })
         .collect();
+    let local_limit = super::transfer::load_max_parallel_channels(pool).await?;
+    let upload_plans: HashMap<_, _> = recipient_ids
+        .iter()
+        .map(|peer_id| {
+            let capabilities = peers
+                .get(peer_id)
+                .map(|peer| peer.capabilities.as_slice())
+                .unwrap_or_default();
+            (
+                peer_id.clone(),
+                negotiate_upload_plan(capabilities, local_limit),
+            )
+        })
+        .collect();
     let parallel_hash = if recipient_ids.iter().any(|peer_id| {
         online_addresses.contains_key(peer_id)
-            && peers
+            && upload_plans
                 .get(peer_id)
-                .is_some_and(|peer| supports_parallel_file(&peer.capabilities))
+                .is_some_and(|plan| plan.is_parallel())
     }) {
         Some(sha256_file(Path::new(&source.path)).await?)
     } else {
@@ -239,9 +303,10 @@ pub async fn send_path(
         .await?;
 
         if let Some(peer_addr) = online_addresses.get(&peer_id) {
-            let parallel_v2 = peers
+            let upload_plan = upload_plans
                 .get(&peer_id)
-                .is_some_and(|peer| supports_parallel_file(&peer.capabilities));
+                .copied()
+                .unwrap_or_else(|| UploadPlan::new(UploadProtocol::SequentialV1, 1));
             jobs.push(UploadJob {
                 transfer_id,
                 peer_id: peer_id.clone(),
@@ -251,8 +316,11 @@ pub async fn send_path(
                 message_id: message.id,
                 source: source.clone(),
                 group_sync: group_sync.clone(),
-                parallel_v2,
-                file_sha256: parallel_v2.then(|| parallel_hash.clone()).flatten(),
+                upload_plan,
+                file_sha256: upload_plan
+                    .is_parallel()
+                    .then(|| parallel_hash.clone())
+                    .flatten(),
             });
         }
         transfers.push(transfer);
@@ -276,18 +344,12 @@ pub async fn resume_waiting_for_peer(
     if peer_id.is_empty() || peer_addr.is_empty() {
         return Err("peer id and address are required".to_string());
     }
-    if !peer_manager
-        .get_active_peers()
-        .iter()
-        .any(|peer| peer.id == peer_id)
-    {
+    let active_peers = peer_manager.get_active_peers();
+    let Some(peer) = active_peers.iter().find(|peer| peer.id == peer_id) else {
         return Err("peer is not online".to_string());
-    }
-    let parallel_v2 = peer_manager
-        .get_active_peers()
-        .iter()
-        .find(|peer| peer.id == peer_id)
-        .is_some_and(|peer| supports_parallel_file(&peer.capabilities));
+    };
+    let local_limit = super::transfer::load_max_parallel_channels(pool).await?;
+    let upload_plan = negotiate_upload_plan(&peer.capabilities, local_limit);
 
     let transfers = sqlx::query_as::<_, TransferRecord>(
         "SELECT id, message_id, conversation_id, peer_id, direction, status,
@@ -302,7 +364,7 @@ pub async fn resume_waiting_for_peer(
     .map_err(|error| format!("查询待恢复文件传输失败: {error}"))?;
 
     for transfer in transfers {
-        match prepare_resume_job(pool, &transfer, peer_addr, parallel_v2).await {
+        match prepare_resume_job(pool, &transfer, peer_addr, upload_plan).await {
             Ok(job) => {
                 let claimed = db::update_transfer(
                     pool,
@@ -350,7 +412,7 @@ pub async fn resume_transfer(
     message_id: i64,
     peer_id: &str,
     peer_addr: &str,
-    parallel_v2: bool,
+    peer_capabilities: &[String],
 ) -> Result<TransferRecord, String> {
     // ponytail: retries are rare; use one process lock until profiling justifies keyed locks.
     let _resume_guard = RESUME_TRANSFER_LOCK
@@ -399,7 +461,9 @@ pub async fn resume_transfer(
         .find(|transfer| transfer.status == "awaiting_acceptance")
         .or_else(|| transfers.first())
         .ok_or_else(|| "resumable file transfer not found".to_string())?;
-    let mut job = prepare_resume_job(pool, previous, peer_addr, parallel_v2).await?;
+    let local_limit = super::transfer::load_max_parallel_channels(pool).await?;
+    let upload_plan = negotiate_upload_plan(peer_capabilities, local_limit);
+    let mut job = prepare_resume_job(pool, previous, peer_addr, upload_plan).await?;
     let transfer = if previous.status == "awaiting_acceptance" {
         db::transition_transfer_status(
             pool,
@@ -411,7 +475,7 @@ pub async fn resume_transfer(
         )
         .await?
         .ok_or_else(|| "file transfer is no longer resumable".to_string())?
-    } else if previous.status == "failed" && parallel_v2 {
+    } else if previous.status == "failed" && upload_plan.is_parallel() {
         reset_send_transfer_for_retry(pool, &previous.id, "queued").await?
     } else if previous.status == "failed" {
         let transfer_id = format!(
@@ -628,11 +692,27 @@ pub async fn retry_message(
         .into_iter()
         .map(|peer| (peer.id.clone(), peer))
         .collect();
+    let local_limit = super::transfer::load_max_parallel_channels(pool).await?;
+    let upload_plans: HashMap<_, _> = retry_recipients
+        .iter()
+        .map(|peer_id| {
+            let capabilities = peers
+                .get(peer_id)
+                .map(|peer| peer.capabilities.as_slice())
+                .unwrap_or_default();
+            (
+                peer_id.clone(),
+                negotiate_upload_plan(capabilities, local_limit),
+            )
+        })
+        .collect();
     let parallel_hash = if retry_recipients.iter().any(|peer_id| {
         peers.get(peer_id).is_some_and(|peer| {
             !peer.is_offline
                 && !peer.addr.trim().is_empty()
-                && supports_parallel_file(&peer.capabilities)
+                && upload_plans
+                    .get(peer_id)
+                    .is_some_and(|plan| plan.is_parallel())
         })
     }) {
         Some(sha256_file(Path::new(&source.path)).await?)
@@ -643,9 +723,10 @@ pub async fn retry_message(
     let mut transfers = Vec::with_capacity(retry_recipients.len());
     let mut jobs = Vec::new();
     for peer_id in retry_recipients {
-        let parallel_v2 = peers
+        let upload_plan = upload_plans
             .get(&peer_id)
-            .is_some_and(|peer| supports_parallel_file(&peer.capabilities));
+            .copied()
+            .unwrap_or_else(|| UploadPlan::new(UploadProtocol::SequentialV1, 1));
         let peer_addr = peers.get(&peer_id).and_then(|peer| {
             (!peer.is_offline && !peer.addr.trim().is_empty()).then(|| peer.addr.clone())
         });
@@ -654,12 +735,17 @@ pub async fn retry_message(
         } else {
             "waiting_peer"
         };
-        let reusable = parallel_v2.then(|| {
-            existing
-                .iter()
-                .filter(|transfer| transfer.peer_id == peer_id && transfer.status == "failed")
-                .max_by_key(|transfer| transfer.updated_at)
-        }).flatten();
+        let reusable = upload_plan
+            .is_parallel()
+            .then(|| {
+                existing
+                    .iter()
+                    .filter(|transfer| {
+                        transfer.peer_id == peer_id && transfer.status == "failed"
+                    })
+                    .max_by_key(|transfer| transfer.updated_at)
+            })
+            .flatten();
         let (transfer_id, transfer) = if let Some(previous) = reusable {
             (
                 previous.id.clone(),
@@ -694,8 +780,11 @@ pub async fn retry_message(
                 message_id,
                 source: source.clone(),
                 group_sync: group_sync.clone(),
-                parallel_v2,
-                file_sha256: parallel_v2.then(|| parallel_hash.clone()).flatten(),
+                upload_plan,
+                file_sha256: upload_plan
+                    .is_parallel()
+                    .then(|| parallel_hash.clone())
+                    .flatten(),
             });
         }
         transfers.push(transfer);
@@ -736,7 +825,7 @@ async fn prepare_resume_job(
     pool: &Pool<Sqlite>,
     transfer: &TransferRecord,
     peer_addr: &str,
-    parallel_v2: bool,
+    upload_plan: UploadPlan,
 ) -> Result<UploadJob, String> {
     let message_id = transfer
         .message_id
@@ -774,7 +863,7 @@ async fn prepare_resume_job(
     if source.size != transfer.bytes_total {
         return Err("source file size changed".to_string());
     }
-    let file_sha256 = if parallel_v2 {
+    let file_sha256 = if upload_plan.is_parallel() {
         Some(sha256_file(Path::new(&source.path)).await?)
     } else {
         None
@@ -789,7 +878,7 @@ async fn prepare_resume_job(
         message_id,
         source,
         group_sync: group_sync_message(&conversation, &members)?,
-        parallel_v2,
+        upload_plan,
         file_sha256,
     })
 }
@@ -1034,7 +1123,7 @@ async fn upload_chunks(
     if token.load(Ordering::Acquire) {
         return UploadOutcome::Cancelled(0);
     }
-    if job.parallel_v2 {
+    if job.upload_plan.is_parallel() {
         return upload_parallel_chunks(pool, job, token).await;
     }
 
@@ -1205,8 +1294,19 @@ async fn upload_parallel_chunks(
     let Some(file_sha256) = job.file_sha256.clone() else {
         return UploadOutcome::Failed(0, "并行传输缺少文件摘要".to_string());
     };
+    let Some(protocol_version) = job.upload_plan.manifest_version() else {
+        return UploadOutcome::Failed(0, "并行传输协议无效".to_string());
+    };
     let file_size = job.source.size.max(0) as u64;
-    let chunks = parallel_chunk_ranges(file_size);
+    let chunks = match job.upload_plan.protocol {
+        UploadProtocol::FixedV2 => parallel_chunk_ranges(file_size),
+        UploadProtocol::FlexibleV3 => {
+            flexible_parallel_chunk_ranges(file_size, job.upload_plan.channels)
+        }
+        UploadProtocol::SequentialV1 => {
+            return UploadOutcome::Failed(0, "并行传输协议无效".to_string());
+        }
+    };
     let sender_id = match db::get_user_id(pool).await {
         Ok(id) => id,
         Err(error) => return UploadOutcome::Failed(0, error),
@@ -1236,7 +1336,9 @@ async fn upload_parallel_chunks(
         job.peer_addr.trim_end_matches('/')
     );
     let response = match client
-        .post(format!("{base_url}/api/uploads/v2/prepare"))
+        .post(format!(
+            "{base_url}/api/uploads/v{protocol_version}/prepare"
+        ))
         .json(&request)
         .send()
         .await
@@ -1285,21 +1387,23 @@ async fn upload_parallel_chunks(
     }
 
     let progress = Arc::new(AtomicI64::new(prepared.received as i64));
-    let mut uploads = FuturesUnordered::new();
-    for chunk in missing {
-        uploads.push(upload_parallel_range(
-            client.clone(),
-            base_url.clone(),
-            job.transfer_id.clone(),
-            job.source.path.clone(),
-            chunk,
-            progress.clone(),
-        ));
-    }
+    let mut uploads = stream::iter(missing)
+        .map(|chunk| {
+            upload_parallel_range(
+                client.clone(),
+                base_url.clone(),
+                protocol_version,
+                job.transfer_id.clone(),
+                job.source.path.clone(),
+                chunk,
+                progress.clone(),
+            )
+        })
+        .buffer_unordered(usize::from(job.upload_plan.channels));
     let mut interval = tokio::time::interval(Duration::from_millis(500));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    while !uploads.is_empty() {
+    loop {
         tokio::select! {
             _ = interval.tick() => {
                 let bytes = progress.load(Ordering::Acquire).min(job.source.size);
@@ -1342,6 +1446,7 @@ async fn upload_parallel_chunks(
 async fn upload_parallel_range(
     client: reqwest::Client,
     base_url: String,
+    protocol_version: u8,
     transfer_id: String,
     source_path: String,
     chunk: ParallelChunkRange,
@@ -1362,7 +1467,7 @@ async fn upload_parallel_range(
             result
         });
     let url = format!(
-        "{base_url}/api/uploads/v2/{}/{}",
+        "{base_url}/api/uploads/v{protocol_version}/{}/{}",
         urlencoding::encode(&transfer_id),
         chunk.index
     );
@@ -1607,7 +1712,87 @@ pub(crate) fn parallel_chunk_ranges(file_size: u64) -> Vec<ParallelChunkRange> {
         .collect()
 }
 
-pub(crate) fn valid_parallel_prepare(request: &ParallelPrepareRequest) -> bool {
+pub(crate) fn flexible_parallel_chunk_ranges(
+    file_size: u64,
+    channels: u8,
+) -> Vec<ParallelChunkRange> {
+    if file_size <= CHUNK_SIZE as u64 {
+        return vec![ParallelChunkRange {
+            index: 0,
+            offset: 0,
+            length: file_size,
+        }];
+    }
+
+    let parts_for_size = file_size / CHUNK_SIZE as u64
+        + u64::from(file_size % CHUNK_SIZE as u64 != 0);
+    let parts_for_fairness = usize::from(channels.max(1)) * PARALLEL_PARTS_PER_CHANNEL;
+    let part_count = parts_for_size
+        .max(parts_for_fairness as u64)
+        .min(MAX_PARALLEL_PARTS as u64)
+        .min(file_size) as usize;
+    let base = file_size / part_count as u64;
+    let remainder = file_size % part_count as u64;
+    let mut offset = 0;
+    (0..part_count)
+        .map(|index| {
+            let length = base + u64::from((index as u64) < remainder);
+            let range = ParallelChunkRange {
+                index,
+                offset,
+                length,
+            };
+            offset += length;
+            range
+        })
+        .collect()
+}
+
+pub(crate) fn valid_flexible_parallel_chunks(
+    file_size: u64,
+    chunks: &[ParallelChunkRange],
+) -> bool {
+    if file_size == 0 {
+        return chunks
+            == [ParallelChunkRange {
+                index: 0,
+                offset: 0,
+                length: 0,
+            }];
+    }
+    if chunks.is_empty() || chunks.len() > MAX_PARALLEL_PARTS {
+        return false;
+    }
+
+    let mut expected_offset = 0u64;
+    for (expected_index, chunk) in chunks.iter().enumerate() {
+        if chunk.index != expected_index || chunk.offset != expected_offset || chunk.length == 0 {
+            return false;
+        }
+        let Some(next_offset) = expected_offset.checked_add(chunk.length) else {
+            return false;
+        };
+        if next_offset > file_size {
+            return false;
+        }
+        expected_offset = next_offset;
+    }
+    expected_offset == file_size
+}
+
+fn valid_parallel_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+pub(crate) fn valid_parallel_prepare(request: &ParallelPrepareRequest, version: u8) -> bool {
+    let chunks_valid = match version {
+        2 => request.chunks == parallel_chunk_ranges(request.file_size),
+        3 => valid_flexible_parallel_chunks(request.file_size, &request.chunks),
+        _ => false,
+    };
     !request.sender_id.trim().is_empty()
         && !request.conversation_id.trim().is_empty()
         && !request.client_message_id.trim().is_empty()
@@ -1616,12 +1801,18 @@ pub(crate) fn valid_parallel_prepare(request: &ParallelPrepareRequest) -> bool {
         && request.transfer_id.len() <= 256
         && !request.sender_msg_id.trim().is_empty()
         && request.sender_msg_id.len() <= 64
-        && request.file_sha256.len() == 64
-        && request
-            .file_sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        && request.chunks == parallel_chunk_ranges(request.file_size)
+        && valid_parallel_sha256(&request.file_sha256)
+        && chunks_valid
+}
+
+fn valid_parallel_manifest(manifest: &ParallelTransferManifest, transfer_id: &str) -> bool {
+    manifest.transfer_id == transfer_id
+        && valid_parallel_sha256(&manifest.file_sha256)
+        && match manifest.version {
+            2 => manifest.chunks == parallel_chunk_ranges(manifest.file_size),
+            3 => valid_flexible_parallel_chunks(manifest.file_size, &manifest.chunks),
+            _ => false,
+        }
 }
 
 pub(crate) async fn sha256_file(path: &Path) -> Result<String, String> {
@@ -1675,11 +1866,7 @@ pub(crate) async fn load_parallel_manifest(
     };
     let manifest: ParallelTransferManifest = serde_json::from_slice(&bytes)
         .map_err(|error| format!("解析并行传输清单失败: {error}"))?;
-    if manifest.version != 2
-        || manifest.transfer_id != transfer_id
-        || manifest.file_sha256.len() != 64
-        || manifest.chunks != parallel_chunk_ranges(manifest.file_size)
-    {
+    if !valid_parallel_manifest(&manifest, transfer_id) {
         return Err("并行传输清单无效".to_string());
     }
     Ok(Some(manifest))
@@ -1689,6 +1876,9 @@ pub(crate) async fn create_or_resume_parallel_manifest(
     download_root: &Path,
     manifest: ParallelTransferManifest,
 ) -> Result<(ParallelTransferManifest, Vec<usize>, u64), String> {
+    if !valid_parallel_manifest(&manifest, &manifest.transfer_id) {
+        return Err("并行传输清单无效".to_string());
+    }
     if let Some(existing) = load_parallel_manifest(download_root, &manifest.transfer_id).await? {
         if existing != manifest {
             return Err("并行传输清单与已有内容冲突".to_string());
@@ -2273,6 +2463,174 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn upload_protocol_negotiation_preserves_v1_v2_and_bounds_v3() {
+        assert_eq!(
+            negotiate_upload_plan(&[], 16),
+            UploadPlan::new(UploadProtocol::SequentialV1, 1)
+        );
+        assert_eq!(
+            negotiate_upload_plan(&[PARALLEL_FILE_CAPABILITY.into()], 16),
+            UploadPlan::new(UploadProtocol::FixedV2, 4)
+        );
+        assert_eq!(
+            negotiate_upload_plan(&[PARALLEL_FILE_V3_CAPABILITY.into()], 8),
+            UploadPlan::new(UploadProtocol::FlexibleV3, 8)
+        );
+        assert_eq!(
+            negotiate_upload_plan(&["parallel_file_v3:4".into()], 16),
+            UploadPlan::new(UploadProtocol::FlexibleV3, 4)
+        );
+        assert_eq!(
+            negotiate_upload_plan(
+                &[
+                    PARALLEL_FILE_CAPABILITY.into(),
+                    "parallel_file_v3:not-a-number".into(),
+                    "parallel_file_v3:99".into(),
+                ],
+                16,
+            ),
+            UploadPlan::new(UploadProtocol::FixedV2, 4)
+        );
+    }
+
+    #[test]
+    fn v3_ranges_are_bounded_contiguous_and_cover_the_file() {
+        for channels in [4, 8, 16] {
+            for size in [
+                0,
+                1,
+                CHUNK_SIZE as u64,
+                CHUNK_SIZE as u64 + 1,
+                CHUNK_SIZE as u64 * 17 + 31,
+            ] {
+                let ranges = flexible_parallel_chunk_ranges(size, channels);
+                assert!(valid_flexible_parallel_chunks(size, &ranges));
+                assert!(ranges.len() <= MAX_PARALLEL_PARTS);
+                assert_eq!(ranges.first().unwrap().offset, 0);
+                assert_eq!(
+                    ranges.iter().map(|range| range.length).sum::<u64>(),
+                    size
+                );
+                if size > CHUNK_SIZE as u64 {
+                    assert!(ranges.len() >= usize::from(channels) * 4);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn v3_chunk_validation_rejects_unsafe_layouts_and_v2_remains_fixed() {
+        let size = CHUNK_SIZE as u64 + 17;
+        let valid = flexible_parallel_chunk_ranges(size, 8);
+        assert!(valid_flexible_parallel_chunks(size, &valid));
+
+        let mut gap = valid.clone();
+        gap[1].offset += 1;
+        assert!(!valid_flexible_parallel_chunks(size, &gap));
+
+        let mut overlap = valid.clone();
+        overlap[1].offset -= 1;
+        assert!(!valid_flexible_parallel_chunks(size, &overlap));
+
+        let mut duplicate_index = valid.clone();
+        duplicate_index[1].index = 0;
+        assert!(!valid_flexible_parallel_chunks(size, &duplicate_index));
+
+        let mut zero_length = valid.clone();
+        zero_length[0].length = 0;
+        assert!(!valid_flexible_parallel_chunks(size, &zero_length));
+
+        assert!(!valid_flexible_parallel_chunks(
+            u64::MAX,
+            &[ParallelChunkRange {
+                index: 0,
+                offset: u64::MAX,
+                length: 2,
+            }],
+        ));
+        assert!(!valid_flexible_parallel_chunks(
+            MAX_PARALLEL_PARTS as u64 + 1,
+            &(0..=MAX_PARALLEL_PARTS)
+                .map(|index| ParallelChunkRange {
+                    index,
+                    offset: index as u64,
+                    length: 1,
+                })
+                .collect::<Vec<_>>(),
+        ));
+
+        let request = ParallelPrepareRequest {
+            sender_id: "sender".into(),
+            conversation_id: "conversation".into(),
+            client_message_id: "message".into(),
+            transfer_id: "message:receiver".into(),
+            sender_msg_id: "42".into(),
+            file_name: "source.bin".into(),
+            file_size: size,
+            file_sha256: "0".repeat(64),
+            chunks: valid,
+        };
+        assert!(!valid_parallel_prepare(&request, 2));
+        assert!(valid_parallel_prepare(&request, 3));
+
+        let mut v2 = request;
+        v2.chunks = parallel_chunk_ranges(size);
+        assert!(valid_parallel_prepare(&v2, 2));
+        assert!(valid_parallel_prepare(&v2, 3));
+    }
+
+    #[tokio::test]
+    async fn v3_manifest_loads_but_invalid_flexible_layout_is_rejected() {
+        let root = std::env::temp_dir().join(format!(
+            "xchat-parallel-v3-manifest-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        let transfer_id = "message:receiver";
+        let directory = parallel_transfer_dir(&root, transfer_id);
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let mut manifest = ParallelTransferManifest {
+            version: 3,
+            sender_id: "sender".into(),
+            conversation_id: "conversation".into(),
+            client_message_id: "message".into(),
+            transfer_id: transfer_id.into(),
+            sender_msg_id: "42".into(),
+            file_name: "source.bin".into(),
+            final_file_name: "source.bin".into(),
+            file_size: CHUNK_SIZE as u64 + 17,
+            file_sha256: "0".repeat(64),
+            chunks: flexible_parallel_chunk_ranges(CHUNK_SIZE as u64 + 17, 8),
+            message_id: 7,
+        };
+        tokio::fs::write(
+            parallel_manifest_path(&root, transfer_id),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            load_parallel_manifest(&root, transfer_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            manifest
+        );
+
+        manifest.chunks[1].offset += 1;
+        tokio::fs::write(
+            parallel_manifest_path(&root, transfer_id),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(load_parallel_manifest(&root, transfer_id).await.is_err());
+
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
     #[tokio::test]
     async fn parallel_manifest_rejects_conflicts_and_merges_verified_parts() {
         let root =
@@ -2579,7 +2937,7 @@ mod tests {
                     size: 7,
                 },
                 group_sync: None,
-                parallel_v2: true,
+                upload_plan: UploadPlan::new(UploadProtocol::FixedV2, 4),
                 file_sha256: Some(sha256_file(&source_path).await.unwrap()),
             },
         )
@@ -2779,7 +3137,7 @@ mod tests {
             awaiting.message.id,
             "peer-a",
             "127.0.0.1:1",
-            false,
+            &[],
         )
         .await
         .unwrap();

@@ -137,25 +137,25 @@ rtk git commit -m "feat(settings): expose parallel channel limit"
 
 ### RED
 
-- [ ] Add pure tests proving:
+- [x] Add pure tests proving:
   - peers without v2 remain sequential;
   - v2-only peers remain fixed at four ranges regardless of the local setting;
   - v3 peers select the minimum of local setting and advertised peer maximum;
   - v3 range generation fully and contiguously covers empty, tiny, uneven, and large files;
   - v3 manifest validation rejects gaps, overlaps, duplicate/non-contiguous indices, zero-length non-empty chunks, overflow, and excessive part counts;
   - v2 validation still accepts only the historical fixed-four layout.
-- [ ] Add route/handler tests proving v2 and v3 manifests are versioned and recovered independently.
-- [ ] Run focused tests and observe failure.
+- [x] Add route/handler tests proving v2 and v3 manifests are versioned and recovered independently.
+- [x] Run focused tests and observe failure.
 
 ### GREEN
 
-- [ ] Add explicit discovery capabilities for v3 and the peer-supported maximum, with a bounded parser that defaults safely for missing/malformed capability data.
-- [ ] Replace the job's `parallel_v2` boolean with an explicit upload protocol/plan carrying the fixed or negotiated channel count.
-- [ ] Add flexible v3 range generation with bounded part count and enough small work units to allow fair scheduling; retain `parallel_chunk_ranges` unchanged for v2.
-- [ ] Add `/api/uploads/v3/prepare` and `/api/uploads/v3/:transfer_id/:chunk_index` while preserving v2 routes.
-- [ ] Share handler internals but validate the path protocol against manifest version and layout before accepting bytes.
-- [ ] Ensure initial sends, offline resumes, and retries all recompute/use the same explicit negotiation rules.
-- [ ] Re-run focused tests.
+- [x] Add explicit discovery capabilities for v3 and the peer-supported maximum, with a bounded parser that defaults safely for missing/malformed capability data.
+- [x] Replace the job's `parallel_v2` boolean with an explicit upload protocol/plan carrying the fixed or negotiated channel count.
+- [x] Add flexible v3 range generation with bounded part count and enough small work units to allow fair scheduling; retain `parallel_chunk_ranges` unchanged for v2.
+- [x] Add `/api/uploads/v3/prepare` and `/api/uploads/v3/:transfer_id/:chunk_index` while preserving v2 routes.
+- [x] Share handler internals but validate the path protocol against manifest version and layout before accepting bytes.
+- [x] Ensure initial sends, offline resumes, and retries all recompute/use the same explicit negotiation rules.
+- [x] Re-run focused tests.
 
 ### Commit
 

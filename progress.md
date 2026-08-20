@@ -25,8 +25,12 @@
   - RED：Workspace/Web 新测试首次得到缺失 `max_parallel_channels` 字段的预期编译错误；同时修正测试中 opaque `IntoResponse` 必须先显式转换的调用方式。
   - GREEN：Workspace 快照、旧版 `get_settings` Tauri JSON、Tauri `update_settings`、HTTP get/update 已全部接入同一验证/持久化 helper；非法值在任何其他字段写入前返回。
   - `rtk cargo test --manifest-path src-tauri/Cargo.toml --lib parallel_channels` 8/8 通过，覆盖默认快照、HTTP 解析、有效保存和非法值不覆盖。
+  - RED：v3 协商/分块/manifest 测试首次出现 34 个预期缺失符号错误；随后逐步补齐协议模型并用编译错误找出全部旧布尔调用点。
+  - GREEN：新增 `parallel_file_v3:16` capability、显式 v1/v2/v3 `UploadPlan`、有界公平分块生成器、严格覆盖校验和 v3 prepare/chunk 路由；v2 固定四范围与原路由保持不变。
+  - 初次发送、等待上线恢复、显式恢复和失败重试现统一读取当前本地设置并对 peer capabilities 运行同一协商函数；并行发送按协商 channel 数限制单文件 worker 数。
+  - 新增 Web handler 测试确认 v3 manifest 落盘为 version 3，v2 prepare/chunk 路由拒绝该布局；`rtk cargo test --manifest-path src-tauri/Cargo.toml --lib` 全量 138/138 通过。
 - 下一步：
-  - 为 v3 协商、弹性分块和 manifest 安全边界编写失败测试，再实现协议层。
+  - 将 v1/v2/v3 每个实际 HTTP 分块请求统一接入全局 limiter，并用并发峰值、交错进度、设置换代和取消测试验证。
 
 ## 会话：2026-08-19 Windows A0/A1 收敛
 

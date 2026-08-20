@@ -23,6 +23,7 @@ pub const DISCOVERY_CAPABILITIES: &[&str] = &[
     "receipts",
     "transfer_cancel",
     "parallel_file_v2",
+    "parallel_file_v3:16",
 ];
 static LOCAL_DEVICE_METADATA: OnceLock<(Option<String>, Option<String>)> = OnceLock::new();
 /// 当前对外展示/使用的本机 IP。外层 `None` 表示尚未探测过，
@@ -3003,6 +3004,7 @@ mod tests {
     #[test]
     fn discovery_extension_round_trips_after_legacy_prefix() {
         assert!(DISCOVERY_CAPABILITIES.contains(&"parallel_file_v2"));
+        assert!(DISCOVERY_CAPABILITIES.contains(&"parallel_file_v3:16"));
         let announcement = DiscoveryAnnouncement {
             peer_id: "peer-1".into(),
             name: "Alice".into(),
