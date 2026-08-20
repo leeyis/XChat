@@ -294,4 +294,25 @@ mod tests {
         drop(held);
         assert_eq!(generation.semaphore.available_permits(), 4);
     }
+
+    #[tokio::test]
+    async fn every_supported_max_parallel_channels_value_is_enforced() {
+        let controller = TransferConcurrencyController::default();
+        let active = Arc::new(AtomicBool::new(false));
+
+        for limit in MAX_PARALLEL_CHANNEL_OPTIONS {
+            let generation = controller.generation(limit).unwrap();
+            let mut held = Vec::new();
+            for _ in 0..limit {
+                held.push(generation.acquire(&active).await.unwrap());
+            }
+            assert_eq!(generation.semaphore.available_permits(), 0);
+            assert!(generation.semaphore.clone().try_acquire_owned().is_err());
+            drop(held);
+            assert_eq!(
+                generation.semaphore.available_permits(),
+                usize::from(limit)
+            );
+        }
+    }
 }

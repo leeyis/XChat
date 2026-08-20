@@ -31,6 +31,8 @@
 - 2026-08-20：设置更新入口必须先验证 `max_parallel_channels` 再写其他字段；HTTP/Tauri 当前并非整包事务，前置验证可确保非法 12 不会造成同一请求中其他设置的部分更新。
 - 2026-08-20：v3 capability 采用 `parallel_file_v3:<max>`，当前广播 `parallel_file_v3:16` 并继续广播 v2；解析只接受 4/8/16，缺失或畸形 v3 能力会安全回退 v2 或 v1。
 - 2026-08-20：v3 对大于 4 MiB 的文件至少生成 `channels × 4` 个平衡范围，并限制最多 4096 个；接收端不信任生成算法，而是独立校验连续索引、无缝 offset、正长度、checked-add 无溢出和完整覆盖。
+- 2026-08-20：全局 permit 的正确生命周期必须覆盖请求 body 上传和响应 body 读取；只在创建 future 时取许可会过早释放。当前 v1/v2/v3 均在整个 HTTP 数据请求完成或被取消后才 drop。
+- 2026-08-20：仅在 permit 排队时响应取消仍不足够；真实测试复现服务器已收完 body 但迟迟不回响应时旧逻辑会卡到 HTTP timeout。通用 cancellable future 包装现覆盖 prepare、send 与 response body，取消会 drop 网络 future 并同步释放许可。
 - 2026-08-20：推荐保留 `/api/uploads/v2/*` 的固定四范围契约，并新增 `/api/uploads/v3/*`；新 discovery capability 声明 v3 与最大 16，发送端仅在对端明确声明时使用 v3。这样旧接收端永远不会收到其无法解释的新清单。
 - 2026-08-20：全局限制应覆盖 v1 顺序上传、v2 固定四范围和 v3 worker；v1 每次 HTTP 分块占一个许可，v2/v3 每个范围请求占一个许可，才能让“所有文件传输共享全局上限”在混合版本设备间成立。
 - 2026-08-20：现有 Rust 测试已具备真实 Axum fake receiver、临时 SQLite 和 `run_upload` 调用 seam；可扩展为两个 v3 上传并记录同时处理的范围数，直接验证跨文件峰值不超过设置且第二个文件能在第一个完成前取得通道，而不是只测试信号量内部字段。

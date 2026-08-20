@@ -29,8 +29,13 @@
   - GREEN：新增 `parallel_file_v3:16` capability、显式 v1/v2/v3 `UploadPlan`、有界公平分块生成器、严格覆盖校验和 v3 prepare/chunk 路由；v2 固定四范围与原路由保持不变。
   - 初次发送、等待上线恢复、显式恢复和失败重试现统一读取当前本地设置并对 peer capabilities 运行同一协商函数；并行发送按协商 channel 数限制单文件 worker 数。
   - 新增 Web handler 测试确认 v3 manifest 落盘为 version 3，v2 prepare/chunk 路由拒绝该布局；`rtk cargo test --manifest-path src-tauri/Cargo.toml --lib` 全量 138/138 通过。
+  - RED：双 v3 fake receiver 测试先因 `UploadJob` 尚未捕获 limiter 代际而编译失败；在途取消测试随后稳定复现请求会等待 5 秒服务端响应、1 秒内无法退出。
+  - GREEN：每个新 job 捕获当前设置对应的 limiter 代际；v1 每个 multipart chunk、v2/v3 每个 range 都在真实 HTTP 请求期间持有同一全局 permit。
+  - v3 双传输实测峰值不超过 4，且第二个 transfer ID 在第一个文件的全部范围启动前已出现；v1 与 v2 在许可池耗尽时均无数据请求越过门禁。
+  - 对 prepare、分块 send 和响应体读取统一增加 25ms 原子取消轮询；在途取消现于 1 秒断言内返回并允许替代请求立即取得释放的 permit。
+  - 4/8/16 三档均新增“持满后额外 try_acquire 失败、释放后恢复完整许可数”测试；最终 Rust 全量回归 142/142 通过，三档设置定向测试 9/9 通过。
 - 下一步：
-  - 将 v1/v2/v3 每个实际 HTTP 分块请求统一接入全局 limiter，并用并发峰值、交错进度、设置换代和取消测试验证。
+  - 接入 React 设置归一化、Tauri/HTTP adapter、保存脏状态和已批准的设置 UI。
 
 ## 会话：2026-08-19 Windows A0/A1 收敛
 

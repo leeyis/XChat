@@ -176,23 +176,23 @@ rtk git commit -m "feat(protocol): negotiate flexible parallel transfers"
 
 ### RED
 
-- [ ] Extend the fake HTTP receiver to record active request count, peak count, transfer IDs, and request ordering.
-- [ ] Add integration-style sender tests proving:
+- [x] Extend the fake HTTP receiver to record active request count, peak count, transfer IDs, and request ordering.
+- [x] Add integration-style sender tests proving:
   - concurrent v3 transfers never exceed a global limit of 4/8/16;
   - at least two transfers make progress before one monopolizes all queued work;
   - v1 and v2 requests consume the same global permit pool;
   - cancelling while queued or in flight exits promptly and leaves later transfers unblocked;
   - changing the setting affects a newly started job but not an already-running job.
-- [ ] Run focused tests and observe failure.
+- [x] Run focused tests and observe failure.
 
 ### GREEN
 
-- [ ] Capture the saved channel value and its limiter generation when each upload job starts.
-- [ ] Acquire one shared permit immediately before every outbound chunk/range HTTP request, and drop it immediately after that request completes.
-- [ ] Bound per-file in-flight futures to its negotiated channel count; do not construct an unbounded set of active request futures.
-- [ ] Poll cancellation while waiting for a permit and while retry/backoff logic runs.
-- [ ] Preserve progress, SHA-256 verification, resume, retry, and receiver-finalization semantics.
-- [ ] Re-run focused tests.
+- [x] Capture the saved channel value and its limiter generation when each upload job starts.
+- [x] Acquire one shared permit immediately before every outbound chunk/range HTTP request, and drop it immediately after that request completes.
+- [x] Bound per-file in-flight futures to its negotiated channel count; do not construct an unbounded set of active request futures.
+- [x] Poll cancellation while waiting for a permit and while retry/backoff logic runs.
+- [x] Preserve progress, SHA-256 verification, resume, retry, and receiver-finalization semantics.
+- [x] Re-run focused tests.
 
 ### Commit
 
