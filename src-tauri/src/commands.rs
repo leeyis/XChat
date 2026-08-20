@@ -97,6 +97,19 @@ fn calculate_optimal_chunk_size(_file_size: usize) -> usize {
     }
 }
 
+fn resolve_file_peer_state(
+    peer_manager: &PeerManager,
+    peer_id: &str,
+    requested_addr: &str,
+) -> (bool, String) {
+    peer_manager
+        .get_all_peers()
+        .into_iter()
+        .find(|peer| peer.id == peer_id)
+        .map(|peer| (!peer.is_offline, peer.addr))
+        .unwrap_or_else(|| (false, requested_addr.to_string()))
+}
+
 /// 统一的文件上传实现
 /// 接受一个实现了 AsyncRead 的文件对象
 async fn upload_file_internal<R: tokio::io::AsyncRead + Unpin>(
@@ -679,13 +692,18 @@ pub async fn send_file(
 
     println!("[Command] 文件: {}, 大小: {} 字节", file_name, file_size);
 
-    // ── 检查接收端是否离线 ──
-    let is_offline_now = {
-        let peers = peer_state.manager.get_all_peers();
-        peers.iter().find(|p| p.id == peer_id).map(|p| p.is_offline).unwrap_or(true)
-    };
+    // ── 使用后端维护的最新地址，并检查接收端是否离线 ──
+    let (is_online_now, resolved_peer_addr) =
+        resolve_file_peer_state(&peer_state.manager, &peer_id, &peer_addr);
+    if resolved_peer_addr != peer_addr {
+        println!(
+            "[Command] 🛡️ 拦截到过期文件传输 IP，后端强行纠正: {} -> {}",
+            peer_addr, resolved_peer_addr
+        );
+    }
+    peer_addr = resolved_peer_addr;
 
-    if is_offline_now {
+    if !is_online_now {
         println!(
             "[Command] 用户 {} 处于离线记录中，直接保存文件消息为挂起状态",
             peer_id
@@ -829,18 +847,11 @@ pub async fn send_file(
             let file = tokio::fs::File::from_std(std_file);
 
             let peer_state = app.try_state::<PeerState>();
-            let (is_online, backend_addr) = peer_state
+            let (is_online, latest_addr) = peer_state
                 .as_ref()
-                .map(|s| {
-                    if let Some(p) = s.manager.get_all_peers().iter().find(|p| p.id == peer_id) {
-                        (!p.is_offline, Some(p.addr.clone()))
-                    } else { (false, None) }
-                })
-                .unwrap_or((true, None));
-
-            if let Some(latest_addr) = backend_addr {
-                if latest_addr != peer_addr { peer_addr = latest_addr; }
-            }
+                .map(|state| resolve_file_peer_state(&state.manager, &peer_id, &peer_addr))
+                .unwrap_or_else(|| (true, peer_addr.clone()));
+            peer_addr = latest_addr;
             return upload_file_internal(
                 &app, &state, peer_state.as_ref(),
                 peer_id, peer_addr, file_name, file_size, actual_path, file, is_online, None,
@@ -856,18 +867,11 @@ pub async fn send_file(
         .map_err(|e| format!("打开文件失败: {}", e))?;
 
     let peer_state = app.try_state::<PeerState>();
-    let (is_online, backend_addr) = peer_state
+    let (is_online, latest_addr) = peer_state
         .as_ref()
-        .map(|s| {
-            if let Some(p) = s.manager.get_all_peers().iter().find(|p| p.id == peer_id) {
-                (!p.is_offline, Some(p.addr.clone()))
-            } else { (false, None) }
-        })
-        .unwrap_or((true, None));
-
-    if let Some(latest_addr) = backend_addr {
-        if latest_addr != peer_addr { peer_addr = latest_addr; }
-    }
+        .map(|state| resolve_file_peer_state(&state.manager, &peer_id, &peer_addr))
+        .unwrap_or_else(|| (true, peer_addr.clone()));
+    peer_addr = latest_addr;
     upload_file_internal(
         &app, &state, peer_state.as_ref(),
         peer_id, peer_addr, file_name, file_size, actual_path, file, is_online, None,
@@ -1232,13 +1236,17 @@ pub async fn send_file_from_fd(
         use crate::android_fd::AndroidFile;
         use std::os::unix::io::IntoRawFd;
 
-        // ── 检查接收端是否离线 ──
-        let is_offline_now = {
-            let peers = peer_state.manager.get_all_peers();
-            peers.iter().find(|p| p.id == peerId).map(|p| p.is_offline).unwrap_or(true)
-        };
+        // ── 使用后端维护的最新地址，并检查接收端是否离线 ──
+        let (is_online_now, mut peer_addr) =
+            resolve_file_peer_state(&peer_state.manager, &peerId, &peerAddr);
+        if peer_addr != peerAddr {
+            println!(
+                "[Command] 🛡️ 拦截到过期文件传输 IP，后端强行纠正: {} -> {}",
+                peerAddr, peer_addr
+            );
+        }
 
-        if is_offline_now {
+        if !is_online_now {
             println!(
                 "[Command] 用户 {} 处于离线记录中，直接保存文件消息为挂起状态",
                 peerId
@@ -1287,7 +1295,7 @@ pub async fn send_file_from_fd(
 
         // ── 1. 检查接收端的 auto_download 设置 ──
         let auto_enabled = {
-            let auto_dl_url = format!("http://{}/api/auto_download", peerAddr);
+            let auto_dl_url = format!("http://{}/api/auto_download", peer_addr);
             match reqwest::Client::new().get(&auto_dl_url).send().await {
                 Ok(resp) => {
                     if let Ok(data) = resp.json::<serde_json::Value>().await {
@@ -1337,7 +1345,7 @@ pub async fn send_file_from_fd(
                 "sender_msg_id": sender_msg_id,
             });
             let _ = crate::network::messaging::send_json_via_ws(
-                &peerAddr,
+                &peer_addr,
                 &peerId,
                 &offer.to_string(),
             )
@@ -1353,30 +1361,11 @@ pub async fn send_file_from_fd(
 
         // ── 自动下载开启：先保存消息 + 缓存 FD，再上传 ──
         let peer_state = app.try_state::<PeerState>();
-        let (is_online, backend_addr) = peer_state
+        let (is_online, latest_addr) = peer_state
             .as_ref()
-            .map(|s| {
-                if let Some(p) = s.manager.get_all_peers().iter().find(|p| p.id == peerId) {
-                    (!p.is_offline, Some(p.addr.clone()))
-                } else {
-                    (false, None)
-                }
-            })
-            .unwrap_or((true, None));
-
-        let peer_addr = if let Some(latest_addr) = backend_addr {
-            if latest_addr != peerAddr {
-                println!(
-                    "[Command] 🛡️ 拦截到过期文件传输 IP，后端强行纠正: {} -> {}",
-                    peerAddr, latest_addr
-                );
-                latest_addr
-            } else {
-                peerAddr
-            }
-        } else {
-            peerAddr
-        };
+            .map(|state| resolve_file_peer_state(&state.manager, &peerId, &peer_addr))
+            .unwrap_or_else(|| (true, peer_addr.clone()));
+        peer_addr = latest_addr;
 
         // 保存消息 + 缓存 FD，再上传
         let overall_status = if is_online { "sent" } else { "pending" };
@@ -2923,6 +2912,28 @@ pub fn set_local_ip(ip: String) -> Result<(), String> {
         Ok(())
     } else {
         Err("IP地址不在可用列表中".to_string())
+    }
+}
+
+#[cfg(test)]
+mod file_peer_state_tests {
+    use super::resolve_file_peer_state;
+    use crate::peers::PeerManager;
+
+    #[test]
+    fn file_peer_state_prefers_backend_address() {
+        let manager = PeerManager::new();
+        manager.add_or_update(
+            "peer-20".into(),
+            "Mac".into(),
+            "192.168.20.105:8888".into(),
+        );
+
+        let (is_online, endpoint) =
+            resolve_file_peer_state(&manager, "peer-20", "192.168.10.120:8888");
+
+        assert!(is_online);
+        assert_eq!(endpoint, "192.168.20.105:8888");
     }
 }
 
