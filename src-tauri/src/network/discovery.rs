@@ -3,7 +3,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
@@ -1012,12 +1012,42 @@ fn rotating_fixed_peer_endpoints(
     selected
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PeerEndpointSource {
+    VerifiedFixed,
+    ObservedUdp,
+}
+
+struct SelectedPeerEndpoint {
+    endpoint: String,
+    source: PeerEndpointSource,
+}
+
+fn select_peer_endpoint(
+    peer_id: &str,
+    observed_ip: IpAddr,
+    announced_port: u16,
+    verified_endpoints: &HashMap<String, String>,
+) -> SelectedPeerEndpoint {
+    match verified_endpoints.get(peer_id) {
+        Some(endpoint) => SelectedPeerEndpoint {
+            endpoint: endpoint.clone(),
+            source: PeerEndpointSource::VerifiedFixed,
+        },
+        None => SelectedPeerEndpoint {
+            endpoint: SocketAddr::new(observed_ip, announced_port).to_string(),
+            source: PeerEndpointSource::ObservedUdp,
+        },
+    }
+}
+
 #[derive(Default)]
 struct FixedPeerSourceResolver {
     dns_cache: DnsCache,
     retry_states: HashMap<String, FixedPeerRetryState>,
     resolved_by_endpoint: HashMap<String, HashSet<Ipv4Addr>>,
     expected_ids_by_source: HashMap<Ipv4Addr, HashSet<String>>,
+    verified_endpoints_by_device_id: HashMap<String, String>,
     cursor: usize,
 }
 
@@ -1042,6 +1072,8 @@ impl FixedPeerSourceResolver {
     }
 
     fn bind_verified_identities(&mut self, records: &[crate::db::CustomPeerRecord]) {
+        self.verified_endpoints_by_device_id =
+            super::peer_identity::verified_endpoints_by_device_id(records);
         self.expected_ids_by_source.clear();
         for record in records {
             let Some(device_id) = record
@@ -1829,7 +1861,7 @@ pub async fn start_listening(
                 };
                 let peer_id = parts[2].to_string();
                 let name = parts[3].to_string();
-                let peer_port = parts[4];
+                let peer_port = announcement.port;
                 let available_memory_mb: u64 = parts[5].parse().unwrap_or(0);
                 if peer_id == my_id {
                     continue;
@@ -1861,7 +1893,22 @@ pub async fn start_listening(
                 }
                 metrics.record_receive(false, false);
 
-                let peer_addr = format!("{}:{}", addr.ip(), peer_port);
+                let observed_peer_addr = SocketAddr::new(addr.ip(), peer_port).to_string();
+                let selected = select_peer_endpoint(
+                    &peer_id,
+                    addr.ip(),
+                    peer_port,
+                    &fixed_peer_resolver.verified_endpoints_by_device_id,
+                );
+                let using_verified_override = selected.source == PeerEndpointSource::VerifiedFixed
+                    && selected.endpoint != observed_peer_addr;
+                let endpoint_changed = using_verified_override
+                    && peer_manager
+                        .get_active_peers()
+                        .into_iter()
+                        .find(|peer| peer.id == peer_id)
+                        .is_none_or(|peer| peer.addr != selected.endpoint);
+                let peer_addr = selected.endpoint;
 
                 let is_new_or_reconnected = peer_manager.add_or_update_with_details(
                     peer_id.clone(),
@@ -1875,6 +1922,12 @@ pub async fn start_listening(
                     announcement.app_version.clone(),
                     announcement.has_authoritative_metadata(),
                 );
+
+                if using_verified_override && (is_new_or_reconnected || endpoint_changed) {
+                    eprintln!(
+                        "[UDP][endpoint] peer {peer_id}: observed {observed_peer_addr}, using verified {peer_addr}"
+                    );
+                }
 
                 // 保存或更新用户到数据库
                 let _ = crate::db::save_or_update_discovered_user(
@@ -1972,9 +2025,6 @@ pub async fn start_listening(
                         Some(env!("CARGO_PKG_VERSION").to_string()),
                     )
                     .encode();
-                    let Ok(peer_port) = peer_port.parse::<u16>() else {
-                        continue;
-                    };
                     let target = SocketAddr::new(addr.ip(), peer_port);
                     if send_discovery_reply(
                         &snapshot,
@@ -2076,7 +2126,7 @@ pub async fn start_listening(
                 };
                 let peer_id = parts[2].to_string();
                 let name = parts[3].to_string();
-                let peer_port = parts[4];
+                let peer_port = announcement.port;
                 let available_memory_mb: u64 = parts[5].parse().unwrap_or(0);
                 if peer_id == my_id {
                     continue;
@@ -2106,7 +2156,22 @@ pub async fn start_listening(
                     continue;
                 }
                 metrics.record_receive(false, false);
-                let peer_addr = format!("{}:{}", addr.ip(), peer_port);
+                let observed_peer_addr = SocketAddr::new(addr.ip(), peer_port).to_string();
+                let selected = select_peer_endpoint(
+                    &peer_id,
+                    addr.ip(),
+                    peer_port,
+                    &fixed_peer_resolver.verified_endpoints_by_device_id,
+                );
+                let using_verified_override = selected.source == PeerEndpointSource::VerifiedFixed
+                    && selected.endpoint != observed_peer_addr;
+                let endpoint_changed = using_verified_override
+                    && peer_manager
+                        .get_active_peers()
+                        .into_iter()
+                        .find(|peer| peer.id == peer_id)
+                        .is_none_or(|peer| peer.addr != selected.endpoint);
+                let peer_addr = selected.endpoint;
 
                 let is_new_or_reconnected = peer_manager.add_or_update_with_details(
                     peer_id.clone(),
@@ -2120,6 +2185,12 @@ pub async fn start_listening(
                     announcement.app_version.clone(),
                     announcement.has_authoritative_metadata(),
                 );
+
+                if using_verified_override && (is_new_or_reconnected || endpoint_changed) {
+                    eprintln!(
+                        "[UDP][endpoint] peer {peer_id}: observed {observed_peer_addr}, using verified {peer_addr}"
+                    );
+                }
 
                 // 保存或更新用户到数据库
                 let _ = crate::db::save_or_update_discovered_user(
@@ -2186,9 +2257,6 @@ pub async fn start_listening(
                         Some(env!("CARGO_PKG_VERSION").to_string()),
                     )
                     .encode();
-                    let Ok(peer_port) = peer_port.parse::<u16>() else {
-                        continue;
-                    };
                     let target = SocketAddr::new(addr.ip(), peer_port);
                     if send_discovery_reply(
                         &snapshot,
@@ -2354,6 +2422,109 @@ mod tests {
             ordinary_lan_source,
             "device-lisi"
         ));
+    }
+
+    #[test]
+    fn peer_endpoint_prefers_verified_endpoint_over_nat_source() {
+        let verified_endpoints = HashMap::from([(
+            "peer-20".to_string(),
+            "192.168.20.105:8888".to_string(),
+        )]);
+
+        let selected = select_peer_endpoint(
+            "peer-20",
+            "192.168.10.120".parse().unwrap(),
+            8888,
+            &verified_endpoints,
+        );
+
+        assert_eq!(selected.endpoint, "192.168.20.105:8888");
+        assert_eq!(selected.source, PeerEndpointSource::VerifiedFixed);
+    }
+
+    #[test]
+    fn peer_endpoint_uses_observed_source_without_verified_endpoint() {
+        let selected = select_peer_endpoint(
+            "peer-lan",
+            "192.168.20.106".parse().unwrap(),
+            8888,
+            &HashMap::new(),
+        );
+
+        assert_eq!(selected.endpoint, "192.168.20.106:8888");
+        assert_eq!(selected.source, PeerEndpointSource::ObservedUdp);
+    }
+
+    #[test]
+    fn peer_endpoint_does_not_reuse_another_devices_verified_endpoint() {
+        let verified_endpoints = HashMap::from([(
+            "peer-a".to_string(),
+            "192.168.20.105:8888".to_string(),
+        )]);
+
+        let selected = select_peer_endpoint(
+            "peer-b",
+            "192.168.20.106".parse().unwrap(),
+            8888,
+            &verified_endpoints,
+        );
+
+        assert_eq!(selected.endpoint, "192.168.20.106:8888");
+        assert_eq!(selected.source, PeerEndpointSource::ObservedUdp);
+    }
+
+    #[test]
+    fn peer_endpoint_preserves_verified_port() {
+        let verified_endpoints = HashMap::from([(
+            "peer-20".to_string(),
+            "192.168.20.105:18888".to_string(),
+        )]);
+
+        let selected = select_peer_endpoint(
+            "peer-20",
+            "192.168.10.120".parse().unwrap(),
+            8888,
+            &verified_endpoints,
+        );
+
+        assert_eq!(selected.endpoint, "192.168.20.105:18888");
+    }
+
+    #[test]
+    fn peer_endpoint_falls_back_after_verified_record_is_removed() {
+        let mut resolver = FixedPeerSourceResolver::default();
+        resolver.bind_verified_identities(&[crate::db::CustomPeerRecord {
+            endpoint: "192.168.20.105:8888".into(),
+            device_id: Some("peer-20".into()),
+            name: None,
+            hostname: None,
+            mac_address: None,
+            app_version: None,
+            last_verified_at: Some(20),
+        }]);
+        assert_eq!(
+            select_peer_endpoint(
+                "peer-20",
+                "192.168.10.120".parse().unwrap(),
+                8888,
+                &resolver.verified_endpoints_by_device_id,
+            )
+            .endpoint,
+            "192.168.20.105:8888",
+        );
+
+        resolver.bind_verified_identities(&[]);
+
+        assert_eq!(
+            select_peer_endpoint(
+                "peer-20",
+                "192.168.10.120".parse().unwrap(),
+                8888,
+                &resolver.verified_endpoints_by_device_id,
+            )
+            .endpoint,
+            "192.168.10.120:8888",
+        );
     }
 
     #[test]
