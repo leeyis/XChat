@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
@@ -79,6 +80,50 @@ pub fn normalize_peer_endpoint(input: &str, default_port: u16) -> Result<String,
     } else {
         Err("主机名格式无效".to_string())
     }
+}
+
+pub(crate) fn verified_endpoints_by_device_id(
+    records: &[crate::db::CustomPeerRecord],
+) -> HashMap<String, String> {
+    let mut selected = HashMap::<String, (Option<i64>, String)>::new();
+
+    for record in records {
+        let Some(device_id) = record
+            .device_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|device_id| record.is_verified() && !device_id.is_empty())
+        else {
+            continue;
+        };
+
+        let raw_endpoint = record.endpoint.trim();
+        if raw_endpoint.parse::<IpAddr>().is_ok() || !raw_endpoint.contains(':') {
+            continue;
+        }
+        let Ok(endpoint) = normalize_peer_endpoint(raw_endpoint, 8888) else {
+            continue;
+        };
+
+        let replace = selected
+            .get(device_id)
+            .is_none_or(|(last_verified_at, current_endpoint)| {
+                record.last_verified_at > *last_verified_at
+                    || (record.last_verified_at == *last_verified_at
+                        && endpoint.as_str() < current_endpoint.as_str())
+            });
+        if replace {
+            selected.insert(
+                device_id.to_string(),
+                (record.last_verified_at, endpoint),
+            );
+        }
+    }
+
+    selected
+        .into_iter()
+        .map(|(device_id, (_, endpoint))| (device_id, endpoint))
+        .collect()
 }
 
 fn validate_identity(identity: PeerIdentity) -> Result<PeerIdentity, String> {
@@ -213,6 +258,22 @@ mod tests {
     use super::*;
     use axum::{routing::get, Json, Router};
 
+    fn custom_peer(
+        endpoint: &str,
+        device_id: Option<&str>,
+        last_verified_at: Option<i64>,
+    ) -> crate::db::CustomPeerRecord {
+        crate::db::CustomPeerRecord {
+            endpoint: endpoint.into(),
+            device_id: device_id.map(str::to_string),
+            name: None,
+            hostname: None,
+            mac_address: None,
+            app_version: None,
+            last_verified_at,
+        }
+    }
+
     async fn spawn_identity_server(
         identity: PeerIdentity,
     ) -> (String, tokio::task::JoinHandle<()>) {
@@ -277,5 +338,70 @@ mod tests {
         assert!(normalize_peer_endpoint("http://192.168.10.22", 8888).is_err());
         assert!(normalize_peer_endpoint("192.168.10.22/path", 8888).is_err());
         assert!(normalize_peer_endpoint("", 8888).is_err());
+    }
+
+    #[test]
+    fn verified_endpoint_snapshot_ignores_unverified_legacy_records() {
+        let records = vec![custom_peer("192.168.20.105:8888", None, Some(10))];
+
+        assert!(verified_endpoints_by_device_id(&records).is_empty());
+    }
+
+    #[test]
+    fn verified_endpoint_snapshot_ignores_invalid_endpoints() {
+        let records = vec![custom_peer(
+            "not/a/peer",
+            Some("peer-invalid"),
+            Some(20),
+        )];
+
+        assert!(verified_endpoints_by_device_id(&records).is_empty());
+    }
+
+    #[test]
+    fn verified_endpoint_snapshot_prefers_latest_verification() {
+        let records = vec![
+            custom_peer(
+                "192.168.20.109:8888",
+                Some("peer-latest"),
+                Some(10),
+            ),
+            custom_peer(
+                "192.168.20.105:18888",
+                Some("peer-latest"),
+                Some(20),
+            ),
+        ];
+
+        assert_eq!(
+            verified_endpoints_by_device_id(&records)["peer-latest"],
+            "192.168.20.105:18888",
+        );
+    }
+
+    #[test]
+    fn verified_endpoint_snapshot_uses_lexical_tiebreaker() {
+        let records = vec![
+            custom_peer("peer-z.local:8888", Some("peer-tie"), Some(30)),
+            custom_peer("peer-a.local:8888", Some("peer-tie"), Some(30)),
+        ];
+
+        assert_eq!(
+            verified_endpoints_by_device_id(&records)["peer-tie"],
+            "peer-a.local:8888",
+        );
+    }
+
+    #[test]
+    fn verified_endpoint_snapshot_treats_missing_timestamp_as_oldest() {
+        let records = vec![
+            custom_peer("192.168.20.111:8888", Some("peer-none"), None),
+            custom_peer("192.168.20.112:8888", Some("peer-none"), Some(-1)),
+        ];
+
+        assert_eq!(
+            verified_endpoints_by_device_id(&records)["peer-none"],
+            "192.168.20.112:8888",
+        );
     }
 }
