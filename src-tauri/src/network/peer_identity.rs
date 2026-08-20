@@ -88,12 +88,10 @@ pub(crate) fn verified_endpoints_by_device_id(
     let mut selected = HashMap::<String, (Option<i64>, String)>::new();
 
     for record in records {
-        let Some(device_id) = record
-            .device_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|device_id| record.is_verified() && !device_id.is_empty())
-        else {
+        if !record.is_verified() {
+            continue;
+        }
+        let Some(device_id) = record.device_id.as_deref() else {
             continue;
         };
 
@@ -356,6 +354,19 @@ mod tests {
         )];
 
         assert!(verified_endpoints_by_device_id(&records).is_empty());
+    }
+
+    #[test]
+    fn verified_endpoint_snapshot_preserves_device_id_for_exact_matching() {
+        let records = vec![custom_peer(
+            "192.168.20.105:8888",
+            Some(" peer-20 "),
+            Some(20),
+        )];
+
+        let endpoints = verified_endpoints_by_device_id(&records);
+        assert_eq!(endpoints[" peer-20 "], "192.168.20.105:8888");
+        assert!(!endpoints.contains_key("peer-20"));
     }
 
     #[test]
