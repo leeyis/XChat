@@ -27,6 +27,7 @@
 - 2026-08-20：Rust `get_settings`、workspace snapshot、HTTP settings 和两条更新入口均可复用同一 transfer setting helper；允许值只接受 4/8/16，缺失或损坏的历史值读取为 4，显式非法更新返回错误而不覆盖旧值。
 - 2026-08-20：接收端在 manifest 通过校验后，分块接收、恢复扫描、进度聚合、顺序合并和 SHA-256 校验均按 `manifest.chunks` 泛化工作；v3 的主要接收改动可以限制在新路由、manifest 版本与安全覆盖校验，不必重写稳定的数据落盘状态机。
 - 2026-08-20：实施计划已固化为七个可独立验证阶段；协议选择明确为 v1 顺序、v2 固定四范围、v3 可调 worker，所有实际 HTTP 分块请求统一经过进程级代际信号量。
+- 2026-08-20：`TransferConcurrencyGeneration::acquire` 将一次 semaphore 排队 future 固定到整个等待期，只用短周期定时器观察原子取消 token；这样既保留 Tokio FIFO 排队公平性，又能在取消时及时退出且不会拿走许可。
 - 2026-08-20：推荐保留 `/api/uploads/v2/*` 的固定四范围契约，并新增 `/api/uploads/v3/*`；新 discovery capability 声明 v3 与最大 16，发送端仅在对端明确声明时使用 v3。这样旧接收端永远不会收到其无法解释的新清单。
 - 2026-08-20：全局限制应覆盖 v1 顺序上传、v2 固定四范围和 v3 worker；v1 每次 HTTP 分块占一个许可，v2/v3 每个范围请求占一个许可，才能让“所有文件传输共享全局上限”在混合版本设备间成立。
 - 2026-08-20：现有 Rust 测试已具备真实 Axum fake receiver、临时 SQLite 和 `run_upload` 调用 seam；可扩展为两个 v3 上传并记录同时处理的范围数，直接验证跨文件峰值不超过设置且第二个文件能在第一个完成前取得通道，而不是只测试信号量内部字段。

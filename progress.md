@@ -19,8 +19,11 @@
   - 确认接收端稳定状态机可复用任意合法 manifest；决定新增显式 v3 路由/capability，完整保留 v2 固定四范围契约。
   - 找到现有真实 fake receiver 与 prepare handler 测试 seam，可用端到端峰值/交错记录验证全局并发与公平性。
   - 已写入 `docs/superpowers/plans/2026-08-20-xchat-configurable-transfer-channels.md`，把实现拆为设置持久化、代际限流、双 API、v3 协议、全局调度、前端和最终验证七个测试先行阶段。
+  - RED：新增设置/限流测试首次编译出现 14 个预期缺失符号错误，确认测试确实约束未实现行为。
+  - GREEN：实现设置键、默认值、4/8/16 校验、损坏值回退，以及共享 `Semaphore` 的进程级代际限流器；`rtk cargo test --manifest-path src-tauri/Cargo.toml --lib max_parallel_channels` 5/5 通过。
+  - 限流许可等待保留 Tokio semaphore 的原始排队位置，并每 25ms 检查取消 token；取消会丢弃等待 future，不占用或泄漏 permit。
 - 下一步：
-  - 按实施计划从设置持久化与全局限流的失败测试开始执行。
+  - 将新字段接入 Workspace 快照、Tauri 更新命令和 HTTP 设置接口，并补齐双入口失败测试。
 
 ## 会话：2026-08-19 Windows A0/A1 收敛
 

@@ -32,12 +32,12 @@
 
 ### RED
 
-- [ ] Add focused unit tests proving:
+- [x] Add focused unit tests proving:
   - a missing setting reads as `4`;
   - stored `4`, `8`, and `16` round-trip;
   - invalid requested values are rejected and do not overwrite the previous valid value;
   - malformed legacy/database text falls back to `4`.
-- [ ] Run the focused tests and observe the expected compile/test failure:
+- [x] Run the focused tests and observe the expected compile/test failure:
 
 ```bash
 rtk cargo test --manifest-path src-tauri/Cargo.toml --lib max_parallel_channels
@@ -45,10 +45,10 @@ rtk cargo test --manifest-path src-tauri/Cargo.toml --lib max_parallel_channels
 
 ### GREEN
 
-- [ ] Add `DEFAULT_MAX_PARALLEL_CHANNELS`, the allowed-value validator, and async load/save helpers using the existing generic settings table.
-- [ ] Use one stable key such as `file_transfer.max_parallel_channels.v1`.
-- [ ] Keep fallback-on-read separate from reject-on-write so corrupt old data cannot break settings loading.
-- [ ] Re-run the focused tests.
+- [x] Add `DEFAULT_MAX_PARALLEL_CHANNELS`, the allowed-value validator, and async load/save helpers using the existing generic settings table.
+- [x] Use one stable key such as `file_transfer.max_parallel_channels.v1`.
+- [x] Keep fallback-on-read separate from reject-on-write so corrupt old data cannot break settings loading.
+- [x] Re-run the focused tests.
 
 ### Commit
 
@@ -68,20 +68,20 @@ rtk git commit -m "feat(transfer): persist parallel channel limit"
 
 ### RED
 
-- [ ] Add async tests proving:
+- [x] Add async tests proving:
   - requests for the same configured limit share one semaphore generation;
   - changing the limit returns a distinct generation;
   - an old generation retains its original limit after a change;
   - no generation allows more simultaneous permits than its limit;
   - queued work can be cancelled without leaking a permit.
-- [ ] Run the focused tests and observe failure.
+- [x] Run the focused tests and observe failure.
 
 ### GREEN
 
-- [ ] Implement `TransferConcurrencyController` with a short synchronous lock around the current generation and an `Arc<tokio::sync::Semaphore>` inside each cloneable generation.
-- [ ] Add a process-global production controller following the existing cancellation-registry pattern.
-- [ ] Expose only the narrow operations the uploader needs: select a generation for a validated limit and acquire an owned permit.
-- [ ] Re-run the focused tests.
+- [x] Implement `TransferConcurrencyController` with a short synchronous lock around the current generation and an `Arc<tokio::sync::Semaphore>` inside each cloneable generation.
+- [x] Add a process-global production controller following the existing cancellation-registry pattern.
+- [x] Expose only the narrow operations the uploader needs: select a generation for a validated limit and acquire an owned permit.
+- [x] Re-run the focused tests.
 
 ### Commit
 
@@ -285,4 +285,3 @@ rtk cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --fea
 - [ ] Perform a focused code review of protocol compatibility, validation boundaries, cancellation, permit lifetime, and settings parity; fix and re-run affected checks.
 - [ ] Merge the finished branch into local `main` with a non-interactive merge only after every required check passes.
 - [ ] Report the merge commit, verification commands, any unavailable platform target, and the real-device requirement: both devices need the new build to exercise configurable v3; mixed-version pairs intentionally use four channels.
-
