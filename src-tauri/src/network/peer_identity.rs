@@ -373,19 +373,25 @@ mod tests {
     fn verified_endpoint_snapshot_prefers_latest_verification() {
         let records = vec![
             custom_peer(
-                "192.168.20.109:8888",
-                Some("peer-latest"),
-                Some(10),
-            ),
-            custom_peer(
                 "192.168.20.105:18888",
                 Some("peer-latest"),
                 Some(20),
             ),
+            custom_peer(
+                "192.168.20.109:8888",
+                Some("peer-latest"),
+                Some(10),
+            ),
         ];
+        let mut reversed = records.clone();
+        reversed.reverse();
 
         assert_eq!(
             verified_endpoints_by_device_id(&records)["peer-latest"],
+            "192.168.20.105:18888",
+        );
+        assert_eq!(
+            verified_endpoints_by_device_id(&reversed)["peer-latest"],
             "192.168.20.105:18888",
         );
     }
@@ -396,9 +402,15 @@ mod tests {
             custom_peer("peer-z.local:8888", Some("peer-tie"), Some(30)),
             custom_peer("peer-a.local:8888", Some("peer-tie"), Some(30)),
         ];
+        let mut reversed = records.clone();
+        reversed.reverse();
 
         assert_eq!(
             verified_endpoints_by_device_id(&records)["peer-tie"],
+            "peer-a.local:8888",
+        );
+        assert_eq!(
+            verified_endpoints_by_device_id(&reversed)["peer-tie"],
             "peer-a.local:8888",
         );
     }
@@ -409,9 +421,15 @@ mod tests {
             custom_peer("192.168.20.111:8888", Some("peer-none"), None),
             custom_peer("192.168.20.112:8888", Some("peer-none"), Some(-1)),
         ];
+        let mut reversed = records.clone();
+        reversed.reverse();
 
         assert_eq!(
             verified_endpoints_by_device_id(&records)["peer-none"],
+            "192.168.20.112:8888",
+        );
+        assert_eq!(
+            verified_endpoints_by_device_id(&reversed)["peer-none"],
             "192.168.20.112:8888",
         );
     }
