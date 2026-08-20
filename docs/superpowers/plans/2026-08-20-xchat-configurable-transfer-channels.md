@@ -250,20 +250,20 @@ rtk git commit -m "feat(ui): configure transfer channel limit"
 
 ### Automated verification
 
-- [ ] Run all frontend tests and build:
+- [x] Run all frontend tests and build:
 
 ```bash
 rtk npm test
 rtk npm run build
 ```
 
-- [ ] Run all Rust library tests:
+- [x] Run all Rust library tests:
 
 ```bash
 rtk cargo test --manifest-path src-tauri/Cargo.toml --lib
 ```
 
-- [ ] Check both shared feature sets:
+- [x] Check both shared feature sets:
 
 ```bash
 rtk cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features desktop --lib
@@ -272,17 +272,19 @@ rtk cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --fea
 
 ### Runtime verification
 
-- [ ] Launch an isolated Tauri development instance on an alternate port/database and smoke-test load, change, save, reload, and reset of all three options.
-- [ ] Visually compare the production control with `ui-ref/xchat-desktop-prototype.html` at desktop widths and capture evidence.
+- [x] Launch an isolated Tauri development instance on an alternate port/database and smoke-test load, change, save, reload, and reset of all three options.
+- [x] Visually compare the production control with `ui-ref/xchat-desktop-prototype.html` at desktop widths and capture evidence.
 - [ ] Run isolated sender/receiver instances and verify:
   - new↔new negotiates v3 at 4, 8, and 16;
   - new↔v2-only remains fixed at 4;
   - transfer content hashes match after normal, resumed, and cancelled transfers;
   - simultaneous transfers obey the selected process-wide limit.
 
+  Local runtime evidence covers Web→Tauri v3/8 and a hash-matched 39,283,312-byte Web→Web v3c16 transfer. The 4/8/16 concurrency, v2 fallback, resume, and cancellation matrix is covered by deterministic Rust fake-receiver tests; a real old binary and two cross-subnet physical devices were not available locally.
+
 ### Review and integration
 
-- [ ] Inspect `rtk git diff main...HEAD`, confirm no unrelated user changes, and run the completion-verification skill.
-- [ ] Perform a focused code review of protocol compatibility, validation boundaries, cancellation, permit lifetime, and settings parity; fix and re-run affected checks.
+- [x] Inspect `rtk git diff main...HEAD`, confirm no unrelated user changes, and run the completion-verification skill.
+- [x] Perform a focused code review of protocol compatibility, validation boundaries, cancellation, permit lifetime, and settings parity; fix and re-run affected checks.
 - [ ] Merge the finished branch into local `main` with a non-interactive merge only after every required check passes.
 - [ ] Report the merge commit, verification commands, any unavailable platform target, and the real-device requirement: both devices need the new build to exercise configurable v3; mixed-version pairs intentionally use four channels.
