@@ -37,6 +37,17 @@ pub struct PeerManager {
     peers: Arc<RwLock<HashMap<String, Peer>>>, // key 是 UUID
 }
 
+fn reconcile_verified_peer_endpoints(
+    peers: &mut HashMap<String, Peer>,
+    verified_endpoints: &HashMap<String, String>,
+) {
+    for (device_id, endpoint) in verified_endpoints {
+        if let Some(peer) = peers.get_mut(device_id) {
+            peer.addr = endpoint.clone();
+        }
+    }
+}
+
 impl PeerManager {
     pub fn new() -> Self {
         Self {
@@ -56,6 +67,9 @@ impl PeerManager {
         println!("[PeerManager] 从数据库加载历史用户...");
 
         let users = crate::db::list_users_with_metadata(pool).await?;
+        let custom_peers = crate::db::get_custom_peer_records(pool).await;
+        let verified_endpoints =
+            crate::network::peer_identity::verified_endpoints_by_device_id(&custom_peers);
 
         let mut peers = self.peers.write().unwrap();
         for user in users {
@@ -75,6 +89,7 @@ impl PeerManager {
             };
             peers.insert(user.id, peer);
         }
+        reconcile_verified_peer_endpoints(&mut peers, &verified_endpoints);
 
         println!("[PeerManager] 已加载 {} 个历史用户", peers.len());
         Ok(())
@@ -274,6 +289,36 @@ impl Default for PeerManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verified_endpoint_reconciles_historical_address_without_changing_presence() {
+        let mut peers = HashMap::from([(
+            "peer-20".to_string(),
+            Peer {
+                id: "peer-20".into(),
+                name: "Mac".into(),
+                addr: "192.168.10.120:8888".into(),
+                last_seen: 42,
+                is_offline: true,
+                available_memory_mb: 0,
+                hostname: None,
+                mac_address: None,
+                remark: None,
+                discovery_source: Some("lan".into()),
+                capabilities: Vec::new(),
+                app_version: None,
+            },
+        )]);
+        let verified_endpoints = HashMap::from([(
+            "peer-20".to_string(),
+            "192.168.20.105:8888".to_string(),
+        )]);
+
+        reconcile_verified_peer_endpoints(&mut peers, &verified_endpoints);
+
+        assert_eq!(peers["peer-20"].addr, "192.168.20.105:8888");
+        assert!(peers["peer-20"].is_offline);
+    }
 
     #[test]
     fn replies_do_not_replace_authoritative_discovery_metadata() {
