@@ -1077,6 +1077,17 @@ async fn get_settings_http(State(state): State<Arc<AppState>>) -> impl IntoRespo
     let db_path = cfg.db_path.unwrap_or_else(crate::config_file::get_default_db_path);
 
     let auto_download = crate::db::get_auto_download(&state.pool).await;
+    let max_parallel_channels =
+        match crate::network::transfer::load_max_parallel_channels(&state.pool).await {
+            Ok(channels) => channels,
+            Err(error) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse { error }),
+                )
+                    .into_response();
+            }
+        };
     let discovery = match crate::network::discovery_policy::network_snapshot(&state.pool).await {
         Ok(discovery) => discovery,
         Err(error) => {
@@ -1093,6 +1104,7 @@ async fn get_settings_http(State(state): State<Arc<AppState>>) -> impl IntoRespo
         "port": port,
         "db_path": db_path,
         "auto_download": auto_download,
+        "max_parallel_channels": max_parallel_channels,
         "discovery_settings": discovery.settings,
         "network_interfaces": discovery.interfaces,
     }))
@@ -1106,6 +1118,7 @@ struct UpdateSettingsRequest {
     port: Option<String>,
     db_path: Option<String>,
     auto_download: Option<bool>,
+    max_parallel_channels: Option<u8>,
     discovery_settings: Option<crate::network::discovery_policy::DiscoverySettings>,
 }
 
@@ -1134,6 +1147,11 @@ async fn update_settings_http(
 ) -> impl IntoResponse {
     println!("[Web Server] 收到更新设置请求");
 
+    if let Some(channels) = payload.max_parallel_channels {
+        if let Err(error) = crate::network::transfer::validate_max_parallel_channels(channels) {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
+        }
+    }
     if let Some(ref path) = payload.download_path {
         if let Err(e) = crate::db::update_download_path(&state.pool, path.clone()).await {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
@@ -1165,6 +1183,13 @@ async fn update_settings_http(
     }
     if let Some(enabled) = payload.auto_download {
         let _ = crate::db::set_auto_download(&state.pool, enabled).await;
+    }
+    if let Some(channels) = payload.max_parallel_channels {
+        if let Err(error) =
+            crate::network::transfer::save_max_parallel_channels(&state.pool, channels).await
+        {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
+        }
     }
     if let Some(settings) = payload.discovery_settings {
         if let Err(error) =
@@ -5878,6 +5903,65 @@ mod websocket_protocol_tests {
 
             assert_eq!(payload.port.as_deref(), Some("8888"));
         }
+    }
+
+    #[test]
+    fn web_settings_request_accepts_max_parallel_channels() {
+        let payload: UpdateSettingsRequest = serde_json::from_value(serde_json::json!({
+            "max_parallel_channels": 16
+        }))
+        .unwrap();
+
+        assert_eq!(payload.max_parallel_channels, Some(16));
+    }
+
+    #[tokio::test]
+    async fn web_settings_update_persists_only_valid_max_parallel_channels() {
+        let app_dir = std::env::temp_dir().join(format!(
+            "xchat-web-parallel-settings-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let pool = crate::db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        let (ws_broadcast, _) = broadcast::channel(8);
+        let state = Arc::new(AppState {
+            pool: pool.clone(),
+            peer_manager: Arc::new(PeerManager::new()),
+            media_token: String::new(),
+            ws_broadcast,
+            #[cfg(feature = "desktop")]
+            app_handle: None,
+        });
+
+        let valid: UpdateSettingsRequest =
+            serde_json::from_value(serde_json::json!({ "max_parallel_channels": 8 })).unwrap();
+        let response = update_settings_http(State(state.clone()), Json(valid))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            crate::network::transfer::load_max_parallel_channels(&pool)
+                .await
+                .unwrap(),
+            8
+        );
+
+        let invalid: UpdateSettingsRequest =
+            serde_json::from_value(serde_json::json!({ "max_parallel_channels": 12 })).unwrap();
+        let response = update_settings_http(State(state), Json(invalid))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            crate::network::transfer::load_max_parallel_channels(&pool)
+                .await
+                .unwrap(),
+            8
+        );
+
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
     }
 
     #[test]

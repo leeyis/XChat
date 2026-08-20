@@ -104,17 +104,17 @@ rtk git commit -m "feat(transfer): add global channel limiter"
 
 ### RED
 
-- [ ] Add API-level tests proving settings snapshots return `4` by default, valid updates persist, and invalid updates return an error without mutation.
-- [ ] Cover both the shared/Tauri update path and the HTTP request path where practical.
-- [ ] Run focused Rust tests and observe failure.
+- [x] Add API-level tests proving settings snapshots return `4` by default, valid updates persist, and invalid updates return an error without mutation.
+- [x] Cover both the shared/Tauri update path and the HTTP request path where practical.
+- [x] Run focused Rust tests and observe failure.
 
 ### GREEN
 
-- [ ] Add `max_parallel_channels` to `WorkspaceSettings` and populate it through the shared snapshot path.
-- [ ] Add optional `max_parallel_channels`/`maxParallelChannels` update arguments to the existing HTTP and Tauri settings endpoints.
-- [ ] Delegate validation/persistence to Task 1 helpers; avoid duplicating accepted values.
-- [ ] Keep existing command names, registrations, and permissions unchanged.
-- [ ] Re-run focused tests.
+- [x] Add `max_parallel_channels` to `WorkspaceSettings` and populate it through the shared snapshot path.
+- [x] Add optional `max_parallel_channels`/`maxParallelChannels` update arguments to the existing HTTP and Tauri settings endpoints.
+- [x] Delegate validation/persistence to Task 1 helpers; avoid duplicating accepted values.
+- [x] Keep existing command names, registrations, and permissions unchanged.
+- [x] Re-run focused tests.
 
 ### Commit
 

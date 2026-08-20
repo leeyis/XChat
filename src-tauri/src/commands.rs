@@ -423,6 +423,8 @@ pub async fn get_settings(state: State<'_, DbState>) -> Result<serde_json::Value
     let cfg = crate::config_file::read_config();
     let db_path = cfg.db_path.unwrap_or_else(crate::config_file::get_default_db_path);
     let auto_download = crate::db::get_auto_download(&state.pool).await;
+    let max_parallel_channels =
+        crate::network::transfer::load_max_parallel_channels(&state.pool).await?;
     let discovery = crate::network::discovery_policy::network_snapshot(&state.pool).await?;
 
     Ok(serde_json::json!({
@@ -430,6 +432,7 @@ pub async fn get_settings(state: State<'_, DbState>) -> Result<serde_json::Value
         "port": port,
         "db_path": db_path,
         "auto_download": auto_download,
+        "max_parallel_channels": max_parallel_channels,
         "discovery_settings": discovery.settings,
         "network_interfaces": discovery.interfaces,
     }))
@@ -442,8 +445,12 @@ pub async fn update_settings(
     port: Option<String>,
     db_path: Option<String>,
     auto_download: Option<bool>,
+    max_parallel_channels: Option<u8>,
     discovery_settings: Option<crate::network::discovery_policy::DiscoverySettings>,
 ) -> Result<(), String> {
+    if let Some(channels) = max_parallel_channels {
+        crate::network::transfer::validate_max_parallel_channels(channels)?;
+    }
     if let Some(path) = download_path {
         crate::db::update_download_path(&state.pool, path).await?;
     }
@@ -471,6 +478,9 @@ pub async fn update_settings(
     }
     if let Some(enabled) = auto_download {
         crate::db::set_auto_download(&state.pool, enabled).await?;
+    }
+    if let Some(channels) = max_parallel_channels {
+        crate::network::transfer::save_max_parallel_channels(&state.pool, channels).await?;
     }
     if let Some(settings) = discovery_settings {
         crate::network::discovery_policy::save_settings(&state.pool, settings).await?;

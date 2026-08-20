@@ -22,8 +22,11 @@
   - RED：新增设置/限流测试首次编译出现 14 个预期缺失符号错误，确认测试确实约束未实现行为。
   - GREEN：实现设置键、默认值、4/8/16 校验、损坏值回退，以及共享 `Semaphore` 的进程级代际限流器；`rtk cargo test --manifest-path src-tauri/Cargo.toml --lib max_parallel_channels` 5/5 通过。
   - 限流许可等待保留 Tokio semaphore 的原始排队位置，并每 25ms 检查取消 token；取消会丢弃等待 future，不占用或泄漏 permit。
+  - RED：Workspace/Web 新测试首次得到缺失 `max_parallel_channels` 字段的预期编译错误；同时修正测试中 opaque `IntoResponse` 必须先显式转换的调用方式。
+  - GREEN：Workspace 快照、旧版 `get_settings` Tauri JSON、Tauri `update_settings`、HTTP get/update 已全部接入同一验证/持久化 helper；非法值在任何其他字段写入前返回。
+  - `rtk cargo test --manifest-path src-tauri/Cargo.toml --lib parallel_channels` 8/8 通过，覆盖默认快照、HTTP 解析、有效保存和非法值不覆盖。
 - 下一步：
-  - 将新字段接入 Workspace 快照、Tauri 更新命令和 HTTP 设置接口，并补齐双入口失败测试。
+  - 为 v3 协商、弹性分块和 manifest 安全边界编写失败测试，再实现协议层。
 
 ## 会话：2026-08-19 Windows A0/A1 收敛
 
