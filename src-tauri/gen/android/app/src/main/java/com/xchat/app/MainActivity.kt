@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.provider.OpenableColumns
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import androidx.activity.addCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.Keep
@@ -52,7 +53,28 @@ class MainActivity : TauriActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        
+
+        // 系统返回键先进前端：在会话里应当回到会话列表，而不是直接把 App 退掉。
+        // 前端用 window.__xchatHandleBack() 回答「我处理了没有」，
+        // 返回 "true" 表示已消化这次返回，否则交回系统默认行为（退出）。
+        onBackPressedDispatcher.addCallback(this) {
+            val view = webView ?: findWebView(window.decorView)?.also { webView = it }
+            if (view == null) {
+                isEnabled = false
+                onBackPressedDispatcher.onBackPressed()
+                return@addCallback
+            }
+            view.evaluateJavascript(
+                "(window.__xchatHandleBack && window.__xchatHandleBack()) === true"
+            ) { result ->
+                if (result != "true") {
+                    // 前端无事可做，恢复默认行为再触发一次，让系统正常退出
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
+            }
+        }
+
         // 开启 WebView 调试（方便 adb logcat 看到 JS console 输出）
         android.webkit.WebView.setWebContentsDebuggingEnabled(true)
         

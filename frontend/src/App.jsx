@@ -4870,6 +4870,38 @@ export default function App({ workspace }) {
     return () => removeEventListener("keydown", close);
   }, [confirm, modal, overlay]);
 
+  // Android 的系统返回键。MainActivity 覆写了 onBackPressedDispatcher，会调用
+  // 这个函数；返回 true 表示这次返回已经被应用消化，返回 false 才交给系统退出。
+  // 顺序和 Esc 一致：先关最上面那层浮层，再退压栈页。
+  useEffect(() => {
+    globalThis.__xchatHandleBack = () => {
+      if (overlay) {
+        setOverlay(null);
+        return true;
+      }
+      if (modal) {
+        setModal(null);
+        return true;
+      }
+      if (confirm) {
+        setConfirm(null);
+        return true;
+      }
+      // 只有窄屏才有「压栈页」这个概念。桌面端返回 false，交回系统。
+      if (
+        !mobileList &&
+        globalThis.matchMedia?.("(max-width: 859px)")?.matches
+      ) {
+        setMobileList(true);
+        return true;
+      }
+      return false;
+    };
+    return () => {
+      delete globalThis.__xchatHandleBack;
+    };
+  }, [overlay, modal, confirm, mobileList]);
+
   const conversation = state.conversations.find(
     (item) => item.id === state.activeConversationId,
   );

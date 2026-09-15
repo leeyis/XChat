@@ -788,6 +788,21 @@ export function applyReactionUpdate(messages = [], payload = {}) {
   });
 }
 
+/// 收到送达回执就把对应气泡推进到「已送达」。
+///
+/// 后端已经把回执落到 receipts 上，刷新也会带回来；但刷新只重载当前会话，
+/// 别的会话会一直停在旧的「已发出」直到再次打开。这里按回执里的消息 ID 就地推进，
+/// 状态仍然只增不减（monotonicStatus），不会把已读退回送达。
+export function applyDeliveryAck(messages = [], payload = {}) {
+  const acknowledged = new Set(payload?.message_ids ?? []);
+  if (!acknowledged.size) return messages;
+  return messages.map((message) =>
+    message.client_message_id && acknowledged.has(message.client_message_id)
+      ? { ...message, status: monotonicStatus(message.status, "delivered") }
+      : message,
+  );
+}
+
 function normalizeDevice(raw = {}) {
   return {
     ...raw,
@@ -2423,6 +2438,27 @@ export function createXChatModule() {
     }
     if (eventType.includes("message.reaction")) {
       applyReaction(payload);
+      return;
+    }
+    if (eventType.includes("delivery.ack")) {
+      // 单聊气泡直接显示状态文案，就地推进；群聊显示的是逐收件人计数，
+      // 交给刷新重算，别在这里把部分送达说成全体送达。
+      const conversationId = payload?.conversation_id;
+      const conversation = snapshot.conversations.find(
+        (item) => item.id === conversationId,
+      );
+      if (conversation && conversation.kind !== "group") {
+        patch({
+          messagesByConversation: {
+            ...snapshot.messagesByConversation,
+            [conversationId]: applyDeliveryAck(
+              snapshot.messagesByConversation[conversationId] ?? [],
+              payload,
+            ),
+          },
+        });
+      }
+      scheduleRefresh();
       return;
     }
     if (eventType.includes("strong.reminder.open")) {

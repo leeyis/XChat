@@ -12,29 +12,30 @@ APK_SIGNED="xchat-aarch64.apk"
 echo "=== Xchat APK 签名工具 ==="
 echo ""
 
-# 检查是否存在密钥库
+# 密钥库必须存在，缺失时直接失败。
+#
+# 这里以前会自动新建一个。那是个陷阱：Android 只允许同一签名的 APK 覆盖安装，
+# 换台机器构建时静默生成新密钥，装到设备上就会 INSTALL_FAILED_UPDATE_INCOMPATIBLE，
+# 只能卸载重装、清掉本地数据。宁可在这里停下来，也不要无声地轮换掉签名密钥。
+#
+# 生产密钥库不在仓库里（.gitignore 已排除 *.keystore），需要向项目负责人索取，
+# 放到仓库根目录并保持文件名不变。
 if [ ! -f "$KEYSTORE" ]; then
-    echo "密钥库不存在，正在创建..."
-    echo "请按提示输入信息（密码建议记住，后续签名需要用到）"
+    echo "❌ 找不到签名密钥库: $KEYSTORE"
     echo ""
-    
-    keytool -genkey -v \
-        -keystore "$KEYSTORE" \
-        -alias "$KEYSTORE_ALIAS" \
-        -keyalg RSA \
-        -keysize 2048 \
-        -validity 10000 \
-        -storepass android \
-        -keypass android \
-        -dname "CN=Xchat, OU=Dev, O=Xchat, L=City, S=State, C=CN"
-    
-    if [ $? -ne 0 ]; then
-        echo "❌ 密钥库创建失败"
-        exit 1
-    fi
-    
-    echo "✓ 密钥库创建成功: $KEYSTORE"
+    echo "   这个文件不在仓库里，需要单独获取后放到仓库根目录。"
+    echo "   不要为了让它跑起来而新建密钥 —— 新密钥签出的 APK 无法覆盖安装，"
+    echo "   用户必须卸载重装并丢失本地数据。"
     echo ""
+    echo "   如果你确实是在初始化一个全新的发布渠道（没有存量用户），"
+    echo "   再手动执行下面这条命令："
+    echo ""
+    echo "   keytool -genkey -v -keystore $KEYSTORE -alias $KEYSTORE_ALIAS \\"
+    echo "     -keyalg RSA -keysize 2048 -validity 10000 \\"
+    echo "     -storepass android -keypass android \\"
+    echo "     -dname \"CN=Xchat, OU=Dev, O=Xchat, L=City, S=State, C=CN\""
+    echo ""
+    exit 1
 fi
 
 # 检查 unsigned APK 是否存在
@@ -50,10 +51,19 @@ echo "输出文件: $APK_SIGNED"
 echo ""
 
 # 使用 apksigner 签名（Android SDK 自带）
-APKSIGNER="$ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | tail -1)/apksigner"
+if [ -z "$ANDROID_HOME" ]; then
+    echo "❌ 环境变量 ANDROID_HOME 未设置，找不到 Android SDK"
+    exit 1
+fi
 
-if [ ! -f "$APKSIGNER" ]; then
-    echo "❌ 找不到 apksigner 工具"
+BUILD_TOOLS="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" 2>/dev/null | sort -V | tail -1)"
+# Windows 上 SDK 只提供 apksigner.bat，没有无后缀的 apksigner
+if [ -f "$BUILD_TOOLS/apksigner" ]; then
+    APKSIGNER="$BUILD_TOOLS/apksigner"
+elif [ -f "$BUILD_TOOLS/apksigner.bat" ]; then
+    APKSIGNER="$BUILD_TOOLS/apksigner.bat"
+else
+    echo "❌ 找不到 apksigner 工具（找过 $BUILD_TOOLS）"
     echo "请确保已安装 Android SDK build-tools"
     exit 1
 fi

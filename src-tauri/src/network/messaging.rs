@@ -165,6 +165,51 @@ pub async fn send_direct_message(
     content: String,
     msg_type: String,
 ) -> Result<(), String> {
+    let json = direct_message_json(
+        from_id,
+        from_name,
+        conversation_id,
+        client_message_id,
+        content,
+        msg_type,
+    )?;
+    send_json_via_ws(peer_addr, expected_peer_id, &json).await
+}
+
+/// 单聊发送后在同一条连接上短暂等待对端的送达回执。
+///
+/// 这条连接是对端反向回到本机的唯一保证：NAT、跨网段或只配了单边固定地址时，
+/// 对端新建反向连接会失败，送达回执只能借发送用的这条连接送回。旧版对端不会
+/// 回送，等待有上界，超时后照常结束，不报错也不卡住。
+pub async fn send_direct_message_expecting_reply(
+    peer_addr: &str,
+    expected_peer_id: &str,
+    from_id: String,
+    from_name: String,
+    conversation_id: String,
+    client_message_id: String,
+    content: String,
+    msg_type: String,
+) -> Result<(), String> {
+    let json = direct_message_json(
+        from_id,
+        from_name,
+        conversation_id,
+        client_message_id,
+        content,
+        msg_type,
+    )?;
+    send_json_via_ws_expecting_reply(peer_addr, expected_peer_id, &json, DIRECT_ACK_GRACE).await
+}
+
+fn direct_message_json(
+    from_id: String,
+    from_name: String,
+    conversation_id: String,
+    client_message_id: String,
+    content: String,
+    msg_type: String,
+) -> Result<String, String> {
     if conversation_id.trim().is_empty() {
         return Err("conversation_id must not be empty".to_string());
     }
@@ -184,9 +229,7 @@ pub async fn send_direct_message(
         conversation_id: Some(conversation_id),
         client_message_id: Some(client_message_id),
     };
-    let json =
-        serde_json::to_string(&message).map_err(|error| format!("serialize message: {error}"))?;
-    send_json_via_ws(peer_addr, expected_peer_id, &json).await
+    serde_json::to_string(&message).map_err(|error| format!("serialize message: {error}"))
 }
 
 pub async fn send_direct_control(
@@ -219,12 +262,76 @@ pub async fn send_direct_control(
 pub const DEVICE_ID_HEADER: &str = "x-xchat-device-id";
 const PEER_WEBSOCKET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// 单聊发送后等待同连接送达回执的上界。
+/// 对端落库后立刻回执，正常只需几十毫秒；旧版对端不回执，等满即结束。
+const DIRECT_ACK_GRACE: std::time::Duration = std::time::Duration::from_millis(1200);
+
 /// 在写入正文前核对远端设备 UUID，避免动态 IP 被其他设备复用时错投。
 pub async fn send_json_via_ws(
     peer_addr: &str,
     expected_peer_id: &str,
     json: &str,
 ) -> Result<(), String> {
+    let mut ws_stream = open_verified_ws(peer_addr, expected_peer_id).await?;
+    write_ws_frame(&mut ws_stream, json).await?;
+    let _ = ws_stream.close(None).await;
+    Ok(())
+}
+
+/// 发送一帧后保持这条连接一小段时间，把对端在同一连接上回送的帧交给本机处理器。
+///
+/// 需要这样做的场景是单聊送达回执：对端要反向连回本机才能新建回执连接，而
+/// NAT、跨网段或单边固定地址下这条反向连接可能永远建不起来。等待有明确上界，
+/// 对端不回送（例如旧版）时只是正常结束，不会报错也不会卡住。
+pub async fn send_json_via_ws_expecting_reply(
+    peer_addr: &str,
+    expected_peer_id: &str,
+    json: &str,
+    grace: std::time::Duration,
+) -> Result<(), String> {
+    let mut ws_stream = open_verified_ws(peer_addr, expected_peer_id).await?;
+    write_ws_frame(&mut ws_stream, json).await?;
+    // 写完即返回：发送成功的语义仍然是「已写出」，不能为了等回执把调用方拖住。
+    tokio::spawn(async move {
+        drain_replies(&mut ws_stream, grace).await;
+    });
+    Ok(())
+}
+
+async fn drain_replies(
+    ws_stream: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    grace: std::time::Duration,
+) {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
+    let deadline = tokio::time::Instant::now() + grace;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, ws_stream.next()).await {
+            Ok(Some(Ok(WsMessage::Text(text)))) => {
+                crate::web_server::dispatch_reply_frame(&text).await;
+            }
+            Ok(Some(Ok(_))) => continue,
+            _ => break,
+        }
+    }
+    let _ = ws_stream.close(None).await;
+}
+
+async fn open_verified_ws(
+    peer_addr: &str,
+    expected_peer_id: &str,
+) -> Result<
+    tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    String,
+> {
     if expected_peer_id.trim().is_empty() {
         return Err("目标设备 ID 不能为空".to_string());
     }
@@ -240,7 +347,7 @@ pub async fn send_json_via_ws(
     .await
     .map_err(|_| "WS 连接超时".to_string())?
     .map_err(|error| format!("WS 连接失败: {error}"))?;
-    let (mut ws_stream, response) = connection;
+    let (ws_stream, response) = connection;
     let actual_peer_id = response
         .headers()
         .get(DEVICE_ID_HEADER)
@@ -252,7 +359,15 @@ pub async fn send_json_via_ws(
             "设备身份不匹配，期望 {expected_peer_id}，实际 {actual_peer_id}；已停止发送"
         ));
     }
+    Ok(ws_stream)
+}
 
+async fn write_ws_frame(
+    ws_stream: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    json: &str,
+) -> Result<(), String> {
     use futures_util::SinkExt;
     use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
     tokio::time::timeout(
@@ -262,7 +377,6 @@ pub async fn send_json_via_ws(
     .await
     .map_err(|_| "发送 WS 消息超时".to_string())?
     .map_err(|error| format!("发送 WS 消息失败: {error}"))?;
-    let _ = ws_stream.close(None).await;
     Ok(())
 }
 

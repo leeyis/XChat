@@ -1173,7 +1173,9 @@ pub async fn send_message(
             let pool = pool.clone();
             let peer_manager = peer_manager.clone();
             tokio::spawn(async move {
-                match messaging::send_direct_message(
+                // 发完在这条连接上等一小会对端的送达回执：对端是否回送取决于它能否
+                // 反向连回本机，等满即结束，不会让发送卡住。
+                match messaging::send_direct_message_expecting_reply(
                     &peer.addr,
                     &peer.id,
                     sender_id,

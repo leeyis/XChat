@@ -273,6 +273,8 @@ time,
   border: 1px solid transparent;
   border-radius: 8px;
   outline: 0;
+  /* 老 WebView 回退：color-mix() 要 Chrome 111+，见 .rail 那条注释 */
+  background: var(--surface);
   background: color-mix(in oklch, var(--fg) 5%, transparent);
 }
 
@@ -1742,6 +1744,8 @@ time,
   margin-top: 7px;
   overflow: hidden;
   border-radius: 3px;
+  /* 老 WebView 回退，见 .rail 那条注释 */
+  background: var(--border);
   background: color-mix(in oklch, var(--fg) 8%, transparent);
 }
 
@@ -2061,6 +2065,9 @@ input[type="checkbox"] {
   flex: 0 0 auto;
   place-content: center;
   margin: 0;
+  /* 老 WebView 回退，见 .rail 那条注释。这条边框是未选中方框唯一的轮廓，
+     丢了就只剩白底，落在设置卡的白底上等于看不见 */
+  border: 1.5px solid var(--muted);
   border: 1.5px solid color-mix(in oklch, var(--fg) 24%, var(--border));
   border-radius: 6px;
   outline: 0;
@@ -2295,6 +2302,8 @@ input[type="checkbox"]:disabled { cursor: not-allowed; opacity: .42; }
   position: absolute;
   inset: 0;
   border-radius: 11px;
+  /* 老 WebView 回退，见 .rail 那条注释。丢的是开关轨道，滑块会孤零零浮在卡片上 */
+  background: var(--border);
   background: color-mix(in oklch, var(--fg) 16%, transparent);
   cursor: pointer;
   transition: background var(--duration-exit) var(--ease-out);
@@ -2338,6 +2347,9 @@ input[type="checkbox"]:disabled { cursor: not-allowed; opacity: .42; }
   gap: 12px;
   margin: 0 0 8px 20px;
   padding: 10px 11px;
+  /* 老 WebView 回退，见 .rail 那条注释。它和设置分节同底，边框是唯一的轮廓，
+     丢了这块风险提示就散成普通设置文字；用 --warning 保住提示语义 */
+  border: 1px solid var(--warning);
   border: 1px solid color-mix(in oklch, var(--warning) 45%, var(--border));
   border-radius: 8px;
   background: var(--surface);
@@ -2381,8 +2393,12 @@ input[type="checkbox"]:disabled { cursor: not-allowed; opacity: .42; }
 .settings-warning {
   margin: 10px 0 0;
   padding: 9px 11px;
+  /* 老 WebView 回退，见 .rail 那条注释。边框和底色都是 color-mix()，
+     两条一起丢这块警告框就完全看不见了 */
+  border: 1px solid var(--warning);
   border: 1px solid color-mix(in oklch, var(--warning) 45%, var(--border));
   border-radius: 8px;
+  background: var(--surface);
   background: color-mix(in oklch, var(--warning) 6%, var(--surface));
   font-size: var(--text-meta);
 }
@@ -2659,8 +2675,12 @@ input[type="checkbox"]:disabled { cursor: not-allowed; opacity: .42; }
   justify-content: center;
   gap: 7px;
   margin-top: 10px;
+  /* 老 WebView 回退，见 .rail 那条注释。这个按钮的虚线框和底色都是 color-mix()，
+     两条一起丢就只剩一行绿字，看不出是个入口 */
+  border: 1px dashed var(--accent);
   border: 1px dashed color-mix(in oklch, var(--accent) 45%, var(--border));
   border-radius: var(--radius-md);
+  background: var(--bg);
   background: color-mix(in oklch, var(--accent) 5%, transparent);
   color: var(--accent);
   font-weight: 500;
@@ -3340,7 +3360,11 @@ input[type="checkbox"]:disabled { cursor: not-allowed; opacity: .42; }
   align-items: center;
   gap: 10px;
   padding: 8px 18px;
+  /* 老 WebView 回退，见 .rail 那条注释。这条横条的底边和底色都是 color-mix()，
+     两条一起丢就整条融进下面的会话区，横幅等于不存在 */
+  border-bottom: 1px solid var(--border);
   border-bottom: 1px solid color-mix(in oklch, var(--warning) 28%, var(--border));
+  background: var(--surface);
   background: color-mix(in oklch, var(--warning) 8%, var(--surface));
 }
 
@@ -3378,7 +3402,11 @@ input[type="checkbox"]:disabled { cursor: not-allowed; opacity: .42; }
   gap: 10px;
   padding: 7px 18px;
   border: 0;
+  /* 老 WebView 回退，见 .rail 那条注释。和 .peer-offline-safety-banner 同理：
+     这条公告栏只有底边和底色，两个都丢就成了一条看不见的横排文字 */
+  border-bottom: 1px solid var(--border);
   border-bottom: 1px solid color-mix(in oklch, #d99a2b 24%, var(--border));
+  background: var(--surface);
   background: color-mix(in oklch, #d99a2b 9%, var(--surface));
   color: var(--fg);
   text-align: left;
@@ -3450,6 +3478,8 @@ input[type="checkbox"]:disabled { cursor: not-allowed; opacity: .42; }
   padding: 0;
   border: 0;
   border-radius: 50%;
+  /* 老 WebView 回退，见 .rail 那条注释。这里丢了底色，里面的白色叉号会跟着消失 */
+  background: var(--border);
   background: color-mix(in oklch, var(--fg) 18%, transparent);
   color: var(--surface);
   transition: background 120ms var(--ease-out), transform 120ms var(--ease-out);
@@ -3672,6 +3702,9 @@ html:has(.strong-reminder-window) #root { background: transparent; overflow: hid
   width: 20px;
   height: 20px;
   place-items: center;
+  /* 老 WebView 回退，见 .rail 那条注释。同 input[type="checkbox"]，
+     这条边框是未选中方框唯一的轮廓 */
+  border: 1.5px solid var(--muted);
   border: 1.5px solid color-mix(in oklch, var(--fg) 24%, var(--border));
   border-radius: 6px;
   background: var(--surface);

@@ -14,6 +14,7 @@ use futures_util::{SinkExt, StreamExt};
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::fs;
@@ -77,6 +78,95 @@ pub struct AppState {
 
 type ApiResponse = axum::response::Response;
 const MAX_BROWSER_UPLOAD_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+/// 对端主动连进来的那条连接，按对端设备 ID 记住它的回送通道。
+///
+/// 对端能连进来，说明这条连接一定通；而反向新建连接在 NAT、跨网段或只配了
+/// 单边固定地址的场景里可能永远不可达。送达回执如果只能走反向连接，发送方
+/// 就会永远停在「已发出」。回执顺着入站连接送回，这条链路才完整。
+type InboundReplySenders = Mutex<HashMap<String, (u64, tokio::sync::mpsc::Sender<String>)>>;
+
+fn inbound_reply_senders() -> &'static InboundReplySenders {
+    static SENDERS: std::sync::OnceLock<InboundReplySenders> = std::sync::OnceLock::new();
+    SENDERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_inbound_reply(
+    peer_id: &str,
+    connection: u64,
+    sender: &tokio::sync::mpsc::Sender<String>,
+) {
+    if peer_id.trim().is_empty() {
+        return;
+    }
+    let mut senders = inbound_reply_senders().lock().unwrap_or_else(|e| e.into_inner());
+    // 同一设备有多条入站连接时用最新的一条：刚送过帧的连接一定是活的。
+    senders.insert(peer_id.to_string(), (connection, sender.clone()));
+}
+
+fn inbound_reply_sender(peer_id: &str) -> Option<tokio::sync::mpsc::Sender<String>> {
+    if peer_id.trim().is_empty() {
+        return None;
+    }
+    let mut senders = inbound_reply_senders().lock().unwrap_or_else(|e| e.into_inner());
+    match senders.get(peer_id) {
+        Some((_, sender)) if !sender.is_closed() => Some(sender.clone()),
+        Some(_) => {
+            senders.remove(peer_id);
+            None
+        }
+        None => None,
+    }
+}
+
+fn next_websocket_connection_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+fn clear_inbound_replies(connection: u64) {
+    let mut senders = inbound_reply_senders().lock().unwrap_or_else(|e| e.into_inner());
+    senders.retain(|_, (registered, _)| *registered != connection);
+}
+
+/// 出站连接收到的回送帧交给同一套处理器。
+///
+/// 单聊发送用的那条 WebSocket 是对端能反向到达本机的唯一保证，所以发送后会在
+/// 这条连接上短暂等待对端在同一连接上回送的送达回执。旧版对端不会这样回送，
+/// 等待有上界，不会让发送卡住。
+fn reply_dispatcher() -> &'static std::sync::RwLock<Option<Arc<AppState>>> {
+    static DISPATCHER: std::sync::OnceLock<std::sync::RwLock<Option<Arc<AppState>>>> =
+        std::sync::OnceLock::new();
+    DISPATCHER.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+pub fn register_reply_dispatcher(state: &Arc<AppState>) {
+    if let Ok(mut dispatcher) = reply_dispatcher().write() {
+        *dispatcher = Some(state.clone());
+    }
+}
+
+pub async fn dispatch_reply_frame(raw: &str) -> bool {
+    let state = match reply_dispatcher().read() {
+        Ok(dispatcher) => dispatcher.clone(),
+        Err(_) => None,
+    };
+    let Some(state) = state else { return false };
+    match crate::network::protocol::parse_protocol_message(raw) {
+        Ok(Some(message)) => match handle_protocol_message(&state, message).await {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!("[WebSocket] 出站连接回送处理失败: {error}");
+                false
+            }
+        },
+        Ok(None) => false,
+        Err(error) => {
+            eprintln!("[WebSocket] 出站连接回送无效: {error}");
+            false
+        }
+    }
+}
 
 async fn cleanup_persisted_control_messages(pool: &Pool<Sqlite>) -> Result<u64, String> {
     sqlx::query(
@@ -279,6 +369,8 @@ pub async fn start_server(
         #[cfg(feature = "desktop")]
         app_handle,
     });
+    // 出站单聊连接收到的回执帧走同一套处理器。
+    register_reply_dispatcher(&state);
     if let Ok(download_root) = crate::db::get_download_path(&state.pool).await {
         if let Err(error) = crate::network::conversation_file::cleanup_stale_received_partials(
             std::path::Path::new(&download_root),
@@ -1905,6 +1997,23 @@ async fn send_delivery_ack(
     reader_id: &str,
     timestamp: i64,
 ) -> Result<(), String> {
+    let ack = crate::network::protocol::ProtocolMessage::DeliveryAck {
+        conversation_id: conversation_id.to_string(),
+        from_id: reader_id.to_string(),
+        message_ids: vec![message_client_id.to_string()],
+        timestamp: timestamp.max(0) as u64,
+    };
+    // 先借对端主动建立的入站连接回送：发送方正好在这条连接上等回执。
+    // 这条路径刻意不标记已发送 —— 发送方可能是旧版，不会读这条连接，
+    // 那样标记会让回执永久丢失；反向补发路径继续兜底。
+    if let Some(reply_tx) = inbound_reply_sender(author_id) {
+        match serde_json::to_string(&ack) {
+            Ok(json) => {
+                let _ = reply_tx.send(json).await;
+            }
+            Err(error) => eprintln!("[WebSocket] 序列化送达回执失败: {error}"),
+        }
+    }
     let peer_addr = state
         .peer_manager
         .get_all_peers()
@@ -1912,12 +2021,6 @@ async fn send_delivery_ack(
         .find(|peer| peer.id == author_id && !peer.is_offline)
         .map(|peer| peer.addr)
         .ok_or_else(|| format!("消息作者 {} 当前不可达", author_id))?;
-    let ack = crate::network::protocol::ProtocolMessage::DeliveryAck {
-        conversation_id: conversation_id.to_string(),
-        from_id: reader_id.to_string(),
-        message_ids: vec![message_client_id.to_string()],
-        timestamp: timestamp.max(0) as u64,
-    };
     crate::network::protocol::send_protocol_message(&peer_addr, author_id, &ack).await?;
     crate::db::mark_receipt_ack_sent(&state.pool, message_client_id, reader_id, "delivery").await?;
     Ok(())
@@ -2521,17 +2624,29 @@ async fn handle_websocket(
 
     // 订阅广播频道并转发给此 WebSocket 客户端
     let mut broadcast_rx: broadcast::Receiver<String> = state.ws_broadcast.subscribe();
+    // 这条连接同时承担回送：对端连进来就说明它一定通，
+    // 反向不可达时送达回执只能从这里回去。
+    let connection_id = next_websocket_connection_id();
+    let (reply_tx, mut reply_rx) = tokio::sync::mpsc::channel::<String>(64);
     let forward_handle = tokio::spawn(async move {
         loop {
-            match broadcast_rx.recv().await {
-                Ok(msg) => {
-                    if sender.send(Message::Text(msg.into())).await.is_err() {
-                        break;
+            tokio::select! {
+                broadcast = broadcast_rx.recv() => {
+                    match broadcast {
+                        Ok(msg) => {
+                            if sender.send(Message::Text(msg.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        // Lagged（滞后）或 Closed（不会发生）：继续接收
+                        Err(_) => continue,
                     }
                 }
-                Err(_) => {
-                    // Lagged（滞后）或 Closed（不会发生）：继续接收
-                    continue;
+                // 回送通道关闭时只禁用这一支，广播转发继续工作。
+                Some(reply) = reply_rx.recv() => {
+                    if sender.send(Message::Text(reply.into())).await.is_err() {
+                        break;
+                    }
                 }
             }
         }
@@ -2549,6 +2664,14 @@ async fn handle_websocket(
 
                 match serde_json::from_str::<serde_json::Value>(&text) {
                     Ok(val) => {
+                        // 先记住这条连接能到达对端，再补发该对端还没送出去的回执。
+                        // 之前那几条消息的送达回执可能正是因为反向不可达而卡住的。
+                        if let Some(peer_id) =
+                            val.get("from_id").and_then(serde_json::Value::as_str)
+                        {
+                            register_inbound_reply(peer_id, connection_id, &reply_tx);
+                            flush_pending_receipts(&state, peer_id, &reply_tx).await;
+                        }
                         match crate::network::protocol::parse_protocol_value(val.clone()) {
                             Ok(Some(message)) => {
                                 if let Err(error) =
@@ -3125,7 +3248,54 @@ async fn handle_websocket(
         }
     }
 
+    clear_inbound_replies(connection_id);
     forward_handle.abort();
+}
+
+/// 借入站连接把这台设备尚未送出的送达/已读回执补发出去。
+///
+/// 这里刻意不写 `*_ack_sent_at`：入站连接只保证「现在能到达对端」，而反向补发
+/// 路径仍然负责持久重试。旧版对端不会读发送用的那条连接，若在这里标记已发送，
+/// 回执反而会永久丢失。
+async fn flush_pending_receipts(
+    state: &AppState,
+    peer_id: &str,
+    reply_tx: &tokio::sync::mpsc::Sender<String>,
+) {
+    let receipts = match crate::db::get_pending_receipts_for_peer(&state.pool, peer_id).await {
+        Ok(receipts) => receipts,
+        Err(error) => {
+            eprintln!("[WebSocket] 查询待回送回执失败 ({peer_id}): {error}");
+            return;
+        }
+    };
+    for receipt in receipts {
+        let frame = if receipt.delivered_at.is_some() && receipt.delivery_ack_sent_at.is_none() {
+            crate::network::protocol::ProtocolMessage::DeliveryAck {
+                conversation_id: receipt.conversation_id.clone(),
+                from_id: receipt.reader_id.clone(),
+                message_ids: vec![receipt.message_client_id.clone()],
+                timestamp: now_timestamp().max(0) as u64,
+            }
+        } else if receipt.read_at.is_some() && receipt.read_ack_sent_at.is_none() {
+            crate::network::protocol::ProtocolMessage::ReadAck {
+                conversation_id: receipt.conversation_id,
+                from_id: receipt.reader_id,
+                message_ids: vec![receipt.message_client_id],
+                timestamp: now_timestamp().max(0) as u64,
+            }
+        } else {
+            continue;
+        };
+        match serde_json::to_string(&frame) {
+            Ok(json) => {
+                if reply_tx.send(json).await.is_err() {
+                    return;
+                }
+            }
+            Err(error) => eprintln!("[WebSocket] 序列化回执失败: {error}"),
+        }
+    }
 }
 
 // 保存消息到数据库
@@ -6270,6 +6440,214 @@ mod websocket_protocol_tests {
             .await
             .unwrap();
         assert_eq!(views[0].mention_ids, vec![my_id]);
+
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn delivery_ack_returns_on_the_connection_the_message_arrived_on() {
+        // 每个测试用独立设备 ID：入站回送通道是进程级的，共用 peer-a 会和
+        // 其它测试里同名的对端串线。
+        let peer_id = format!("peer-inbound-{}", uuid::Uuid::new_v4());
+        // 跨网段/固定地址的真实形态：对端能连进来，但不在 PeerManager 里，
+        // 反向新建连接不可能成功。这时送达回执只能借入站连接回去，
+        // 否则发送方永远停在「已发出」。
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-inbound-ack-{}", uuid::Uuid::new_v4()));
+        let pool = crate::db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        let my_id = crate::db::get_user_id(&pool).await.unwrap();
+        let (ws_broadcast, _) = broadcast::channel(8);
+        let state = Arc::new(AppState {
+            pool: pool.clone(),
+            peer_manager: Arc::new(PeerManager::new()),
+            media_token: String::new(),
+            ws_broadcast,
+            #[cfg(feature = "desktop")]
+            app_handle: None,
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router =
+            Router::new().route("/ws", get(websocket_handler)).with_state(Arc::clone(&state));
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let url = format!("ws://{address}/ws?target_id={my_id}");
+        let (mut client, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let conversation_id = crate::db::stable_direct_conversation_id(&peer_id, &my_id);
+        let incoming = serde_json::json!({
+            "msg_type": "text",
+            "from_id": &peer_id,
+            "from_name": "Alice",
+            "content": "跨网段发来的消息",
+            "timestamp": 42,
+            "conversation_id": conversation_id,
+            "client_message_id": "inbound-cross-net",
+        });
+        client
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                incoming.to_string().into(),
+            ))
+            .await
+            .unwrap();
+
+        // 同一条连接上还会收到消息广播，一直读到送达回执为止。
+        let reply = loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), client.next()).await {
+                Ok(Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text)))) => {
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    if value["msg_type"] == "delivery_ack" {
+                        break value;
+                    }
+                }
+                Ok(Some(Ok(_))) => continue,
+                other => panic!("没有在入站连接上收到送达回执: {other:?}"),
+            }
+        };
+        assert_eq!(reply["msg_type"], "delivery_ack");
+        assert_eq!(reply["from_id"], serde_json::json!(my_id));
+        assert_eq!(
+            reply["message_ids"],
+            serde_json::json!(["inbound-cross-net"])
+        );
+
+        // 借入站连接回执不等于放弃持久重试：反向补发路径仍然能看到这条待回执。
+        let receipts = crate::db::get_message_receipts(&pool, "inbound-cross-net")
+            .await
+            .unwrap();
+        assert!(receipts[0].delivered_at.is_some());
+        assert!(receipts[0].delivery_ack_sent_at.is_none());
+        assert_eq!(
+            crate::db::get_pending_receipts_for_peer(&pool, &peer_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn direct_send_keeps_the_connection_open_for_the_returned_ack() {
+        // 发送端必须读这条连接，回执才有意义；否则回执写进一条没人读的连接，
+        // 状态还是停在「已发出」。
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-outbound-ack-{}", uuid::Uuid::new_v4()));
+        let pool = crate::db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        let my_id = crate::db::get_user_id(&pool).await.unwrap();
+        let conversation = crate::db::ensure_direct_conversation(&pool, "peer-a")
+            .await
+            .unwrap();
+        crate::db::save_conversation_message(
+            &pool,
+            &conversation.id,
+            &my_id,
+            Some("peer-a"),
+            "hello",
+            "text",
+            100,
+            "sent",
+            "outbound-cross-net",
+        )
+        .await
+        .unwrap();
+        crate::db::ensure_message_recipients(&pool, "outbound-cross-net", &["peer-a".to_string()])
+            .await
+            .unwrap();
+        let (ws_broadcast, _) = broadcast::channel(8);
+        let state = Arc::new(AppState {
+            pool: pool.clone(),
+            peer_manager: Arc::new(PeerManager::new()),
+            media_token: String::new(),
+            ws_broadcast,
+            #[cfg(feature = "desktop")]
+            app_handle: None,
+        });
+        register_reply_dispatcher(&state);
+
+        // 假接收端：落库后在同一条连接上回送送达回执。
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let conversation_id = conversation.id.clone();
+        let receiver = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                move |_request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                      mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    response.headers_mut().insert(
+                        crate::network::messaging::DEVICE_ID_HEADER,
+                        "peer-a".parse().unwrap(),
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
+            let _ = socket.next().await;
+            let ack = serde_json::json!({
+                "msg_type": "delivery_ack",
+                "conversation_id": conversation_id,
+                "from_id": "peer-a",
+                "message_ids": ["outbound-cross-net"],
+                "timestamp": 101,
+            });
+            socket
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    ack.to_string().into(),
+                ))
+                .await
+                .unwrap();
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(3), socket.next()).await;
+        });
+
+        crate::network::messaging::send_direct_message_expecting_reply(
+            &address.to_string(),
+            "peer-a",
+            my_id.clone(),
+            "mypc".into(),
+            conversation.id.clone(),
+            "outbound-cross-net".into(),
+            "hello".into(),
+            "text".into(),
+        )
+        .await
+        .unwrap();
+        receiver.await.unwrap();
+
+        // 回执在同一条连接上异步处理，等它落库。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline
+            && crate::db::get_message_by_client_id(&pool, "outbound-cross-net")
+                .await
+                .unwrap()
+                .and_then(|message| message.status)
+                .as_deref()
+                != Some("delivered")
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let stored = crate::db::get_message_by_client_id(&pool, "outbound-cross-net")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status.as_deref(), Some("delivered"));
+        assert_eq!(
+            crate::db::get_message_receipts(&pool, "outbound-cross-net")
+                .await
+                .unwrap()[0]
+                .delivered_at,
+            Some(101)
+        );
 
         pool.close().await;
         std::fs::remove_dir_all(app_dir).unwrap();

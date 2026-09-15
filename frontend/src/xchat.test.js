@@ -29,6 +29,7 @@ import {
   markConversationReadState,
   matchesShortcut,
   measureTransfers,
+  applyDeliveryAck,
   mergeMessages,
   messageDeliveryStatus,
   messageTimeDividerIndices,
@@ -567,6 +568,53 @@ test("message merge replaces optimistic rows and never regresses receipts", () =
   assert.equal(merged[0].id, 42);
   assert.equal(merged[0].status, "read");
   assert.equal(merged[0].read_count, 2);
+});
+
+test("delivery receipt advances only the acknowledged bubbles and never regresses", () => {
+  const sent = normalizeMessage(
+    {
+      client_message_id: "client-1",
+      sender_id: "self",
+      content: "已发出",
+      timestamp: 10,
+      status: "sent",
+    },
+    "self",
+    "conversation-1",
+  );
+  const alreadyRead = normalizeMessage(
+    {
+      client_message_id: "client-2",
+      sender_id: "self",
+      content: "已读",
+      timestamp: 11,
+      status: "read",
+    },
+    "self",
+    "conversation-1",
+  );
+  const untouched = normalizeMessage(
+    {
+      client_message_id: "client-3",
+      sender_id: "self",
+      content: "别人的消息",
+      timestamp: 12,
+      status: "sent",
+    },
+    "self",
+    "conversation-1",
+  );
+
+  const next = applyDeliveryAck([sent, alreadyRead, untouched], {
+    conversation_id: "conversation-1",
+    from_id: "peer-a",
+    message_ids: ["client-1", "client-2"],
+  });
+
+  assert.equal(next[0].status, "delivered");
+  assert.equal(next[1].status, "read");
+  assert.equal(next[2].status, "sent");
+  assert.equal(applyDeliveryAck([sent], { message_ids: [] })[0].status, "sent");
 });
 
 test("first-page reload keeps unacknowledged local messages visible", () => {
