@@ -4,13 +4,31 @@
 #
 # APK 签名脚本
 
-KEYSTORE="xchat-release.keystore"
-KEYSTORE_ALIAS="xchat"
+KEYSTORE="${KEYSTORE_PATH:-xchat-release.keystore}"
+KEYSTORE_ALIAS="${KEYSTORE_ALIAS:-xchat}"
+KEYSTORE_PASSWORD="${KEYSTORE_PASSWORD:-android}"
+KEY_PASSWORD="${KEY_PASSWORD:-android}"
 APK_UNSIGNED="src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk"
-APK_SIGNED="xchat-aarch64.apk"
+APK_SIGNED="${APK_SIGNED:-xchat-aarch64.apk}"
 
 echo "=== Xchat APK 签名工具 ==="
 echo ""
+
+# CI 里密钥库不进仓库，以 base64 放在 secret 里注入。
+# GitHub Actions 用法：
+#   env:
+#     KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+#     KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+#     KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+if [ -n "$KEYSTORE_BASE64" ] && [ ! -f "$KEYSTORE" ]; then
+    echo "从 KEYSTORE_BASE64 还原密钥库到 $KEYSTORE"
+    printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$KEYSTORE" || {
+        echo "❌ base64 解码失败，检查 KEYSTORE_BASE64 是否是完整的密钥库内容"
+        exit 1
+    }
+    # CI runner 上还原出来的私钥不能留在工作区
+    RESTORE_KEYSTORE=1
+fi
 
 # 密钥库必须存在，缺失时直接失败。
 #
@@ -72,14 +90,20 @@ fi
 $APKSIGNER sign \
     --ks "$KEYSTORE" \
     --ks-key-alias "$KEYSTORE_ALIAS" \
-    --ks-pass pass:android \
-    --key-pass pass:android \
+    --ks-pass "pass:$KEYSTORE_PASSWORD" \
+    --key-pass "pass:$KEY_PASSWORD" \
     --out "$APK_SIGNED" \
     "$APK_UNSIGNED"
 
 if [ $? -ne 0 ]; then
     echo "❌ APK 签名失败"
     exit 1
+fi
+
+# CI 上把还原出来的密钥库清掉，别留在工作区（也不会进 artifact）
+if [ -n "$RESTORE_KEYSTORE" ]; then
+    rm -f "$KEYSTORE"
+    echo "已清理临时密钥库"
 fi
 
 echo ""
