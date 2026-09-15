@@ -1,7 +1,8 @@
 // lib.rs
 #[cfg(feature = "desktop")]
 pub mod commands;
-#[cfg(feature = "desktop")]
+// 截图编辑器依赖桌面窗口 API 与 xcap，移动端不编译。
+#[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
 pub mod capture_editor;
 #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
 pub mod capture_shortcut;
@@ -18,6 +19,9 @@ pub static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 pub mod android_fd;
 pub mod config_file;
 pub mod db;
+// 依赖 tauri（desktop feature 才启用），web 模式不需要。
+#[cfg(feature = "desktop")]
+pub mod managed_image;
 pub mod models;
 pub mod network;
 pub mod peers;
@@ -98,7 +102,9 @@ pub fn run() {
             commands::react_to_conversation_message,
             commands::send_strong_reminder,
             commands::show_strong_reminder,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::open_strong_reminder,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::dismiss_strong_reminder,
             commands::send_conversation_file,
             commands::retry_conversation_file,
@@ -114,17 +120,29 @@ pub fn run() {
             commands::delete_local_file,
             commands::open_workspace_file,
             commands::reveal_workspace_file,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::start_capture_editor,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::get_pending_capture,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::finish_capture_editor,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::save_capture_editor,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::copy_capture_editor,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::cancel_capture_editor,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::pin_capture,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::copy_pinned_capture,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::save_pinned_capture,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::resize_pinned_capture,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::set_pinned_capture_shadow,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::close_pinned_capture,
             commands::stage_image_attachment,
             commands::discard_staged_attachment,

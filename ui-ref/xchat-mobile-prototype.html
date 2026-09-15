@@ -1,0 +1,1180 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>XChat 移动端现状</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* ─────────────────────────────────────────────────────────────
+   页面自身的令牌（浅色为基准，深色在下方重定义）
+   取自 XChat 的 frontend/src/tokens.css
+   ───────────────────────────────────────────────────────────── */
+:root{
+  color-scheme: light;
+  --page-bg:#f8f6f4;
+  --page-surface:#ffffff;
+  --page-sunken:#f1eeea;
+  --page-fg:#221c15;
+  --page-muted:#76706a;
+  --page-faint:#a49c94;
+  --page-border:#dedad5;
+  --page-hair:#eae7e2;
+  --page-accent:#18ac71;
+  --page-accent-ink:#0e7550;
+  --page-danger:#d73431;
+  --page-warn:#d29000;
+  --page-bezel:#e0e3e6;
+  --page-bezel-2:#cdd2d7;
+  --page-chrome-ink:#4a4f54;
+  --page-gesture:#8b9096;
+  --page-shadow:0 1px 2px rgba(34,28,21,.06), 0 18px 40px -12px rgba(34,28,21,.18);
+  --page-shadow-sm:0 1px 2px rgba(34,28,21,.05), 0 6px 16px -8px rgba(34,28,21,.14);
+  --font-ui:"IBM Plex Sans","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --font-data:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Consolas,monospace;
+  --font-cjk:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --page-bg:#120f0b;
+    --page-surface:#1e1a15;
+    --page-sunken:#181410;
+    --page-fg:#eae7e4;
+    --page-muted:#9f9b95;
+    --page-faint:#77726c;
+    --page-border:#37322c;
+    --page-hair:#2a251f;
+    --page-accent:#25c585;
+    --page-accent-ink:#5ad6a3;
+    --page-danger:#e5695f;
+    --page-warn:#d9a63c;
+    --page-bezel:#2c2721;
+    --page-bezel-2:#3d372f;
+    --page-chrome-ink:#b9b3aa;
+    --page-gesture:#6d675f;
+    --page-shadow:0 1px 2px rgba(0,0,0,.5), 0 18px 40px -12px rgba(0,0,0,.7);
+    --page-shadow-sm:0 1px 2px rgba(0,0,0,.4), 0 6px 16px -8px rgba(0,0,0,.6);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --page-bg:#120f0b;
+  --page-surface:#1e1a15;
+  --page-sunken:#181410;
+  --page-fg:#eae7e4;
+  --page-muted:#9f9b95;
+  --page-faint:#77726c;
+  --page-border:#37322c;
+  --page-hair:#2a251f;
+  --page-accent:#25c585;
+  --page-accent-ink:#5ad6a3;
+  --page-danger:#e5695f;
+  --page-warn:#d9a63c;
+  --page-bezel:#2c2721;
+  --page-bezel-2:#3d372f;
+  --page-chrome-ink:#b9b3aa;
+  --page-gesture:#6d675f;
+  --page-shadow:0 1px 2px rgba(0,0,0,.5), 0 18px 40px -12px rgba(0,0,0,.7);
+  --page-shadow-sm:0 1px 2px rgba(0,0,0,.4), 0 6px 16px -8px rgba(0,0,0,.6);
+}
+
+*{box-sizing:border-box}
+
+body{
+  margin:0;
+  padding:0 max(16px, env(safe-area-inset-left)) 0 max(16px, env(safe-area-inset-right));
+  background:var(--page-bg);
+  color:var(--page-fg);
+  font:400 15px/1.6 var(--font-ui);
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ── 页头 ───────────────────────────────────────────────── */
+.wrap{max-width:1240px;margin:0 auto;padding-block:clamp(40px,7vw,84px) 72px}
+
+.eyebrow{
+  display:flex;align-items:center;gap:10px;
+  font:500 11px/1 var(--font-data);letter-spacing:.14em;text-transform:uppercase;
+  color:var(--page-muted);margin:0 0 22px;
+}
+.eyebrow::before{content:"";width:22px;height:1px;background:var(--page-accent);flex:0 0 auto}
+
+h1{
+  margin:0;font:600 clamp(30px,4.6vw,46px)/1.14 var(--font-cjk);
+  letter-spacing:-.015em;text-wrap:balance;
+}
+h1 small{display:block;font:400 clamp(15px,1.6vw,17px)/1.6 var(--font-cjk);color:var(--page-muted);letter-spacing:0;margin-top:14px;max-width:60ch;text-wrap:pretty}
+
+.lede{margin:18px 0 0;max-width:64ch;color:var(--page-muted);font-size:15px}
+.lede code{font:400 13px/1 var(--font-data);background:var(--page-sunken);border:1px solid var(--page-hair);border-radius:4px;padding:2px 5px;color:var(--page-fg)}
+
+/* ── 数字条 ─────────────────────────────────────────────── */
+.specs{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:1px;
+  margin:36px 0 0;background:var(--page-hair);
+  border:1px solid var(--page-hair);border-radius:12px;overflow:hidden;
+}
+.specs div{background:var(--page-surface);padding:16px 18px;display:grid;gap:5px}
+.specs b{font:600 24px/1 var(--font-data);font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.specs b em{font-style:normal;font-size:13px;color:var(--page-muted);margin-left:2px}
+.specs span{font:400 11px/1.4 var(--font-data);letter-spacing:.06em;text-transform:uppercase;color:var(--page-muted)}
+
+/* ── 工具条 ─────────────────────────────────────────────── */
+.bar{
+  display:flex;flex-wrap:wrap;align-items:center;gap:10px;
+  margin:44px 0 22px;padding-bottom:16px;border-bottom:1px solid var(--page-hair);
+}
+.bar h2{margin:0;font:600 17px/1.3 var(--font-cjk);letter-spacing:-.005em}
+.bar .hint{font:400 12px/1.4 var(--font-data);color:var(--page-muted);margin-left:auto}
+.seg{display:inline-flex;background:var(--page-sunken);border:1px solid var(--page-hair);border-radius:9px;padding:3px;gap:2px}
+.seg button{
+  border:0;background:transparent;color:var(--page-muted);
+  font:500 12.5px/1 var(--font-ui);padding:7px 13px;border-radius:6px;cursor:pointer;
+  transition:background 140ms,color 140ms;
+}
+.seg button:hover{color:var(--page-fg)}
+.seg button[aria-pressed="true"]{background:var(--page-surface);color:var(--page-fg);box-shadow:var(--page-shadow-sm)}
+.seg button:focus-visible{outline:2px solid var(--page-accent);outline-offset:2px}
+
+/* ── 手机网格 ───────────────────────────────────────────── */
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:38px 30px;align-items:start}
+
+figure.shot{margin:0;display:grid;gap:0}
+
+.phone{
+  width:393px;max-width:100%;justify-self:center;
+  background:linear-gradient(180deg,var(--page-bezel),var(--page-bezel-2));
+  padding:9px;border-radius:36px;box-shadow:var(--page-shadow);
+  transition:transform 200ms cubic-bezier(.23,1,.32,1);
+}
+@media (hover:hover){.phone:hover{transform:translateY(-3px)}}
+
+.screen{
+  position:relative;height:744px;display:flex;flex-direction:column;
+  border-radius:28px;overflow:hidden;background:var(--page-fg);
+}
+
+/* 设备 chrome */
+.chrome{
+  display:flex;align-items:center;justify-content:space-between;
+  height:26px;flex:0 0 26px;padding:0 16px;
+  background:var(--page-bezel-2);color:var(--page-chrome-ink);
+  font:500 11px/1 var(--font-data);font-variant-numeric:tabular-nums;
+}
+.chrome .sig{display:flex;align-items:center;gap:5px}
+.chrome .bars{display:flex;align-items:flex-end;gap:2px;height:9px}
+.chrome .bars i{width:2.5px;background:currentColor;border-radius:1px;display:block}
+.chrome .bars i:nth-child(1){height:3px}
+.chrome .bars i:nth-child(2){height:5px}
+.chrome .bars i:nth-child(3){height:7px}
+.chrome .bars i:nth-child(4){height:9px}
+.chrome .bat{width:19px;height:9px;border:1.4px solid currentColor;border-radius:2.5px;position:relative;display:block}
+.chrome .bat::before{content:"";position:absolute;inset:1.4px;width:11px;background:currentColor;border-radius:1px;display:block}
+.chrome .bat::after{content:"";position:absolute;right:-3.4px;top:2.4px;width:1.8px;height:4px;background:currentColor;border-radius:0 1px 1px 0;display:block}
+
+.gesture{
+  height:22px;flex:0 0 22px;display:grid;place-items:center;background:var(--page-bezel-2);
+}
+.gesture i{width:104px;height:4px;border-radius:99px;background:var(--page-gesture);display:block}
+
+figcaption{margin-top:18px;display:grid;gap:8px}
+figcaption .tag{
+  justify-self:start;font:500 10.5px/1 var(--font-data);letter-spacing:.1em;text-transform:uppercase;
+  color:var(--page-accent-ink);background:color-mix(in oklch,var(--page-accent) 12%,transparent);
+  border-radius:99px;padding:5px 9px;
+}
+figcaption h3{margin:0;font:600 16px/1.35 var(--font-cjk);letter-spacing:-.005em}
+figcaption p{margin:0;color:var(--page-muted);font-size:13.5px;line-height:1.62}
+figcaption p code{font:400 12px/1 var(--font-data);background:var(--page-sunken);border:1px solid var(--page-hair);border-radius:4px;padding:1.5px 4px;color:var(--page-fg);overflow-wrap:anywhere}
+
+/* ═════════════════════════════════════════════════════════
+   手机内：XChat 的实际样式，取自 frontend/src/styles.css
+   窄屏断点（≤859px）的规则已直接写入，不再是媒体查询
+   ═════════════════════════════════════════════════════════ */
+.app{
+  flex:1;min-height:0;display:grid;grid-template-columns:56px minmax(0,1fr);
+  background:var(--surface);overflow:hidden;
+  font:14px/1.45 var(--font-cjk);
+  color:var(--fg);   /* 真实应用里由 body 提供，这里等价补上 */
+}
+.app[data-t="light"]{
+  color-scheme:light;
+  --bg:#f8f6f4;--surface:#fff;--fg:#221c15;--muted:#76706a;--border:#dedad5;
+  --accent:#18ac71;--accent-hover:#14955f;--on-accent:#fcfcfc;
+  --danger:#d73431;--success:#2a904b;--warning:#d29000;--rail:#e6e8ea;--rail-fg:#5a5e62;
+}
+.app[data-t="dark"]{
+  color-scheme:dark;
+  --bg:#120f0b;--surface:#1e1a15;--fg:#eae7e4;--muted:#9f9b95;--border:#37322c;
+  --accent:#18ac71;--accent-hover:#14955f;--on-accent:#fcfcfc;
+  --danger:#d73431;--success:#2a904b;--warning:#d29000;--rail:#080503;--rail-fg:#928f8a;
+}
+.app *, .app *::before, .app *::after{box-sizing:border-box}
+/* :where() 让它保持 0 特异性，组件类（.send / .banner 等）才能覆盖回来 */
+.app :where(button){font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
+.app :where(textarea){font:inherit;border:0;background:none;resize:none;outline:0}
+
+/* ── 导航条 rail：56px，窄屏下依然常驻 ── */
+.rail{
+  display:flex;flex-direction:column;align-items:center;
+  padding:14px 0 10px;background:var(--rail);color:var(--rail-fg);
+}
+.self{position:relative;display:grid;width:40px;height:40px;place-items:center}
+.self .av{width:36px;height:36px}
+.self .presence{
+  position:absolute;right:0;bottom:0;width:10px;height:10px;
+  border:2px solid var(--rail);border-radius:50%;background:var(--success);
+}
+.rail nav{display:flex;flex-direction:column;gap:16px;margin-top:34px}
+.rb{
+  position:relative;display:grid;width:40px;height:40px;place-items:center;
+  border:1px solid transparent;border-radius:7px;color:inherit;
+}
+.rb.active{color:var(--accent)}
+.rb svg{width:24px;height:24px;display:block}
+.badge{
+  position:absolute;top:-4px;right:-6px;display:grid;min-width:17px;height:17px;
+  place-items:center;padding:0 4px;border:2px solid var(--rail);border-radius:99px;
+  background:var(--danger);color:var(--on-accent);font:10px/1 var(--font-data);
+}
+.rail-settings{margin-top:auto}
+
+/* ── 头像 ── */
+.av{
+  display:grid;place-items:center;width:40px;height:40px;overflow:hidden;
+  border-radius:8px;background:var(--avc,oklch(.69 .13 32));color:var(--on-accent);
+  font-size:15px;font-weight:700;font-style:normal;letter-spacing:-.02em;
+  box-shadow:inset 0 0 0 1px color-mix(in oklch,var(--fg) 8%,transparent);
+}
+.av.sm{width:30px;height:30px;border-radius:7px;font-size:12px}
+
+/* ── 列表栏 ── */
+.pane{min-width:0;display:flex;flex-direction:column;overflow:hidden;
+  border-right:1px solid var(--border);background:color-mix(in oklch,var(--bg) 92%,var(--surface))}
+.list-head{
+  display:flex;align-items:center;gap:8px;height:56px;flex:0 0 56px;
+  padding:12px;border-bottom:1px solid var(--border);
+}
+.list-head > b{padding-left:4px;font-size:16px;font-weight:600}
+.search{position:relative;flex:1;min-width:0;display:block}
+.search svg{position:absolute;top:8px;left:10px;color:var(--muted)}
+.search input{
+  width:100%;height:32px;padding:0 10px 0 32px;border:1px solid transparent;
+  border-radius:8px;background:color-mix(in oklch,var(--fg) 5%,transparent);
+  color:var(--fg);font:14px var(--font-cjk);outline:0;
+}
+.icbtn{
+  display:grid;place-items:center;width:40px;height:40px;flex:0 0 auto;
+  border:1px solid transparent;border-radius:7px;color:var(--muted);
+}
+/* 窄屏：返回 / 关闭列表 用 44×44 —— styles.css 中唯一达标的触控目标 */
+.icbtn.tall{width:44px;height:44px}
+
+.scroll{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:none}
+.scroll::-webkit-scrollbar{width:0}
+
+/* 会话行 */
+.conv{
+  display:grid;grid-template-columns:40px minmax(0,1fr) auto;gap:10px;align-items:center;
+  width:100%;height:64px;padding:0 10px 0 12px;
+}
+.conv.selected{background:#16ad6f;color:var(--on-accent)}
+.conv.selected .prev,.conv.selected time{color:color-mix(in oklch,var(--on-accent) 78%,transparent)}
+.conv.selected .cav .dot{border-color:var(--accent)}
+.cav{position:relative;display:block;width:40px;height:40px}
+.cav .dot{
+  position:absolute;right:-2px;bottom:-2px;width:11px;height:11px;
+  border:2px solid var(--surface);border-radius:50%;
+}
+.dot.on{background:var(--success)}
+.dot.off{background:var(--muted)}
+.rmain{display:block;min-width:0}
+.rname{display:flex;align-items:center;gap:5px;min-width:0}
+.rname b{min-width:0;overflow:hidden;font-weight:600;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+.tg{
+  display:inline-flex;align-items:center;height:18px;flex:0 0 auto;padding:0 6px;
+  border:1px solid currentColor;border-radius:5px;color:var(--muted);
+  font-size:10px;font-weight:500;opacity:.82;
+}
+.selected .tg{color:var(--on-accent)}
+.prev{display:block;margin-top:3px;overflow:hidden;color:var(--muted);font-size:13px;
+  text-overflow:ellipsis;white-space:nowrap}
+.draft{color:var(--accent);font-style:normal}
+.selected .draft{color:var(--on-accent)}
+.rside{align-self:stretch;display:flex;flex-direction:column;align-items:flex-end;
+  justify-content:center;gap:7px}
+.rside time{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+.unread{
+  display:grid;min-width:18px;height:18px;place-items:center;padding:0 5px;
+  border-radius:99px;background:var(--danger);color:var(--on-accent);font:10px/1 var(--font-data);
+}
+.group-label{height:32px;padding:12px 12px 4px;color:var(--muted);font:11px/1 var(--font-data)}
+
+/* 设备行 */
+.dev{
+  display:grid;grid-template-columns:40px minmax(0,1fr) 8px;gap:10px;align-items:center;
+  width:100%;min-height:76px;padding:8px 10px 8px 12px;
+}
+.dev.selected{background:#16ad6f;color:var(--on-accent)}
+.dmeta{display:grid;gap:1px;margin-top:3px;color:var(--muted);font-size:10px}
+.dmeta span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sdot{display:block;width:8px;height:8px;border-radius:50%}
+.sdot.on{background:var(--success)}
+.sdot.off{border:1.5px solid currentColor;color:var(--muted)}
+
+/* 文件行（≤859px：表头隐藏，列收为 42px / 1fr / 96px） */
+.file{
+  display:grid;grid-template-columns:42px minmax(120px,1fr) 96px;gap:10px;align-items:center;
+  width:100%;padding:11px 12px;border-bottom:1px solid var(--border);
+}
+.fico{
+  display:grid;width:42px;height:42px;place-items:center;border-radius:8px;
+  background:color-mix(in oklch,var(--fg) 6%,transparent);color:var(--muted);
+}
+.fname{min-width:0}
+.fname b{display:block;overflow:hidden;font-size:13.5px;font-weight:600;
+  text-overflow:ellipsis;white-space:nowrap}
+.fname small{display:block;margin-top:2px;color:var(--muted);font:10px/1.4 var(--font-data)}
+.fside{justify-self:end;color:var(--muted);font:11px/1.4 var(--font-data);text-align:right}
+
+/* 设置导航 */
+.snav{
+  display:flex;align-items:center;gap:11px;width:100%;min-height:64px;padding:0 14px;
+  border-bottom:1px solid var(--border);font-size:14px;
+}
+.snav svg{flex:0 0 auto;color:var(--muted)}
+.snav .ch{margin-left:auto;color:var(--muted);font:10px/1 var(--font-data)}
+
+/* ── 对话区 ── */
+.ws{min-width:0;display:grid;grid-template-rows:56px minmax(0,1fr) auto;background:var(--bg);overflow:hidden}
+.ws.with-banner{grid-template-rows:56px auto minmax(0,1fr) auto}
+.ws.empty{grid-template-rows:minmax(0,1fr)}
+
+.ws-head{
+  display:flex;align-items:center;gap:10px;height:56px;padding:0 12px 0 6px;
+  border-bottom:1px solid var(--border);
+  background:color-mix(in oklch,var(--surface) 96%,transparent);
+}
+.ws-title{display:grid;min-width:0;flex:1}
+.ws-title b{overflow:hidden;font-weight:650;font-size:14.5px;text-overflow:ellipsis;white-space:nowrap}
+.ws-title span{overflow:hidden;color:var(--muted);font:11px/1.3 var(--font-data);
+  text-overflow:ellipsis;white-space:nowrap}
+
+/* 群公告 */
+.banner{
+  display:flex;align-items:center;gap:10px;min-height:42px;padding:7px 18px;
+  border-bottom:1px solid color-mix(in oklch,#d99a2b 24%,var(--border));
+  background:color-mix(in oklch,#d99a2b 9%,var(--surface));
+}
+.banner .mark{
+  display:grid;width:28px;height:28px;flex:0 0 auto;place-items:center;border-radius:7px;
+  background:color-mix(in oklch,#d99a2b 18%,var(--surface));font-size:14px;
+}
+.banner .copy{display:grid;min-width:0;flex:1}
+.banner .copy b{font-size:12.5px;font-weight:600}
+.banner .copy small{overflow:hidden;color:var(--muted);font-size:12px;
+  text-overflow:ellipsis;white-space:nowrap}
+.banner .arw{color:var(--muted);font-size:16px}
+
+/* 消息 */
+.msgs{overflow-y:auto;overflow-x:hidden;padding:12px 12px 40px;scrollbar-width:none}
+.msgs::-webkit-scrollbar{width:0}
+.divider{margin:18px 0 8px;color:var(--muted);font-size:10px;text-align:center}
+.msg{display:flex;align-items:flex-start;gap:8px;margin:12px 0}
+.msg.sent{flex-direction:row-reverse}
+.mstack{display:flex;max-width:78%;flex-direction:column}   /* 窄屏 65% → 78% */
+.msg.sent .mstack{align-items:flex-end}
+.sender{margin:0 0 4px 3px;color:var(--muted);font:10px/1 var(--font-data)}
+.bubble{
+  padding:9px 12px;border-radius:12px 12px 12px 4px;
+  background:#9df29f;color:var(--fg);       /* 两个主题都是这个色 */
+  box-shadow:0 1px 1px color-mix(in oklch,var(--fg) 6%,transparent);
+  white-space:pre-wrap;word-break:break-word;font-size:14px;
+}
+.msg.sent .bubble{border-radius:12px 12px 4px 12px}
+.mmeta{display:flex;align-items:center;gap:6px;margin-top:4px;color:var(--muted);font-size:10px}
+.mmeta i{color:var(--accent);font-style:normal;font-weight:600}
+.mdelete{color:var(--danger);font-size:10px}   /* 窄屏改常显 */
+
+.quoted{
+  margin-top:6px;padding:6px 9px;border:0;border-left:2px solid var(--accent);
+  border-radius:0 6px 6px 0;background:color-mix(in oklch,var(--fg) 5%,transparent);
+  color:var(--muted);font-size:12px;text-align:left;
+}
+
+/* 文件气泡 */
+.fcard{
+  display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;gap:10px;
+  width:min(300px,100%);padding:12px;border:1px solid var(--border);border-radius:10px;
+  background:var(--surface);box-shadow:0 1px 2px color-mix(in oklch,var(--fg) 8%,transparent),
+  0 8px 24px color-mix(in oklch,var(--fg) 8%,transparent);
+}
+.fcard .fico{background:color-mix(in oklch,var(--accent) 12%,transparent);color:var(--accent)}
+.fcard .fname b{font-size:13px}
+.fcard .fname small{font-size:10px}
+.bar-track{grid-column:1/-1;height:3px;border-radius:99px;
+  background:color-mix(in oklch,var(--fg) 10%,transparent);overflow:hidden}
+.bar-track i{display:block;height:100%;width:62%;border-radius:99px;background:var(--accent)}
+
+/* 输入区 */
+.composer{
+  display:flex;min-height:116px;align-items:flex-end;padding:10px;
+  border-top:1px solid var(--border);background:var(--surface);
+}
+.cbox{position:relative;flex:1;min-width:0;border:1px solid var(--border);border-radius:10px;
+  background:var(--bg);overflow:visible}
+.cbox textarea{
+  display:block;width:100%;min-height:66px;padding:11px 12px 4px;border:0;outline:0;
+  background:transparent;resize:none;color:var(--fg);font:14px/1.45 var(--font-cjk);
+}
+.cbox textarea::placeholder{color:var(--muted)}
+.ctoolbar{display:flex;min-height:40px;align-items:center;justify-content:space-between;
+  gap:10px;padding:2px 6px 6px}
+.ctools{display:flex;gap:3px}
+.ctool{display:grid;width:40px;height:40px;place-items:center;border-radius:7px;color:var(--muted)}
+.send{
+  display:inline-flex;min-height:36px;align-items:center;justify-content:center;
+  padding:0 16px;border-radius:8px;background:var(--accent);color:var(--on-accent);
+  font-weight:600;font-size:14px;
+  box-shadow:0 2px 6px color-mix(in oklch,var(--accent) 28%,transparent);
+}
+
+/* 空状态 */
+.empty{
+  display:grid;place-content:center;justify-items:center;height:100%;padding:32px;
+  color:var(--muted);text-align:center;
+}
+.empty svg{margin-bottom:14px;opacity:.5}
+.empty b{color:var(--fg);font-size:16px;font-weight:600}
+.empty p{max-width:34ch;margin:6px 0 0;font-size:13px;line-height:1.6}
+
+/* ── 断点表 ─────────────────────────────────────────────── */
+.tablewrap{margin:0;overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:640px;font-size:13.5px}
+caption{text-align:left;color:var(--page-muted);font-size:13px;padding-bottom:14px}
+th,td{text-align:left;padding:13px 16px;border-bottom:1px solid var(--page-hair);vertical-align:top}
+thead th{
+  font:500 10.5px/1 var(--font-data);letter-spacing:.1em;text-transform:uppercase;
+  color:var(--page-muted);border-bottom:1px solid var(--page-border);padding-bottom:11px;
+}
+tbody tr:last-child td{border-bottom:0}
+td.bp{font:500 13px/1.45 var(--font-data);color:var(--page-accent-ink);white-space:nowrap;
+  font-variant-numeric:tabular-nums}
+td.rule code{font:400 12px/1.5 var(--font-data);background:var(--page-sunken);
+  border:1px solid var(--page-hair);border-radius:4px;padding:1.5px 5px;
+  color:var(--page-fg);overflow-wrap:anywhere;white-space:nowrap}
+tbody tr{background:var(--page-surface)}
+tbody tr.hi{background:color-mix(in oklch,var(--page-accent) 7%,var(--page-surface))}
+tbody tr.hi td:first-child{box-shadow:inset 2px 0 0 var(--page-accent)}
+
+/* ── 问题清单 ───────────────────────────────────────────── */
+.findings{display:grid;gap:12px;margin:0;padding:0;list-style:none}
+.finding{
+  display:grid;grid-template-columns:auto minmax(0,1fr);gap:16px;
+  padding:20px 22px;border:1px solid var(--page-hair);border-radius:12px;
+  background:var(--page-surface);
+}
+.finding .sev{
+  font:500 10px/1 var(--font-data);letter-spacing:.1em;text-transform:uppercase;
+  padding:6px 9px;border-radius:99px;height:fit-content;white-space:nowrap;
+}
+.sev.bug{color:var(--page-danger);background:color-mix(in oklch,var(--page-danger) 11%,transparent)}
+.sev.ux{color:var(--page-warn);background:color-mix(in oklch,var(--page-warn) 14%,transparent)}
+.sev.check{color:var(--page-muted);background:var(--page-sunken)}
+.finding h3{margin:0 0 7px;font:600 15.5px/1.4 var(--font-cjk);letter-spacing:-.005em}
+.finding p{margin:0;color:var(--page-muted);font-size:13.5px;line-height:1.66}
+.finding p + p{margin-top:9px}
+.finding code{font:400 12px/1 var(--font-data);background:var(--page-sunken);
+  border:1px solid var(--page-hair);border-radius:4px;padding:1.5px 5px;
+  color:var(--page-fg);overflow-wrap:anywhere}
+.finding strong{color:var(--page-fg);font-weight:600}
+.evidence{
+  margin-top:12px;padding:11px 14px;border-radius:8px;background:var(--page-sunken);
+  border:1px solid var(--page-hair);
+  font:400 12px/1.7 var(--font-data);color:var(--page-muted);
+}
+.evidence b{color:var(--page-fg);font-weight:500}
+.swatch{
+  display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:-1px;
+  border:1px solid rgba(128,128,128,.35);margin:0 3px;
+}
+
+footer{
+  margin-top:64px;padding-top:22px;border-top:1px solid var(--page-hair);
+  color:var(--page-faint);font:400 12px/1.7 var(--font-data);
+}
+footer code{color:var(--page-muted)}
+
+section + section{margin-top:64px}
+h2.sec{
+  margin:0 0 26px;font:600 20px/1.3 var(--font-cjk);letter-spacing:-.01em;
+  display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;
+}
+h2.sec em{
+  font:400 11px/1 var(--font-data);letter-spacing:.1em;text-transform:uppercase;
+  color:var(--page-muted);font-style:normal;
+}
+@media (prefers-reduced-motion: reduce){
+  *{animation-duration:.01ms !important;transition-duration:.01ms !important}
+  .phone:hover{transform:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">XChat · 窄屏渲染实录</p>
+  <h1>移动端现在的样子
+    <small>下面六个画面不是重画的示意图 —— 是把 <code>frontend/src/styles.css</code> 和 <code>App.jsx</code> 里 ≤859px 断点的规则原样写进手机框里渲染出来的。颜色、尺寸、间距都取自 <code>tokens.css</code>，内容是编的，像素是真的。</small>
+  </h1>
+
+  <div class="specs">
+    <div><b>859<em>px</em></b><span>唯一切换移动布局的断点</span></div>
+    <div><b>56<em>px</em></b><span>窄屏下仍常驻的竖向导航条</span></div>
+    <div><b>78<em>%</em></b><span>窄屏消息气泡最大宽度</span></div>
+    <div><b>40<em>px</em></b><span>导航按钮触控尺寸</span></div>
+    <div><b>0</b><span>处 safe-area 适配</span></div>
+  </div>
+
+  <div class="bar">
+    <h2>六个画面</h2>
+    <div class="seg" role="group" aria-label="切换应用主题">
+      <button type="button" id="btn-light" aria-pressed="true">应用浅色</button>
+      <button type="button" id="btn-dark" aria-pressed="false">应用深色</button>
+    </div>
+    <span class="hint">393 × 852dp · Android</span>
+  </div>
+
+  <div class="grid" id="grid">
+
+    <!-- ① 空对话区：mobileList 初值为 false，冷启动落在这里 -->
+    <figure class="shot">
+      <div class="phone">
+        <div class="screen">
+          <div class="chrome">
+            <span>14:32</span>
+            <span class="sig"><span class="bars"><i></i><i></i><i></i><i></i></span><span class="bat"></span></span>
+          </div>
+          <div class="app" data-t="light">
+            <aside class="rail">
+              <button class="self"><i class="av" style="--avc:oklch(.67 .11 280)">王</i><i class="presence"></i></button>
+              <nav>
+                <button class="rb active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4h10a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4H9l-5 3v-5.5A4 4 0 0 1 3 13V8a4 4 0 0 1 4-4Z"/><path d="M8 11h.01M12 11h.01M16 11h.01"/></svg><span class="badge">7</span></button>
+                <button class="rb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg></button>
+                <button class="rb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5h7l2 2h9v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 9h18"/></svg></button>
+              </nav>
+              <button class="rb rail-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h7M15 6h5M4 12h2M10 12h10M4 18h10M18 18h2"/><circle cx="13" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></svg></button>
+            </aside>
+            <main class="ws empty">
+              <div class="empty">
+                <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4h10a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4H9l-5 3v-5.5A4 4 0 0 1 3 13V8a4 4 0 0 1 4-4Z"/></svg>
+                <b>选择一个会话</b>
+                <p>点左侧聊天图标打开会话列表，或从主机里发起新的对话。</p>
+              </div>
+            </main>
+          </div>
+          <div class="gesture"><i></i></div>
+        </div>
+      </div>
+      <figcaption>
+        <span class="tag">冷启动</span>
+        <h3>首屏是一块空的对话区</h3>
+        <p><code>mobileList</code> 初始值是 <code>false</code>，而 <code>activeConversationId</code> 初始是 <code>null</code>，所以带缓存的全新启动会直接落在这个 <code>no-selection</code> 空状态上 —— 左边 56px 导航条配一整屏空白。</p>
+      </figcaption>
+    </figure>
+
+    <!-- ② 会话列表 -->
+    <figure class="shot">
+      <div class="phone">
+        <div class="screen">
+          <div class="chrome">
+            <span>14:32</span>
+            <span class="sig"><span class="bars"><i></i><i></i><i></i><i></i></span><span class="bat"></span></span>
+          </div>
+          <div class="app" data-t="light">
+            <aside class="rail">
+              <button class="self"><i class="av" style="--avc:oklch(.67 .11 280)">王</i><i class="presence"></i></button>
+              <nav>
+                <button class="rb active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4h10a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4H9l-5 3v-5.5A4 4 0 0 1 3 13V8a4 4 0 0 1 4-4Z"/><path d="M8 11h.01M12 11h.01M16 11h.01"/></svg><span class="badge">7</span></button>
+                <button class="rb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg></button>
+                <button class="rb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5h7l2 2h9v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 9h18"/></svg></button>
+              </nav>
+              <button class="rb rail-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h7M15 6h5M4 12h2M10 12h10M4 18h10M18 18h2"/><circle cx="13" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></svg></button>
+            </aside>
+
+            <aside class="pane">
+              <header class="list-head">
+                <label class="search">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+                  <input value="" placeholder="搜索会话" readonly>
+                </label>
+                <button class="icbtn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+                <button class="icbtn tall"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+              </header>
+
+              <div class="scroll">
+                <button class="conv">
+                  <span class="cav"><i class="av" style="--avc:oklch(.69 .13 32)">陈</i><span class="dot on"></span></span>
+                  <span class="rmain">
+                    <span class="rname"><b>陈默的 MacBook Pro</b></span>
+                    <span class="prev">截图我收到了，那个抓屏工具挺好用</span>
+                  </span>
+                  <span class="rside"><time>14:32</time><span class="unread">2</span></span>
+                </button>
+
+                <button class="conv">
+                  <span class="cav"><i class="av" style="--avc:oklch(.66 .12 150)">设</i></span>
+                  <span class="rmain">
+                    <span class="rname"><b>设计组</b><span class="tg">群聊</span></span>
+                    <span class="prev">王琳：新版图标我放共享文件里了</span>
+                  </span>
+                  <span class="rside"><time>13:05</time><span class="unread">5</span></span>
+                </button>
+
+                <button class="conv">
+                  <span class="cav"><i class="av" style="--avc:oklch(.67 .11 205)">张</i><span class="dot on"></span></span>
+                  <span class="rmain">
+                    <span class="rname"><b>张工的 ThinkPad</b></span>
+                    <span class="prev"><i class="draft">[草稿] </i>那个端口是 8971 还是 8972</span>
+                  </span>
+                  <span class="rside"><time>11:20</time></span>
+                </button>
+
+                <button class="conv">
+                  <span class="cav"><i class="av" style="--avc:oklch(.7 .13 75)">会</i><span class="dot on"></span></span>
+                  <span class="rmain">
+                    <span class="rname"><b>会议室-前台机</b><span class="tg">置顶</span></span>
+                    <span class="prev">打印机驱动装好了，可以投屏试试</span>
+                  </span>
+                  <span class="rside"><time>昨天</time></span>
+                </button>
+
+                <button class="conv">
+                  <span class="cav"><i class="av" style="--avc:oklch(.64 .12 340)">运</i><span class="dot off"></span></span>
+                  <span class="rmain">
+                    <span class="rname"><b>运维值班机</b></span>
+                    <span class="prev">下周一巡检，需要先同步一下版本</span>
+                  </span>
+                  <span class="rside"><time>09-12</time></span>
+                </button>
+              </div>
+            </aside>
+          </div>
+          <div class="gesture"><i></i></div>
+        </div>
+      </div>
+      <figcaption>
+        <span class="tag">会话列表</span>
+        <h3>点导航条上的聊天图标才进得来</h3>
+        <p>列表占满导航条右侧的全部宽度，行高 64px。搜索框、加号、关闭各占一个触控位；关闭键用 44×44，加号只有 40×40 —— 同一行里两个尺寸标准。</p>
+      </figcaption>
+    </figure>
+
+    <!-- ③ 单聊 -->
+    <figure class="shot">
+      <div class="phone">
+        <div class="screen">
+          <div class="chrome">
+            <span>14:33</span>
+            <span class="sig"><span class="bars"><i></i><i></i><i></i><i></i></span><span class="bat"></span></span>
+          </div>
+          <div class="app" data-t="light">
+            <aside class="rail">
+              <button class="self"><i class="av" style="--avc:oklch(.67 .11 280)">王</i><i class="presence"></i></button>
+              <nav>
+                <button class="rb active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4h10a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4H9l-5 3v-5.5A4 4 0 0 1 3 13V8a4 4 0 0 1 4-4Z"/><path d="M8 11h.01M12 11h.01M16 11h.01"/></svg><span class="badge">7</span></button>
+                <button class="rb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg></button>
+                <button class="rb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5h7l2 2h9v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 9h18"/></svg></button>
+              </nav>
+              <button class="rb rail-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h7M15 6h5M4 12h2M10 12h10M4 18h10M18 18h2"/><circle cx="13" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></svg></button>
+            </aside>
+
+            <main class="ws">
+              <header class="ws-head">
+                <button class="icbtn tall"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m15 5-7 7 7 7"/></svg></button>
+                <div class="ws-title">
+                  <b>陈默的 MacBook Pro</b>
+                  <span>192.168.1.42 · 在线</span>
+                </div>
+                <button class="icbtn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
+              </header>
+
+              <div class="msgs">
+                <div class="divider">今天 14:20</div>
+
+                <article class="msg">
+                  <i class="av sm" style="--avc:oklch(.69 .13 32)">陈</i>
+                  <div class="mstack">
+                    <div class="bubble">截图我收到了，那个抓屏工具挺好用</div>
+                    <div class="mmeta">14:21</div>
+                  </div>
+                </article>
+
+                <article class="msg sent">
+                  <i class="av sm" style="--avc:oklch(.67 .11 280)">王</i>
+                  <div class="mstack">
+                    <div class="bubble">用的是系统原生抓屏。安卓端暂时还没有，那边没有对应的接口。</div>
+                    <div class="mmeta">14:22 <i>已送达</i></div>
+                  </div>
+                </article>
+
+                <article class="msg">
+                  <i class="av sm" style="--avc:oklch(.69 .13 32)">陈</i>
+                  <div class="mstack">
+                    <div class="bubble">那我这边先用桌面版。手机主要就是收文件。</div>
+                    <div class="mmeta">14:24</div>
+                  </div>
+                </article>
+
+                <article class="msg sent">
+                  <i class="av sm" style="--avc:oklch(.67 .11 280)">王</i>
+                  <div class="mstack">
+                    <div class="bubble">文件这块刚调完，四条并行通道</div>
+                    <div class="fcard">
+                      <span class="fico">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v5h5"/><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/></svg>
+                      </span>
+                      <span class="fname"><b>界面稿-v3.png</b><small>2.4 MB · 62%</small></span>
+                      <span class="fside">1.5 MB/s</span>
+                      <span class="bar-track"><i></i></span>
+                    </div>
+                    <div class="mmeta">14:31 <i>发送中</i></div>
+                  </div>
+                </article>
+              </div>
+
+              <div class="composer">
+                <div class="cbox">
+                  <textarea rows="2" placeholder="发送消息" readonly></textarea>
+                  <div class="ctoolbar">
+                    <div class="ctools">
+                      <button class="ctool"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5c1 1 2.1 1.5 3.5 1.5s2.5-.5 3.5-1.5M9 9.5h.01M15 9.5h.01"/></svg></button>
+                      <button class="ctool" disabled><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg></button>
+                      <button class="ctool"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5h7l2 2h9v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 9h18"/></svg></button>
+                    </div>
+                    <button class="send">发送</button>
+                  </div>
+                </div>
+              </div>
+            </main>
+          </div>
+          <div class="gesture"><i></i></div>
+        </div>
+      </div>
+      <figcaption>
+        <span class="tag">单聊 · 浅色</span>
+        <h3>气泡、输入区、返回键</h3>
+        <p>窄屏下消息气泡上限从 65% 放宽到 78%，输入区左右内边距收到 10px，腾出约 20px 的横向空间。抓屏按钮在 Android 上是 <code>disabled</code> 的（<code>capture: false</code>），界面上仍占一个位置。</p>
+      </figcaption>
+    </figure>
+
+    <!-- ④ 群聊 -->
+    <figure class="shot">
+      <div class="phone">
+        <div class="screen">
+          <div class="chrome">
+            <span>13:06</span>
+            <span class="sig"><span class="bars"><i></i><i></i><i></i><i></i></span><span class="bat"></span></span>
+          </div>
+          <div class="app" data-t="light">
+            <aside class="rail">
+              <button class="self"><i class="av" style="--avc:oklch(.67 .11 280)">王</i><i class="presence"></i></button>
+              <nav>
+                <button class="rb active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4h10a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4H9l-5 3v-5.5A4 4 0 0 1 3 13V8a4 4 0 0 1 4-4Z"/><path d="M8 11h.01M12 11h.01M16 11h.01"/></svg><span class="badge">7</span></button>
+                <button class="rb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg></button>
+                <button class="rb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5h7l2 2h9v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 9h18"/></svg></button>
+              </nav>
+              <button class="rb rail-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h7M15 6h5M4 12h2M10 12h10M4 18h10M18 18h2"/><circle cx="13" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></svg></button>
+            </aside>
+
+            <main class="ws with-banner">
+              <header class="ws-head">
+                <button class="icbtn tall"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m15 5-7 7 7 7"/></svg></button>
+                <div class="ws-title">
+                  <b>设计组</b>
+                  <span>6 位成员</span>
+                </div>
+                <button class="icbtn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
+              </header>
+
+              <button class="banner">
+                <span class="mark">📢</span>
+                <span class="copy">
+                  <b>群公告</b>
+                  <small>周五 18:00 前把设计稿传到共享文件</small>
+                </span>
+                <span class="arw">›</span>
+              </button>
+
+              <div class="msgs">
+                <div class="divider">今天 13:02</div>
+
+                <article class="msg">
+                  <i class="av sm" style="--avc:oklch(.67 .11 205)">林</i>
+                  <div class="mstack">
+                    <span class="sender">王琳</span>
+                    <div class="bubble">新版图标我放共享文件里了，命名按之前说好的来</div>
+                    <div class="mmeta">13:05</div>
+                  </div>
+                </article>
+
+                <article class="msg">
+                  <i class="av sm" style="--avc:oklch(.65 .11 115)">赵</i>
+                  <div class="mstack">
+                    <span class="sender">赵一鸣</span>
+                    <div class="bubble">收到</div>
+                    <div class="mmeta">13:05</div>
+                  </div>
+                </article>
+
+                <article class="msg sent">
+                  <i class="av sm" style="--avc:oklch(.67 .11 280)">王</i>
+                  <div class="mstack">
+                    <div class="bubble">我这边同步一下，晚上一起过一遍</div>
+                    <div class="mmeta">13:06 <i>已送达</i></div>
+                  </div>
+                </article>
+              </div>
+
+              <div class="composer">
+                <div class="cbox">
+                  <textarea rows="2" placeholder="发送消息，@ 可提及成员" readonly></textarea>
+                  <div class="ctoolbar">
+                    <div class="ctools">
+                      <button class="ctool"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5c1 1 2.1 1.5 3.5 1.5s2.5-.5 3.5-1.5M9 9.5h.01M15 9.5h.01"/></svg></button>
+                      <button class="ctool" disabled><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg></button>
+                      <button class="ctool"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5h7l2 2h9v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 9h18"/></svg></button>
+                    </div>
+                    <button class="send">发送</button>
+                  </div>
+                </div>
+              </div>
+            </main>
+          </div>
+          <div class="gesture"><i></i></div>
+        </div>
+      </div>
+      <figcaption>
+        <span class="tag">群聊</span>
+        <h3>公告条 + 发送者名，行高被吃掉 42px</h3>
+        <p>有公告时 <code>grid-template-rows</code> 会从 <code>56px 1fr auto</code> 变成 <code>56px auto 1fr auto</code>，公告条最小 42px。手机上 56 + 42 + 116 已经占掉 214px，留给消息的只剩一半屏幕。</p>
+      </figcaption>
+    </figure>
+
+    <!-- ⑤ 主机 -->
+    <figure class="shot">
+      <div class="phone">
+        <div class="screen">
+          <div class="chrome">
+            <span>14:35</span>
+            <span class="sig"><span class="bars"><i></i><i></i><i></i><i></i></span><span class="bat"></span></span>
+          </div>
+          <div class="app" data-t="light">
+            <aside class="rail">
+              <button class="self"><i class="av" style="--avc:oklch(.67 .11 280)">王</i><i class="presence"></i></button>
+              <nav>
+                <button class="rb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4h10a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4H9l-5 3v-5.5A4 4 0 0 1 3 13V8a4 4 0 0 1 4-4Z"/><path d="M8 11h.01M12 11h.01M16 11h.01"/></svg><span class="badge">7</span></button>
+                <button class="rb active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg></button>
+                <button class="rb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5h7l2 2h9v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 9h18"/></svg></button>
+              </nav>
+              <button class="rb rail-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h7M15 6h5M4 12h2M10 12h10M4 18h10M18 18h2"/><circle cx="13" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></svg></button>
+            </aside>
+
+            <aside class="pane">
+              <header class="list-head">
+                <label class="search">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+                  <input value="" placeholder="搜索主机" readonly>
+                </label>
+                <button class="icbtn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+                <button class="icbtn tall"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+              </header>
+
+              <div class="scroll">
+                <div class="group-label">在线 · 3</div>
+
+                <button class="dev selected">
+                  <span class="cav"><i class="av" style="--avc:oklch(.69 .13 32)">陈</i></span>
+                  <span class="rmain">
+                    <span class="rname"><b>陈默的 MacBook Pro</b></span>
+                    <span class="dmeta"><span>192.168.1.42 · macOS 15.1</span><span>延迟 3ms</span></span>
+                  </span>
+                  <span class="sdot on"></span>
+                </button>
+
+                <button class="dev">
+                  <span class="cav"><i class="av" style="--avc:oklch(.67 .11 205)">张</i></span>
+                  <span class="rmain">
+                    <span class="rname"><b>张工的 ThinkPad</b></span>
+                    <span class="dmeta"><span>192.168.1.87 · Windows 11</span><span>延迟 12ms</span></span>
+                  </span>
+                  <span class="sdot on"></span>
+                </button>
+
+                <button class="dev">
+                  <span class="cav"><i class="av" style="--avc:oklch(.7 .13 75)">会</i></span>
+                  <span class="rmain">
+                    <span class="rname"><b>会议室-前台机</b></span>
+                    <span class="dmeta"><span>192.168.1.106 · Windows 10</span><span>延迟 28ms</span></span>
+                  </span>
+                  <span class="sdot on"></span>
+                </button>
+
+                <div class="group-label">离线 · 2</div>
+
+                <button class="dev">
+                  <span class="cav"><i class="av" style="--avc:oklch(.68 .1 235)">N</i></span>
+                  <span class="rmain">
+                    <span class="rname"><b>NAS-备份</b></span>
+                    <span class="dmeta"><span>192.168.1.10 · Linux</span><span>2 小时前</span></span>
+                  </span>
+                  <span class="sdot off"></span>
+                </button>
+
+                <button class="dev">
+                  <span class="cav"><i class="av" style="--avc:oklch(.64 .12 340)">运</i></span>
+                  <span class="rmain">
+                    <span class="rname"><b>运维值班机</b></span>
+                    <span class="dmeta"><span>192.168.1.203 · Ubuntu 24.04</span><span>昨天</span></span>
+                  </span>
+                  <span class="sdot off"></span>
+                </button>
+              </div>
+            </aside>
+          </div>
+          <div class="gesture"><i></i></div>
+        </div>
+      </div>
+      <figcaption>
+        <span class="tag">主机</span>
+        <h3>选中态是一整行绿底</h3>
+        <p>设备行最小 76px，右侧 8px 状态点区分在线/离线。选中行 <code>background:#16ad6f</code> 加白字 —— 这个绿和品牌绿 <code>#18ac71</code> 差了一点点，是两个色值。</p>
+      </figcaption>
+    </figure>
+
+    <!-- ⑥ 深色主题单聊 -->
+    <figure class="shot">
+      <div class="phone">
+        <div class="screen">
+          <div class="chrome">
+            <span>14:33</span>
+            <span class="sig"><span class="bars"><i></i><i></i><i></i><i></i></span><span class="bat"></span></span>
+          </div>
+          <div class="app" data-t="dark">
+            <aside class="rail">
+              <button class="self"><i class="av" style="--avc:oklch(.67 .11 280)">王</i><i class="presence"></i></button>
+              <nav>
+                <button class="rb active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4h10a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4H9l-5 3v-5.5A4 4 0 0 1 3 13V8a4 4 0 0 1 4-4Z"/><path d="M8 11h.01M12 11h.01M16 11h.01"/></svg><span class="badge">7</span></button>
+                <button class="rb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg></button>
+                <button class="rb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5h7l2 2h9v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 9h18"/></svg></button>
+              </nav>
+              <button class="rb rail-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h7M15 6h5M4 12h2M10 12h10M4 18h10M18 18h2"/><circle cx="13" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></svg></button>
+            </aside>
+
+            <main class="ws">
+              <header class="ws-head">
+                <button class="icbtn tall"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m15 5-7 7 7 7"/></svg></button>
+                <div class="ws-title">
+                  <b>陈默的 MacBook Pro</b>
+                  <span>192.168.1.42 · 在线</span>
+                </div>
+                <button class="icbtn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
+              </header>
+
+              <div class="msgs">
+                <div class="divider">今天 14:20</div>
+
+                <article class="msg">
+                  <i class="av sm" style="--avc:oklch(.69 .13 32)">陈</i>
+                  <div class="mstack">
+                    <div class="bubble">截图我收到了，那个抓屏工具挺好用</div>
+                    <div class="mmeta">14:21</div>
+                  </div>
+                </article>
+
+                <article class="msg sent">
+                  <i class="av sm" style="--avc:oklch(.67 .11 280)">王</i>
+                  <div class="mstack">
+                    <div class="bubble">用的是系统原生抓屏。安卓端暂时还没有。</div>
+                    <div class="mmeta">14:22 <i>已送达</i></div>
+                  </div>
+                </article>
+
+                <article class="msg">
+                  <i class="av sm" style="--avc:oklch(.69 .13 32)">陈</i>
+                  <div class="mstack">
+                    <div class="bubble">那我这边先用桌面版</div>
+                    <div class="mmeta">14:24</div>
+                  </div>
+                </article>
+              </div>
+
+              <div class="composer">
+                <div class="cbox">
+                  <textarea rows="2" placeholder="发送消息" readonly></textarea>
+                  <div class="ctoolbar">
+                    <div class="ctools">
+                      <button class="ctool"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5c1 1 2.1 1.5 3.5 1.5s2.5-.5 3.5-1.5M9 9.5h.01M15 9.5h.01"/></svg></button>
+                      <button class="ctool" disabled><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg></button>
+                      <button class="ctool"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5h7l2 2h9v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 9h18"/></svg></button>
+                    </div>
+                    <button class="send">发送</button>
+                  </div>
+                </div>
+              </div>
+            </main>
+          </div>
+          <div class="gesture"><i></i></div>
+        </div>
+      </div>
+      <figcaption>
+        <span class="tag">单聊 · 深色</span>
+        <h3>气泡颜色没有跟着主题走</h3>
+        <p>深色下界面本身没问题 —— 底、面、文字、边框都换了。但气泡底色是写死的 <code>#9df29f</code>，文字用的却是 <code>var(--fg)</code>，深色下变成近白色。<strong>对比度 1.09:1</strong>，基本看不见。详见下方。</p>
+      </figcaption>
+    </figure>
+
+  </div>
+
+  <!-- 断点 -->
+  <section>
+    <h2 class="sec">断点行为 <em>styles.css</em></h2>
+    <div class="tablewrap">
+      <table>
+        <caption>从桌面到手机，四道断点各自做了什么。≤859px 是唯一一次结构性切换。</caption>
+        <thead>
+          <tr><th>宽度</th><th>变化</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="bp">≥ 1100px</td>
+            <td class="rule">三栏 + 详情面板：<code>56px</code> 导航 / <code>280px</code> 列表 / <code>minmax(420px,1fr)</code> 对话 / <code>240px</code> 详情</td>
+          </tr>
+          <tr>
+            <td class="bp">≤ 1099px</td>
+            <td class="rule">文件表头 <code>display:none</code>，文件行收为 <code>44px 1fr 80px 112px</code></td>
+          </tr>
+          <tr>
+            <td class="bp">≤ 999px</td>
+            <td class="rule">详情面板与它的开关整体隐藏；栏宽收为 <code>56px / 280px / minmax(420px,1fr)</code></td>
+          </tr>
+          <tr class="hi">
+            <td class="bp">≤ 859px</td>
+            <td class="rule">
+              列表与对话二选一。<code>.list-pane</code> 默认 <code>display:none</code>，<code>.workspace</code> 占第 2 列；加上 <code>.mobile-list</code> 时两者对调。<br>
+              同时：返回键 / 关闭列表键出现（<code>44×44</code>）· 会话与设备行 <code>64px</code> · 气泡列宽 <code>65% → 78%</code> · <code>.message-delete</code> 由 <code>opacity:0</code> 改为常显 · 各类内边距收到 <code>10–12px</code>
+            </td>
+          </tr>
+          <tr>
+            <td class="bp">≤ 760px</td>
+            <td class="rule">转发 / 历史 / 群管理的双栏抽屉改为单栏，侧栏隐藏</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 问题 -->
+  <section>
+    <h2 class="sec">看完之后值得处理的几件事 <em>按优先级</em></h2>
+    <ul class="findings">
+
+      <li class="finding">
+        <span class="sev bug">缺陷</span>
+        <div>
+          <h3>深色主题下消息文字几乎不可读</h3>
+          <p><code>.bubble</code> 的底色写死为 <code>#9df29f</code>，而文字色是 <code>color: var(--fg)</code>。深色主题把 <code>--fg</code> 换成了 <code>oklch(0.93 0.005 75)</code>（近白），气泡底色却没有任何 <code>[data-theme="dark"]</code> 覆盖 —— <code>styles.css</code> 里根本没有 <code>[data-theme]</code> 选择器，深色完全靠 <code>tokens.css</code> 换变量，所以这个写死的绿色漏了出来。</p>
+          <p>这不是移动端独有的问题，桌面深色模式一样中招，只是手机上更容易被忽略。</p>
+          <div class="evidence">
+            <b>对比度实测</b><br>
+            浅色 <span class="swatch" style="background:#221c15"></span>#221c15 on <span class="swatch" style="background:#9df29f"></span>#9df29f → <b>12.56 : 1</b> ✓<br>
+            深色 <span class="swatch" style="background:#eae7e4"></span>#eae7e4 on <span class="swatch" style="background:#9df29f"></span>#9df29f → <b>1.09 : 1</b> ✗（WCAG AA 正文要求 4.5:1）<br>
+            另外 <code>styles.test.js:116-117</code> 用正则把 <code>#9df29f</code> 钉死了，所以这个 bug 不会被测试挡住。<br>
+            <b>修法</b>：把气泡色提成令牌，在 <code>tokens.css</code> 的 <code>[data-theme="dark"]</code> 里换一个深底亮字的绿。
+          </div>
+        </div>
+      </li>
+
+      <li class="finding">
+        <span class="sev ux">体验</span>
+        <div>
+          <h3>56px 的竖向导航条在手机上一直占着左边</h3>
+          <p>≤859px 时列表和对话已经改成二选一了，但导航条没有跟着变 —— 它仍是左侧 56px 宽的竖排图标条。在 360px 宽的机器上这是 <strong>15.5% 的屏幕宽度</strong>，而且图标垂直堆在屏幕左上角，正好是最不好按的位置。</p>
+          <p>主流移动 IM 的导航都在底部。这里要么把它挪到底部做成 Tab 栏，要么在窄屏下换成抽屉 / 手势。</p>
+        </div>
+      </li>
+
+      <li class="finding">
+        <span class="sev ux">体验</span>
+        <div>
+          <h3>冷启动第一眼是一整屏空白</h3>
+          <p><code>mobileList</code> 初始为 <code>false</code>，<code>activeConversationId</code> 初始为 <code>null</code>，两者叠加的结果就是首屏落在「选择一个会话」空状态上，而进入列表的唯一入口是导航条上那个 40px 的聊天图标。</p>
+          <p>移动端首次进入直接给会话列表更合理；<code>mobileList</code> 的初值改成 <code>true</code> 大概就够了。</p>
+        </div>
+      </li>
+
+      <li class="finding">
+        <span class="sev check">待确认</span>
+        <div>
+          <h3>没有任何 safe-area 适配</h3>
+          <p><code>index.html</code> 的 viewport 是 <code>width=device-width, initial-scale=1.0</code>，没有 <code>viewport-fit=cover</code>；CSS 里 <code>env(safe-area-inset-*)</code> 出现次数为 <strong>0</strong>。</p>
+          <p>如果 Android WebView 走沉浸式（edge-to-edge），顶部导航条会顶进状态栏，底部输入区会被手势条压住。这个取决于 Tauri Android 的默认配置，<strong>需要在真机上确认</strong> —— 上面六个画面我是按非沉浸式画的。</p>
+        </div>
+      </li>
+
+      <li class="finding">
+        <span class="sev ux">体验</span>
+        <div>
+          <h3><code>100vh</code> + <code>min-height: 560px</code> 在横屏下会撑破屏幕</h3>
+          <p><code>body</code> 有 <code>min-height: 560px</code>，<code>.app-shell</code> 是 <code>height:100vh; min-height:560px</code>。手机横屏时视口高度只有 ~393px，<code>min-height</code> 会压过 <code>height</code>，整个壳被撑到 560px —— 顶部栏滚出视野，输入区也不再贴住可视区底部。</p>
+          <p>另外 <code>100vh</code> 在移动浏览器上会随地址栏收放跳动，换成 <code>100dvh</code> 更稳。</p>
+        </div>
+      </li>
+
+      <li class="finding">
+        <span class="sev ux">体验</span>
+        <div>
+          <h3>触控目标 40px，低于两个平台的下限</h3>
+          <p>窄屏规则是 <code>.icon-button, .rail-button { min-width:40px; min-height:40px }</code>。Material 建议 48dp，Apple HIG 建议 44pt，40px 两边都不够。有意思的是 <code>.mobile-back</code> 和 <code>.mobile-close-list</code> 单独设了 <code>44×44</code> —— 说明标准是有的，只是没铺开。</p>
+          <p>会话列表头部一行里，加号是 40、关闭是 44，肉眼能看出大小不一。</p>
+        </div>
+      </li>
+
+      <li class="finding">
+        <span class="sev ux">体验</span>
+        <div>
+          <h3>消息快捷操作仍然依赖 hover</h3>
+          <p><code>.message-quick-actions</code> 靠 <code>opacity:0</code> + <code>:hover</code> 显形，触摸设备没有 hover。代码里用 <code>.message:focus-within</code> 做了兜底，所以点气泡后能出来，但发现性很差。</p>
+          <p>对应的 <code>.message-delete</code> 在 ≤859px 已经改成常显了 —— 同样的处理可以推广到快捷操作（长按菜单是更常见的做法，代码里右键菜单 <code>onContextMenu</code> 已经写好了，接长按事件即可）。</p>
+        </div>
+      </li>
+
+    </ul>
+  </section>
+
+  <footer>
+    手机框内为 ≤859px 断点的真实规则，直接取自 <code>frontend/src/styles.css</code>；颜色令牌取自 <code>frontend/src/tokens.css</code>；结构取自 <code>frontend/src/App.jsx</code>。<br>
+    会话、设备、消息内容均为示意数据。设备 chrome（状态栏 / 手势条）是画上去的，用于说明比例，不在应用代码里。
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  var app = document.querySelectorAll('.app');
+  var bl = document.getElementById('btn-light');
+  var bd = document.getElementById('btn-dark');
+  function set(t) {
+    app.forEach(function (n) { n.setAttribute('data-t', t); });
+    bl.setAttribute('aria-pressed', String(t === 'light'));
+    bd.setAttribute('aria-pressed', String(t === 'dark'));
+  }
+  bl.addEventListener('click', function () { set('light'); });
+  bd.addEventListener('click', function () { set('dark'); });
+})();
+</script>
+</body>
+</html>

@@ -2,7 +2,13 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover 是必须的：MainActivity 调了 enableEdgeToEdge()，
+         WebView 走沉浸式。没有它 env(safe-area-inset-*) 恒为 0，
+         底部 Tab 栏和输入区就躲不开系统手势条。 -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
     <meta name="color-scheme" content="light dark" />
     <link rel="icon" type="image/png" href="/app-icon.png" />
     <title>Xchat · 局域网通讯</title>

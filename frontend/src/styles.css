@@ -185,6 +185,33 @@ time,
   margin-top: auto;
 }
 
+/* 窄屏下导航条变成底部 Tab：多一个「我的」，图标下面带文字。
+   桌面端两者都不显示，设置入口是左下角那个按钮。 */
+.rail-me,
+.rail-label {
+  display: none;
+}
+
+/* 头像角上的未读角标只在窄屏出现，桌面端用右侧那一份。
+   选择器必须带上 .conversation-avatar：只用 .avatar-unread 的话，
+   特异性和后面 .unread-badge 的 display:grid 打平，源码在后的那条胜出，
+   桌面端就会同时出现两个角标。 */
+.conversation-avatar .avatar-unread {
+  display: none;
+}
+
+/* 「我的」页：身份卡和分组卡片都只在窄屏出现。
+   桌面端分组容器是 display:contents，等于不存在，设置列表保持原来的平铺。 */
+.settings-profile,
+.settings-group > .settings-nav-row > .icon:last-child,
+.list-title-mobile {
+  display: none;
+}
+
+.settings-group {
+  display: contents;
+}
+
 .nav-badge {
   position: absolute;
   top: -4px;
@@ -726,6 +753,13 @@ time,
   grid-template-rows: minmax(0, 1fr);
 }
 
+/* 空态的头部只在窄屏出现：那边返回键住在里面，没有它这一页就是死胡同
+   （见 App.jsx 里的注释）。桌面端这一页本来就没有头部，保持原样。 */
+.chat-workspace.no-selection > .workspace-head,
+.host-workspace.no-selection > .workspace-head {
+  display: none;
+}
+
 .message-scroll {
   overflow-x: hidden;
   overflow-y: auto;
@@ -802,6 +836,14 @@ time,
 
 .message.sent {
   flex-direction: row-reverse;
+}
+
+/* 长按消息时的高亮。用 box-shadow 而不是 background，
+   这样不用给 .message 加内边距，也不会把气泡挤位。 */
+.message.pressing {
+  background: color-mix(in oklch, var(--fg) 7%, transparent);
+  box-shadow: 0 0 0 8px color-mix(in oklch, var(--fg) 7%, transparent);
+  border-radius: 12px;
 }
 
 .message-body-line {
@@ -915,12 +957,17 @@ time,
   font: var(--text-micro)/1 var(--font-mono);
 }
 
+/* 气泡的底色和文字色都写死，不跟随主题。
+   之前文字用的是 var(--fg)，深色主题下 --fg 翻成近白色 (oklch(.93 .005 75))，
+   落在 #9df29f 上对比度只有 1.09:1，等于看不见。
+   钉死成 #221c15 之后两个主题都是 12.56:1，品牌绿也保住了。
+   注意：styles.test.js 里有一条断言匹配这里的 background: #9df29f，别改成变量。 */
 .bubble {
   padding: 9px 12px;
   border-radius: 12px 12px 12px 4px;
   background: #9df29f;
-  color: var(--fg);
-  box-shadow: 0 1px 1px color-mix(in oklch, var(--fg) 6%, transparent);
+  color: #221c15;
+  box-shadow: 0 1px 1px color-mix(in oklch, #221c15 6%, transparent);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -928,7 +975,7 @@ time,
 .message.sent .bubble {
   border-radius: 12px 12px 4px 12px;
   background: #9df29f;
-  color: var(--fg);
+  color: #221c15;
 }
 
 .message-meta {
@@ -2598,6 +2645,31 @@ input[type="checkbox"]:disabled { cursor: not-allowed; opacity: .42; }
   border-bottom: 1px solid var(--border);
 }
 
+/* 弹窗头部第二个图标是窄屏用的返回箭头，桌面端不显示 */
+.modal-close .icon:last-child {
+  display: none;
+}
+
+/* 「手动添加设备地址」：建群时给隐身设备留的入口 */
+.modal-add-device {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 10px;
+  border: 1px dashed color-mix(in oklch, var(--accent) 45%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, var(--accent) 5%, transparent);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.modal-add-device:hover {
+  background: color-mix(in oklch, var(--accent) 12%, transparent);
+}
+
 .modal-body {
   padding: 18px;
 }
@@ -2785,30 +2857,145 @@ input[type="checkbox"]:disabled { cursor: not-allowed; opacity: .42; }
 
 @media (max-width: 859px) {
   .app-shell,
+  /* 单列 + 底部 Tab 一行。压栈页和列表都占第 1 行，靠显示/隐藏来切换。 */
+  .app-shell,
   .app-shell.has-info {
-    grid-template-columns: 56px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  /* 横屏手机上视口高度只有 360–430px，而基线的 min-height:560px 会把
+     壳撑到 560px —— 底部 Tab 栏被推到屏幕外，body 又是 overflow:hidden，
+     等于一个 Tab 都点不到。导航从左侧竖栏改到底部之后这条才致命。 */
+  body,
+  .app-shell {
+    min-height: 0;
+  }
+
+  /* ── 导航条搬到底部，横向四个 Tab ── */
+  .rail {
+    grid-column: 1;
+    grid-row: 2;
+    flex-direction: row;
+    align-items: stretch;
+    justify-content: space-around;
+    padding: 0;
+    /* 手势条要占位，否则最后一个 Tab 会被系统条压住 */
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    border-top: 1px solid var(--border);
+    /* 前一条是给老 WebView 的回退：color-mix() 要 Chrome 111+，
+       而 minSdk 24 的机器上 WebView 可能远低于这个版本（实测设备是 92）。
+       不写回退的话这条 background 会被整条丢弃，Tab 栏变成透底。 */
+    background: var(--surface);
+    background: color-mix(in oklch, var(--surface) 94%, transparent);
+    -webkit-backdrop-filter: blur(18px) saturate(1.6);
+    backdrop-filter: blur(18px) saturate(1.6);
+    color: var(--muted);
+  }
+
+  .rail nav {
+    flex: 1;
+    flex-direction: row;
+    align-items: stretch;
+    justify-content: space-around;
+    gap: 0;
+    margin-top: 0;
+  }
+
+  .rail-button {
+    display: flex;
+    width: auto;
+    min-width: 0;
+    height: 54px;
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    padding-top: 3px;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .rail-button .icon {
+    width: 25px;
+    height: 25px;
+  }
+
+  .rail-button.active {
+    background: transparent;
+  }
+
+  .rail-label {
+    display: block;
+    font-size: 10.5px;
+    line-height: 1;
+  }
+
+  /* 头像按钮和左下角设置按钮在窄屏下都被「我的」Tab 取代 */
+  .self-button,
+  .rail-settings {
+    display: none;
+  }
+
+  .rail-me {
+    display: flex;
+  }
+
+  .nav-badge {
+    top: 1px;
+    right: calc(50% - 21px);
+    border-color: var(--surface);
+  }
+
+  /* 压栈页打开时收掉 Tab 栏，和微信一致 */
+  .app-shell:not(.mobile-list) .rail {
+    display: none;
   }
 
   .list-pane {
-    display: none;
+    display: flex;
+    flex-direction: column;
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  /* 列表头固定 56px，剩下全给滚动区。
+     基线里的 height: calc(100vh - 56px) 是按「导航条不占行」算的，
+     现在底部 Tab 栏吃掉了第二行，那个高度会把最后一行顶出可视区且滚不到。 */
+  .list-scroll {
+    height: auto;
+    min-height: 0;
+    flex: 1;
   }
 
   .workspace {
     min-width: 0;
-    grid-column: 2;
+    grid-column: 1;
+    grid-row: 1;
   }
 
   .app-shell.mobile-list .list-pane {
-    display: block;
-    grid-column: 2;
+    display: flex;
   }
 
+  /* 打开会话时把列表整个撤出布局。
+     不能让它留在原地被 workspace 盖住：那样列表仍在无障碍树和 Tab 顺序里，
+     读屏和键盘会先走完一整屏看不见的会话行才轮到消息区。
+     同时也让「列表和对话二选一」这件事在 DOM 层是真的。 */
+  .app-shell:not(.mobile-list) .list-pane,
   .app-shell.mobile-list .workspace {
     display: none;
   }
 
-  .mobile-back,
+  /* 列表本身就是 Tab 根页面，没有「关闭列表」这回事了 */
   .mobile-close-list {
+    display: none;
+  }
+
+  /* 返回键只在压栈页可见 —— 列表打开时整个 workspace 就是隐藏的，
+     所以这里不需要再判断 mobile-list */
+  .mobile-back {
     display: grid;
     min-width: 44px;
     min-height: 44px;
@@ -2818,10 +3005,39 @@ input[type="checkbox"]:disabled { cursor: not-allowed; opacity: .42; }
     padding-inline: 6px 12px;
   }
 
-  .icon-button,
-  .rail-button {
-    min-width: 40px;
-    min-height: 40px;
+  /* 触控目标提到 44px。原来这里和返回键是 40/44 两个标准，
+     而 40px 低于 Material 的 48dp 与 HIG 的 44pt，同一行里也看得出大小不一。
+     底部 Tab 不在此列，它按 flex 均分整条宽度。 */
+  .icon-button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* 未读角标挪到头像右上角，右侧那一份隐藏 */
+  .conversation-avatar .avatar-unread {
+    display: grid;
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    /* .unread-badge 只设了 background 和 border-radius，没有 border-width，
+       所以这里必须写全，只给 border-color 是空声明、描不出边。 */
+    border: 2px solid var(--surface);
+  }
+
+  .row-side .unread-badge {
+    display: none;
+  }
+
+  /* 输入区避开手势条，否则最后一行按钮会被系统条压住 */
+  .composer {
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* 触摸设备上回车只换行，发送按钮成了唯一的发送方式，
+     而它基线只有 30px 高 —— 低于本次刚统一到的 44px 触控标准。 */
+  .send-button {
+    min-height: 44px;
+    padding-inline: 18px;
   }
 
   .conversation-row,
@@ -2831,8 +3047,194 @@ input[type="checkbox"]:disabled { cursor: not-allowed; opacity: .42; }
     min-height: 64px;
   }
 
+  /* ── 「我的」页 ── */
+  .settings-profile {
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    width: 100%;
+    padding: 18px 14px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+  }
+
+  .settings-profile .avatar {
+    width: 48px;
+    height: 48px;
+    border-radius: 10px;
+    font-size: 17px;
+  }
+
+  .settings-profile b {
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--fg);
+  }
+
+  .settings-profile .row-preview {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+  }
+
+  .settings-profile .icon {
+    color: var(--muted);
+    opacity: 0.55;
+  }
+
+  /* 分组卡片。桌面端这一层是 display:contents，什么都不影响。 */
+  .settings-group {
+    display: block;
+    margin-top: 10px;
+    background: var(--surface);
+    border-block: 1px solid var(--border);
+  }
+
+  .settings-group > .settings-nav-row {
+    width: 100%;
+    min-height: 52px;
+    margin: 0;
+    padding: 0 14px;
+    border-radius: 0;
+    /* 同样是给老 WebView 的回退，见 .rail 那条注释 */
+    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid color-mix(in oklch, var(--border) 55%, transparent);
+  }
+
+  .settings-group > .settings-nav-row:last-child {
+    border-bottom: 0;
+  }
+
+  .settings-group > .settings-nav-row > .icon:last-child {
+    display: block;
+    margin-left: auto;
+    color: var(--muted);
+    opacity: 0.55;
+  }
+
+  /* 空态也要有头部，返回键在里面。这是窄屏压栈页唯一的出口。 */
+  .chat-workspace.no-selection,
+  .host-workspace.no-selection {
+    grid-template-rows: 56px minmax(0, 1fr);
+  }
+
+  .chat-workspace.no-selection > .workspace-head,
+  .host-workspace.no-selection > .workspace-head {
+    display: flex;
+  }
+
+  /* 快捷键只对桌面有意义：xchat.js 里 Android 的 captureShortcut 恒为 false。
+     两处都要盖：.settings-shortcut 是「我的」里的入口行，
+     #settings-shortcut 是设置详情页里的那一整节。只藏入口的话，
+     滚到底仍会看到一个「当前平台不可用」的空节。 */
+  .settings-shortcut,
+  #settings-shortcut {
+    display: none;
+  }
+
+  .list-title-desktop {
+    display: none;
+  }
+
+  .list-title-mobile {
+    display: block;
+  }
+
+  /* ── 弹窗在窄屏铺满整屏，成为压栈页而不是居中的对话框 ── */
+  .modal-backdrop {
+    place-items: stretch;
+    padding: 0;
+  }
+
+  /* 选择器必须压过文件后半段的 .modal-wide { width: min(920px, ...) }
+     和 @media(max-width:760px) 里的 calc(100vw - 24px)。
+     那两条源序在后、特异性打平，只用 .modal-wide 的话转发/历史弹窗
+     会变成「两侧留黑边的直角面板」，还会露出可点关闭的遮罩条。 */
+  .modal-backdrop > .modal,
+  .modal-backdrop > .modal.modal-wide {
+    display: flex;
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    max-height: none;
+    flex-direction: column;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .modal > header {
+    position: relative;
+    min-height: 48px;
+    flex: 0 0 48px;
+    justify-content: flex-start;
+    padding: 0 6px;
+  }
+
+  .modal > header > b {
+    position: absolute;
+    left: 50%;
+    max-width: 62%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transform: translateX(-50%);
+  }
+
+  /* 铺满屏幕之后，左上角是返回箭头而不是右上角的关闭叉 */
+  .modal-close .icon:first-child {
+    display: none;
+  }
+
+  .modal-close .icon:last-child {
+    display: block;
+  }
+
+  .modal-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .modal > footer {
+    position: sticky;
+    bottom: 0;
+    justify-content: stretch;
+    padding: 10px 14px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .modal > footer button {
+    flex: 1;
+    min-height: 44px;
+  }
+
   .message-scroll {
     padding-inline: 12px;
+    /* 长按气泡时不让浏览器先弹原生的文本选中和系统 callout —— 那两个在
+       Android/iOS 上 400ms 左右就出现，比应用自己的 420ms 长按菜单还早，
+       会叠在一起。复制走菜单里的「复制」，不依赖拖选。 */
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  /* 菜单挂在 .message-scroll 外面，所以上面那条盖不到它。
+     菜单弹出后手指还按在屏幕上，原生选择会接着落在菜单文字上，
+     在真机上表现成「提醒」被高亮 + 两个青色选择手柄压住头两项。 */
+  .message-context-menu,
+  .message-context-menu *,
+  .message-reaction-picker,
+  .message-reaction-picker *,
+  .message-quick-actions,
+  .message-quick-actions * {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
   }
 
   .message-stack {

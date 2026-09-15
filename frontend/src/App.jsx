@@ -67,6 +67,9 @@ const copy = {
     hosts: "主机",
     files: "文件",
     settings: "设置",
+    me: "我的",
+    groupHiddenDeviceHint:
+      "对方开了隐身时不会出现在上面，用下面的地址直接添加。",
     searchChat: "搜索会话或消息",
     searchHosts: "搜索名称、地址或设备 ID",
     searchFiles: "搜索文件或来源",
@@ -383,6 +386,9 @@ const copy = {
     hosts: "Hosts",
     files: "Files",
     settings: "Settings",
+    me: "Me",
+    groupHiddenDeviceHint:
+      "Devices with stealth mode on stay hidden above. Add one by address below.",
     searchChat: "Search conversations or messages",
     searchHosts: "Search name, address, or device ID",
     searchFiles: "Search files or sources",
@@ -698,6 +704,15 @@ const copy = {
   },
 };
 
+// 「我的」页在窄屏下的分组。桌面端这些容器是 display:contents，不改变原有平铺顺序。
+// 这里必须列全所有分节，漏掉就等于桌面端也把它删了。
+// shortcut 保留在列表里，窄屏由 .settings-shortcut 隐藏。
+const SETTINGS_GROUPS = [
+  ["identity", "appearance", "notification"],
+  ["download", "network", "shortcut"],
+  ["about"],
+];
+
 function Icon({ name, size = 20, spin = false }) {
   let body;
   switch (name) {
@@ -900,6 +915,9 @@ function Icon({ name, size = 20, spin = false }) {
       break;
     case "chevron-down":
       body = <path d="m6 9 6 6 6-6" />;
+      break;
+    case "chevron-right":
+      body = <path d="m9 5 7 7-7 7" />;
       break;
     default:
       body = <circle cx="12" cy="12" r="8" />;
@@ -1233,11 +1251,26 @@ function Rail({ state, labels, onOpen }) {
             data-od-id={`nav-${section}`}
           >
             <Icon name={section} size={24} />
+            <span className="rail-label">{label}</span>
             {section === "chat" && unread > 0 && (
               <span className="nav-badge">{Math.min(unread, 99)}</span>
             )}
           </button>
         ))}
+        {/* 窄屏下导航条变成底部 Tab，第四个是「我的」。
+            桌面端由 .rail-me 隐藏，那里的设置入口是左下角那个按钮。 */}
+        <button
+          className={`rail-button rail-me ${
+            state.activeSection === "settings" ? "active" : ""
+          }`}
+          onClick={() => onOpen("settings")}
+          aria-label={labels.me}
+          title={labels.me}
+          data-od-id="nav-me"
+        >
+          <Icon name="user" size={24} />
+          <span className="rail-label">{labels.me}</span>
+        </button>
       </nav>
       <button
         className={`rail-button rail-settings ${
@@ -1274,6 +1307,16 @@ function ConversationRow({ conversation, labels, selected, onOpen }) {
     >
       <span className="conversation-avatar">
         <Avatar entity={conversation.peer || conversation} labels={labels} />
+        {/* 窄屏下角标挪到头像右上角（微信做法），右侧一列只留时间。
+            桌面端这份是 display:none，用的是下面 row-side 里那份。
+            不加 aria-hidden：两处同一时刻只有一处可见，display:none
+            已经把它移出无障碍树了；再标 aria-hidden 反而会让窄屏下
+            唯一可见的那份也被读屏跳过，未读数就彻底没人念得出来。 */}
+        {(conversation.unread_count > 0 || conversation.forced_unread) && (
+          <span className="unread-badge avatar-unread">
+            {conversation.unread_count || "•"}
+          </span>
+        )}
         {conversation.kind !== "group" && (
           <span
             className={`conversation-presence ${offline ? "offline" : "online"}`}
@@ -1342,7 +1385,6 @@ function ListPane({
   onDevice,
   onAdd,
   onFileFilter,
-  onCloseMobile,
   settingsSection,
   onSettingsSection,
 }) {
@@ -1371,7 +1413,11 @@ function ListPane({
     <aside className="list-pane" data-od-id={`${section}-list`}>
       <header className="list-head">
         {section === "settings" ? (
-          <b>{labels.settings}</b>
+          // 窄屏这一页是底部 Tab 里的「我的」，桌面端则是设置导航栏
+          <>
+            <b className="list-title-desktop">{labels.settings}</b>
+            <b className="list-title-mobile">{labels.me}</b>
+          </>
         ) : (
           <SearchBox
             value={query}
@@ -1396,13 +1442,9 @@ function ListPane({
             <Icon name="plus" />
           </button>
         )}
-        <button
-          className="mobile-close-list icon-button"
-          onClick={onCloseMobile}
-          aria-label={labels.closeList}
-        >
-          <Icon name="close" />
-        </button>
+        {/* 原来的「关闭列表」按钮在这里。底部 Tab 改版之后列表本身就是
+            Tab 的根页面，没有「关闭」这回事，切 Tab 或者点会话离开即可，
+            所以连同 onCloseMobile 一起删掉了。 */}
       </header>
       <div
         className={`list-scroll ${
@@ -1557,20 +1599,48 @@ function ListPane({
               ))}
           </>
         )}
-        {section === "settings" &&
-          Object.entries(labels.settingsSections).map(([id, section]) => (
+        {section === "settings" && (
+          <>
+            {/* 身份卡。桌面端是 display:none —— 那边左下角已有头像入口。 */}
             <button
-              className={`settings-nav-row ${
-                settingsSection === id ? "selected" : ""
-              }`}
-              key={id}
-              onClick={() => onSettingsSection(id)}
-              aria-current={settingsSection === id ? "location" : undefined}
+              className="settings-profile"
+              onClick={() => onSettingsSection("identity")}
             >
-              <Icon name={section.icon} size={17} />
-              <span>{section.label}</span>
+              <Avatar entity={state.self} labels={labels} self />
+              <span className="row-main">
+                <b>{state.self.name || labels.myDevice}</b>
+                <span className="row-preview">
+                  {state.self.addr || labels.notProvided}
+                </span>
+              </span>
+              <Icon name="chevron-right" size={18} />
             </button>
-          ))}
+            {/* 分组容器在桌面端是 display:contents，不产生任何布局影响，
+                窄屏才变成分开的卡片。这样一套 DOM 两端都对。 */}
+            {SETTINGS_GROUPS.map((group) => (
+              <div className="settings-group" key={group.join(":")}>
+                {group.map((id) => {
+                  const entry = labels.settingsSections[id];
+                  if (!entry) return null;
+                  return (
+                    <button
+                      className={`settings-nav-row ${
+                        settingsSection === id ? "selected" : ""
+                      } settings-${id}`}
+                      key={id}
+                      onClick={() => onSettingsSection(id)}
+                      aria-current={settingsSection === id ? "location" : undefined}
+                    >
+                      <Icon name={entry.icon} size={17} />
+                      <span>{entry.label}</span>
+                      <Icon name="chevron-right" size={16} />
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </>
+        )}
       </div>
     </aside>
   );
@@ -1797,6 +1867,14 @@ function DraftAttachment({ attachment, labels, onRemove }) {
         <Icon name="close" size={16} />
       </button>
     </div>
+  );
+}
+
+// 触摸键盘上回车键是唯一能换行的键，抢来发送就没法换行了。
+// 用指针能力判断而不是窗口宽度：桌面窗口拉窄也不该变成回车换行。
+function usesTouchKeyboard() {
+  return (
+    globalThis.matchMedia?.("(hover: none) and (pointer: coarse)")?.matches ?? false
   );
 }
 
@@ -2175,7 +2253,12 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
               selectMention(mentionOptions[mentionIndex]);
               return;
             }
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+            if (
+              event.key === "Enter" &&
+              !event.shiftKey &&
+              !event.nativeEvent.isComposing &&
+              !usesTouchKeyboard()
+            ) {
               event.preventDefault();
               send();
             }
@@ -2279,19 +2362,19 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
             >
               <Icon name="emoji" />
             </button>
-            <button
-              className="icon-button composer-tool"
-              onClick={() => workspace.dispatch({ type: "capture.start" })}
-              disabled={!state.capabilities.capture}
-              aria-label={labels.capture}
-              title={
-                state.capabilities.capture
-                  ? labels.capture
-                  : labels.captureUnsupported
-              }
-            >
-              <Icon name="capture" />
-            </button>
+            {/* 没有抓屏能力就不渲染这个按钮（Android 恒为 false）。
+                以前是渲染出来再 disabled，用户看到的是个永远灰着的按钮，
+                既占位置又让人以为坏了。 */}
+            {state.capabilities.capture && (
+              <button
+                className="icon-button composer-tool"
+                onClick={() => workspace.dispatch({ type: "capture.start" })}
+                aria-label={labels.capture}
+                title={labels.capture}
+              >
+                <Icon name="capture" />
+              </button>
+            )}
             <button
               className="icon-button composer-tool"
               onClick={attach}
@@ -2489,6 +2572,68 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
   const messages = state.messagesByConversation[state.activeConversationId] || [];
   const scroll = useRef(null);
   const [menu, setMenu] = useState(null);
+
+  // 触摸屏没有右键，消息菜单改由长按呼出，复用同一套 setMenu。
+  // fired 用来吃掉长按松手后紧跟的那次 click，
+  // 否则长按图片会连图片预览一起打开。
+  const press = useRef({ timer: null, x: 0, y: 0, el: null, fired: false });
+  const openMessageMenu = (message, x, y) => {
+    setMenu({
+      x: Math.min(x, globalThis.innerWidth - 202),
+      y: Math.min(y, globalThis.innerHeight - 250),
+      message,
+    });
+  };
+  const cancelPress = () => {
+    clearTimeout(press.current.timer);
+    press.current.timer = null;
+    press.current.el?.classList.remove("pressing");
+    press.current.el = null;
+  };
+  const startPress = (event, message) => {
+    // 鼠标走右键菜单就够了，长按只服务于触摸和手写笔
+    if (event.pointerType === "mouse") return;
+    cancelPress();
+    const el = event.currentTarget;
+    el.classList.add("pressing");
+    press.current = {
+      x: event.clientX,
+      y: event.clientY,
+      el,
+      fired: false,
+      timer: setTimeout(() => {
+        press.current.timer = null;
+        press.current.fired = true;
+        el.classList.remove("pressing");
+        press.current.el = null;
+        globalThis.navigator?.vibrate?.(12);
+        openMessageMenu(message, event.clientX, event.clientY);
+      }, 420),
+    };
+  };
+  // 长按落在图片、引用块、撤回/重试这些子按钮上时，事件冒泡到 article
+  // 一样会起计时器；松手后子元素自己的 onClick 照样执行。这里在捕获阶段拦掉。
+  // fired 在每次 pointerdown 时重置，所以不会误吃后续的正常点击。
+  const suppressClickAfterLongPress = (event) => {
+    if (!press.current.fired) return;
+    press.current.fired = false;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  const movePress = (event) => {
+    // 超过容差就当成滚动，别把滑动手势误判成长按
+    if (!press.current.timer) return;
+    if (
+      Math.abs(event.clientX - press.current.x) > 10 ||
+      Math.abs(event.clientY - press.current.y) > 10
+    ) {
+      cancelPress();
+    }
+  };
+  // 切会话或卸载时把挂着的计时器清掉，
+  // 否则 420ms 内切走会把 A 会话的消息菜单弹到 B 会话上。
+  useEffect(() => () => cancelPress(), [state.activeConversationId]);
+
   const [reactionPicker, setReactionPicker] = useState(null);
   const [recentEmoji, setRecentEmoji] = useState(readRecentEmoji);
   const [quote, setQuote] = useState(null);
@@ -2596,6 +2741,21 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
   if (!conversation) {
     return (
       <main className="workspace chat-workspace no-selection">
+        {/* 窄屏下这是压栈页，底部 Tab 栏是收起的，没有返回键就成了死胡同。
+            能走到这里的路径真实存在：删掉最后一个设备后 devices 里找不到它，
+            页面就停在「请选择」上空转。 */}
+        <header className="workspace-head">
+          <button
+            className="mobile-back icon-button"
+            onClick={onBack}
+            aria-label={labels.backConversationList}
+          >
+            <Icon name="back" />
+          </button>
+          <div className="workspace-heading">
+            <b>{labels.chat}</b>
+          </div>
+        </header>
         <EmptyState
           title={labels.noConversation}
           detail={labels.noConversationHint}
@@ -2702,12 +2862,13 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
             onContextMenu={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              setMenu({
-                x: Math.min(event.clientX, globalThis.innerWidth - 202),
-                y: Math.min(event.clientY, globalThis.innerHeight - 250),
-                message,
-              });
+              openMessageMenu(message, event.clientX, event.clientY);
             }}
+            onPointerDown={(event) => startPress(event, message)}
+            onPointerMove={movePress}
+            onPointerUp={cancelPress}
+            onPointerCancel={cancelPress}
+            onClickCapture={suppressClickAfterLongPress}
           >
             <Avatar
               entity={
@@ -2941,6 +3102,19 @@ function HostWorkspace({
   if (!device) {
     return (
       <main className="workspace host-workspace no-selection">
+        {/* 同上：压栈页必须有出口，否则删掉最后一个设备后出不去 */}
+        <header className="workspace-head">
+          <button
+            className="mobile-back icon-button"
+            onClick={onBack}
+            aria-label={labels.backHostList}
+          >
+            <Icon name="back" />
+          </button>
+          <div className="workspace-heading">
+            <b>{labels.hosts}</b>
+          </div>
+        </header>
         <EmptyState
           icon="hosts"
           title={labels.selectHost}
@@ -4224,8 +4398,11 @@ function Modal({ title, children, actions, onClose, closeLabel, wide = false }) 
       <section className={`modal ${wide ? "modal-wide" : ""}`} role="dialog" aria-modal="true" aria-label={title}>
         <header>
           <b>{title}</b>
-          <button className="icon-button" onClick={onClose} aria-label={closeLabel}>
+          {/* 窄屏下整个弹窗铺满屏幕，这时用 ← 比 ✕ 更贴切（是返回不是取消）。
+              两个图标都渲染，由 CSS 决定显示哪个，避免为断点改结构。 */}
+          <button className="icon-button modal-close" onClick={onClose} aria-label={closeLabel}>
             <Icon name="close" />
+            <Icon name="back" />
           </button>
         </header>
         <div className="modal-body">{children}</div>
@@ -4235,7 +4412,7 @@ function Modal({ title, children, actions, onClose, closeLabel, wide = false }) 
   );
 }
 
-function GroupModal({ state, workspace, labels, onClose }) {
+function GroupModal({ state, workspace, labels, onClose, onAddDevice }) {
   const [title, setTitle] = useState("");
   const [members, setMembers] = useState([]);
   const create = async () => {
@@ -4298,6 +4475,17 @@ function GroupModal({ state, workspace, labels, onClose }) {
           </label>
         ))}
       </div>
+      {/* 开了隐身的设备根本不会广播自己，扫描发现不了，
+          所以建群这条路上也得留一个填地址的入口 */}
+      {onAddDevice && (
+        <>
+          <button type="button" className="modal-add-device" onClick={onAddDevice}>
+            <Icon name="plus" size={17} />
+            <span>{labels.addDevice}</span>
+          </button>
+          <p className="helper">{labels.groupHiddenDeviceHint}</p>
+        </>
+      )}
     </Modal>
   );
 }
@@ -4552,8 +4740,12 @@ export default function App({ workspace }) {
   const [fileFilter, setFileFilter] = useState("all");
   const [settingsSection, setSettingsSection] = useState("identity");
   const [infoOpen, setInfoOpen] = useState(false);
-  const [mobileList, setMobileList] = useState(false);
+  // 窄屏首屏是会话列表，不是空的对话区。
+  // 这里为 true 表示「显示列表」（即 Tab 的根页面），false 表示「有一个压栈页打开」。
+  const [mobileList, setMobileList] = useState(true);
   const [modal, setModal] = useState(null);
+  // 叠在 modal 之上的第二层弹窗（目前只有「新建群聊 → 手动添加设备」这条路径）
+  const [overlay, setOverlay] = useState(null);
   const [confirm, setConfirm] = useState(null);
 
   useTheme(state.settings.theme);
@@ -4661,16 +4853,22 @@ export default function App({ workspace }) {
   }, [state.notices, workspace]);
 
   useEffect(() => {
-    if (!modal && !confirm) return;
+    if (!modal && !confirm && !overlay) return;
     const close = (event) => {
       if (event.key === "Escape") {
-        setModal(null);
-        setConfirm(null);
+        // 一次只关最上面那层。全清会让底下的 GroupModal 一起卸载，
+        // 群名和已勾选的成员都跟着丢。
+        // 另外 effect 必须把 overlay 也纳入判断（见下面的依赖数组），
+        // 否则 overlay 还开着时 !modal && !confirm 成立、监听器被摘掉，
+        // 之后按 Esc 彻底没反应，留下一层关不掉的浮层。
+        if (overlay) return setOverlay(null);
+        if (modal) return setModal(null);
+        return setConfirm(null);
       }
     };
     addEventListener("keydown", close);
     return () => removeEventListener("keydown", close);
-  }, [confirm, modal]);
+  }, [confirm, modal, overlay]);
 
   const conversation = state.conversations.find(
     (item) => item.id === state.activeConversationId,
@@ -4726,7 +4924,6 @@ export default function App({ workspace }) {
         onDevice={(id) => { setSelectedDeviceId(id); setMobileList(false); }}
         onAdd={() => setModal(state.activeSection === "chat" ? "group" : "endpoint")}
         onFileFilter={(value) => { setFileFilter(value); setMobileList(false); }}
-        onCloseMobile={() => setMobileList(false)}
         settingsSection={settingsSection}
         onSettingsSection={openSettingsSection}
       />
@@ -4832,6 +5029,7 @@ export default function App({ workspace }) {
           workspace={workspace}
           labels={labels}
           onClose={() => setModal(null)}
+          onAddDevice={() => setOverlay("endpoint")}
         />
       )}
       {modal === "endpoint" && (
@@ -4840,6 +5038,16 @@ export default function App({ workspace }) {
           workspace={workspace}
           labels={labels}
           onClose={() => setModal(null)}
+        />
+      )}
+      {/* 叠在「新建群聊」上面的添加设备页。群聊弹窗保持挂载，
+          这样加完设备回来，已填的群名和已勾选的成员都还在。 */}
+      {overlay === "endpoint" && (
+        <EndpointModal
+          state={state}
+          workspace={workspace}
+          labels={labels}
+          onClose={() => setOverlay(null)}
         />
       )}
       {modal === "remark" && (

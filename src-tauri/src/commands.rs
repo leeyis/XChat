@@ -2127,6 +2127,7 @@ pub fn stop_tray_flash(
     stop_attention_with_state(&app, &state);
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn start_capture_editor(
     app: AppHandle,
@@ -2135,6 +2136,7 @@ pub async fn start_capture_editor(
     crate::capture_editor::start(&app, conversation_id).await
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn get_pending_capture(
     window: tauri::WebviewWindow,
@@ -2142,14 +2144,16 @@ pub async fn get_pending_capture(
     crate::capture_editor::pending_for_window(window.label()).await
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn finish_capture_editor(
     app: AppHandle,
     data_url: String,
-) -> Result<crate::capture_editor::ManagedAttachment, String> {
+) -> Result<crate::managed_image::ManagedAttachment, String> {
     crate::capture_editor::finish(&app, data_url).await
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn save_capture_editor(
     app: AppHandle,
@@ -2158,16 +2162,19 @@ pub async fn save_capture_editor(
     crate::capture_editor::save(&app, data_url).await
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub fn copy_capture_editor(app: AppHandle, data_url: String) -> Result<(), String> {
     crate::capture_editor::copy_editor(&app, data_url)
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub fn cancel_capture_editor(app: AppHandle) -> Result<(), String> {
     crate::capture_editor::cancel(&app)
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn pin_capture(
     app: AppHandle,
@@ -2176,11 +2183,13 @@ pub async fn pin_capture(
     crate::capture_editor::pin(&app, data_url).await
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub fn copy_pinned_capture(scale: Option<f64>) -> Result<(), String> {
     crate::capture_editor::copy_pin(scale)
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn save_pinned_capture(
     app: AppHandle,
@@ -2188,16 +2197,19 @@ pub async fn save_pinned_capture(
     crate::capture_editor::save_pin(&app).await
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub fn resize_pinned_capture(app: AppHandle, scale: f64) -> Result<f64, String> {
     crate::capture_editor::resize_pin(&app, scale)
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub fn set_pinned_capture_shadow(app: AppHandle, enabled: bool) -> Result<(), String> {
     crate::capture_editor::set_pin_shadow(&app, enabled)
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub fn close_pinned_capture(app: AppHandle, destroy: bool) -> Result<(), String> {
     crate::capture_editor::close_pin(&app, destroy)
@@ -2208,8 +2220,8 @@ pub async fn stage_image_attachment(
     app: AppHandle,
     data_url: String,
     file_name: Option<String>,
-) -> Result<crate::capture_editor::ManagedAttachment, String> {
-    crate::capture_editor::stage_image(&app, data_url, file_name).await
+) -> Result<crate::managed_image::ManagedAttachment, String> {
+    crate::managed_image::stage_image(&app, data_url, file_name).await
 }
 
 #[tauri::command]
@@ -2217,16 +2229,16 @@ pub async fn discard_staged_attachment(
     app: AppHandle,
     file_path: String,
 ) -> Result<(), String> {
-    crate::capture_editor::discard_staged(&app, file_path).await
+    crate::managed_image::discard_staged(&app, file_path).await
 }
 
 #[tauri::command]
 pub async fn read_workspace_media(
     state: State<'_, DbState>,
     message_id: i64,
-) -> Result<crate::capture_editor::WorkspaceMedia, String> {
+) -> Result<crate::managed_image::WorkspaceMedia, String> {
     let path = crate::workspace::trusted_file_path(&state.pool, message_id).await?;
-    crate::capture_editor::read_workspace_image(&path).await
+    crate::managed_image::read_workspace_image(&path).await
 }
 
 #[tauri::command]
@@ -2647,6 +2659,8 @@ fn strong_reminder_url(
     )
 }
 
+// 供桌面端强提醒弹窗自身调用；移动端没有该窗口（改用 `strong-reminder` 事件）。
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub fn open_strong_reminder(
     app: AppHandle,
@@ -2671,6 +2685,7 @@ pub fn open_strong_reminder(
     Ok(())
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub fn dismiss_strong_reminder(app: AppHandle) -> Result<(), String> {
     use tauri::Manager;

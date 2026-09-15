@@ -1,0 +1,32 @@
+# 统一使用 LF。
+#
+# 背景：仓库里存的是 LF，但 Windows 上 core.autocrlf=true 会把它检出成 CRLF。
+# frontend/src/styles.test.js 里有一条断言用正则匹配 "\n}\n\nfunction RemarkModal"，
+# CRLF 下 "}" 后面跟着的是 \r 而不是 \n，匹配不上，于是测试在 Windows 上恒失败。
+# 固定 eol=lf 之后，任何平台检出结果一致，测试结果也一致。
+* text=auto eol=lf
+
+# 显式声明二进制，避免被当成文本转换而损坏
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.icns  binary
+*.keystore binary
+*.jks   binary
+*.so    binary
+*.dll   binary
+*.dylib binary
+*.exe   binary
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary
+*.apk   binary
+*.zst   binary
+
+# 这些平台文件保持原样，不参与规范化
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+gradlew text eol=lf

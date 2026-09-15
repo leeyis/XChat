@@ -42,3 +42,13 @@ lanchat-release.keystore
 lanclaw
 copy.sh
 .gstack/
+
+# AI 会话临时附件，不进仓库
+.happycode/attachments/
+
+# APK 签名密钥与产物（sign-apk.sh 用的是 xchat-* 前缀，原来只忽略了 lanchat-*）
+xchat-release.keystore
+xchat-*.apk
+*.keystore
+xchat-*.apk.idsig
+*.apk.idsig

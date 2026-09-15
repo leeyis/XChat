@@ -98,6 +98,63 @@ cargo tauri build
 make help
 ```
 
+### 在 Windows 上打 Android 包
+
+`make apk` 在 Windows 上有三处会断，都不是代码问题，是环境限制：
+
+**1. 符号链接权限。** `cargo tauri android build` 最后要把 `$CARGO_TARGET_DIR/aarch64-linux-android/release/liblanchat.so` 软链到 `app/src/main/jniLibs/arm64-v8a/`。Windows 没开开发者模式会拒绝（`SetNamedSecurityInfoW ... failed: 5`）。这时 Rust 已经编好了，手动补一步再跑 gradle：
+
+```bash
+cp "$CARGO_TARGET_DIR/aarch64-linux-android/release/liblanchat.so" \
+   src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/
+cd src-tauri/gen/android && ./gradlew assembleUniversalRelease \
+  -x rustBuildArmRelease -x rustBuildArm64Release \
+  -x rustBuildX86Release -x rustBuildX86_64Release
+```
+
+**2. `rustBuild*` 任务找不到 `cargo.bat`。** 模板硬编码了 `cargo.bat`，而 rustup 的 bin 目录里只有 `cargo.exe`。用上面的 `-x` 跳过即可（`.so` 由第 1 步手动提供）。任务名是 `rustBuildX86_64Release`，带下划线。
+
+**3. `local.properties` 的反斜杠会被 Java properties 吞掉。** `sdk.dir=C\:\Users\...` 里的 `\U` `\w` `\A` `\S` 都是无效转义，会被直接丢掉，路径变成 `C:UserswangyAppData...`，gradle 报「文件名、目录名或卷标语法不正确」。只有冒号要转义，其余一律用正斜杠：
+
+```properties
+sdk.dir=C:/Users/<you>/AppData/Local/Android/Sdk
+```
+
+### Android WebView 版本决定 CSS 能不能用
+
+Tauri 在 Android 上用的是**系统 WebView**，版本跟随设备，`minSdk` 是 24，老机器上可能非常旧（实测一台 Android 11 的 OnePlus 6 上是 **92**）。这带来两个必须注意的点：
+
+**1. Vite 默认的 CSS 压缩会产出老 WebView 不认识的语法。** esbuild 会把 `@media (max-width: 859px)` 改写成范围语法 `@media (width<=859px)`，那是 Chrome 104 才有的。老 WebView 解析不了会**整条丢弃**，整个断点的样式静默失效——表现是移动端布局完全没生效，退回桌面布局，且控制台没有任何报错。`vite.config.js` 里的 `cssTarget` 已经把它压到 104 以下，**不要删**。
+
+**2. `color-mix()` 要 Chrome 111+，`:has()` 要 105+。** 仓库里这两者用得很多，在没有回退值的地方，老 WebView 会逐条丢掉声明。需要视觉降级的位置，按 `tokens.css` 里 `oklch` 的写法给一行纯色回退：
+
+```css
+background: var(--surface);                                  /* 老 WebView */
+background: color-mix(in oklch, var(--surface) 94%, transparent);
+```
+
+排查这类问题最快的办法是确认设备 WebView 版本：
+
+```bash
+adb shell dumpsys webviewupdate | grep "Current WebView"
+```
+
+### 其他 Android 端的注意事项
+
+- **系统返回键不接管应用内导航。** 在会话里按返回会直接退出 App，而不是回到会话列表。需要的话要在 `MainActivity` 里覆写 `onBackPressed`。
+- **改签名密钥后必须卸载重装**（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`），**会清掉设备上的本地数据**。
+- **长按菜单要屏蔽原生文本选择。** WebView 在长按约 400ms 后会启动文本选中，比应用自己的长按手势还早；菜单是挂在滚动容器之外的，容器上的 `user-select: none` 盖不到它，要在菜单元素上也加一遍。
+
+`sign-apk.sh` 在 Windows 上也跑不通：它找的是 `build-tools/<ver>/apksigner`，而 SDK 里只有 `apksigner.bat`。手动签：
+
+```bash
+"$ANDROID_HOME/build-tools/<ver>/apksigner.bat" sign \
+  --ks xchat-release.keystore --ks-key-alias xchat \
+  --ks-pass pass:android --key-pass pass:android \
+  --out xchat-aarch64.apk \
+  src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
+```
+
 ## Key Conventions
 
 ### Database Schema

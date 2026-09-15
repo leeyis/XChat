@@ -121,6 +121,104 @@ test("chat feedback colors and focused controls match the approved palette", asy
   assert.match(css, /\.forward-list::-webkit-scrollbar-thumb\s*\{[^}]*background:\s*transparent/s);
 });
 
+test("every settings section is still rendered by the settings list", async () => {
+  const app = await readFile(new URL("./App.jsx", import.meta.url), "utf8");
+  const groupsRaw = app.match(/const SETTINGS_GROUPS = \[([\s\S]*?)\];/)?.[1];
+  const sections = app.match(/settingsSections: \{([\s\S]*?)\n    \}/)?.[1];
+
+  assert.ok(groupsRaw, "SETTINGS_GROUPS is missing");
+  assert.ok(sections, "settingsSections labels are missing");
+
+  // 先把行注释去掉：否则在数组里留一句 // "shortcut" 暂时移除
+  // 就能让断言通过，而那一节其实已经不再渲染。
+  const groups = groupsRaw.replace(/\/\/[^\n]*/g, "");
+  // 取数组里的字符串字面量，而不是对整个源码做子串匹配
+  const listed = [...groups.matchAll(/"([a-z_]+)"/g)].map((match) => match[1]);
+  const declared = [...sections.matchAll(/^\s{6}(\w+):\s*\{/gm)].map((match) => match[1]);
+
+  assert.ok(declared.length >= 6, `设置分节数量异常：${declared.length}`);
+
+  // 「我的」页改用 SETTINGS_GROUPS 分组渲染之后，漏写一个 id 就等于
+  // 把它从桌面端的设置列表里也删掉了。快捷键就踩过这个坑。
+  for (const id of declared) {
+    assert.ok(
+      listed.includes(id),
+      `设置分节 "${id}" 没有出现在 SETTINGS_GROUPS 里`,
+    );
+  }
+  // 反向也要查：写了不存在的 id 同样是错的
+  for (const id of listed) {
+    assert.ok(
+      declared.includes(id),
+      `SETTINGS_GROUPS 里的 "${id}" 不是有效的设置分节`,
+    );
+  }
+  assert.equal(new Set(listed).size, listed.length, "SETTINGS_GROUPS 里有重复项");
+});
+
+test("narrow-screen stack pages always offer a way back", async () => {
+  const [app, css] = await Promise.all([
+    readFile(new URL("./App.jsx", import.meta.url), "utf8"),
+    readFile(new URL("./styles.css", import.meta.url), "utf8"),
+  ]);
+
+  // 窄屏下压栈页会把底部 Tab 栏整个收起，返回键是唯一出口。
+  // no-selection 空态原本没有返回键：删掉最后一个设备后 devices 里找不到它，
+  // 页面就停在「请选择」上，Tab 栏没有、列表被盖住，只能重启。
+  const empties = [
+    ...app.matchAll(/<main className="workspace [\w-]+ no-selection">([\s\S]*?)<\/main>/g),
+  ];
+  assert.ok(empties.length >= 2, `no-selection 空态数量异常：${empties.length}`);
+  for (const [, body] of empties) {
+    assert.match(body, /className="mobile-back/, "no-selection 空态缺少返回键");
+  }
+
+  // 头部得真的留出 56px 一行，否则返回键会被空态挤掉
+  assert.match(
+    css,
+    /\.chat-workspace\.no-selection,[\s\S]*?grid-template-rows:\s*56px minmax\(0,\s*1fr\)/,
+  );
+
+  // 压栈页收起 Tab 栏的规则必须和「列表二选一」同时存在，
+  // 否则会出现「Tab 栏没了、列表还在被盖着」的组合
+  assert.match(css, /\.app-shell:not\(\.mobile-list\) \.rail\s*\{[^}]*display:\s*none/);
+  assert.match(css, /\.app-shell:not\(\.mobile-list\) \.list-pane,[\s\S]*?display:\s*none/);
+});
+
+test("message bubbles stay legible in dark theme", async () => {
+  const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+  // 扫描所有给气泡上文字的规则，而不是只看固定那两条。
+  // 只看两条的话，后面再补一条 .message .bubble { color: var(--fg) }
+  // 就能让断言照过、而深色下的 bug 原样回来。
+  const bubbleRules = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)].filter(
+    ([, selector, body]) =>
+      !selector.includes("@") &&
+      /\.bubble\b/.test(selector) &&
+      /(?:^|[;\s])color\s*:/.test(body),
+  );
+
+  assert.ok(
+    bubbleRules.length >= 2,
+    `涉及气泡文字的规则数量异常：${bubbleRules.length}`,
+  );
+
+  for (const [, selector, body] of bubbleRules) {
+    // 深色主题把 --fg 换成近白色 oklch(.93 .005 75)，
+    // 落在 #9df29f 上对比度只剩 1.09:1，整条消息等于看不见。
+    // 钉死成 #221c15 后两个主题都是 12.56:1。
+    assert.doesNotMatch(
+      body,
+      /color:\s*var\(--fg\)/,
+      `${selector.trim()} 的气泡文字跟随了主题`,
+    );
+    assert.match(
+      body,
+      /color:\s*#221c15/,
+      `${selector.trim()} 的气泡文字色不是钉死的 #221c15`,
+    );
+  }
+});
+
 test("message actions stay compact and anchored to the message body", async () => {
   const [app, css] = await Promise.all([
     readFile(new URL("./App.jsx", import.meta.url), "utf8"),
