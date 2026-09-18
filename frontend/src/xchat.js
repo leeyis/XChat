@@ -10,6 +10,7 @@ const EVENT_NAMES = [
   "new-peer",
   "peer-online",
   "peer-offline",
+  "peer-connection-changed",
   "new-message",
   "message-reaction",
   "strong-reminder",
@@ -232,8 +233,9 @@ export function runtimeCapabilities(runtime, supplied = {}, legacy = false) {
   const defaults = {
     capture: runtime === "web" ? webCapture : desktopCapture,
     captureShortcut: runtime === "web" ? webCapture : desktopCapture,
-    revealFile: runtime === "tauri" && platform !== "android",
+    revealFile: runtime === "tauri" && platform !== "ios",
     openOutgoingFile: runtime === "tauri",
+    saveFileAs: runtime === "tauri",
     notifications:
       runtime === "web"
         ? "Notification" in globalThis
@@ -246,6 +248,11 @@ export function runtimeCapabilities(runtime, supplied = {}, legacy = false) {
     transferCancel: !legacy,
     deviceMetadata: !legacy,
     nativeFilePicker: runtime === "tauri",
+    // Android 输入区的两个原生能力：调系统相机拍照、按住说话录音。
+    // 桌面端没有这两条原生链路，网页端也没有对应后端，一律 false，
+    // 按钮就不会被渲染出来（和 capture 的做法一致）。
+    nativeCamera: runtime === "tauri" && platform === "android",
+    nativeVoiceRecorder: runtime === "tauri" && platform === "android",
   };
   const capabilities = { ...defaults, ...supplied };
   if (runtime === "web") {
@@ -254,7 +261,10 @@ export function runtimeCapabilities(runtime, supplied = {}, legacy = false) {
     capabilities.notifications = "Notification" in globalThis;
     capabilities.revealFile = false;
     capabilities.openOutgoingFile = false;
+    capabilities.saveFileAs = false;
     capabilities.nativeFilePicker = false;
+    capabilities.nativeCamera = false;
+    capabilities.nativeVoiceRecorder = false;
   }
   return capabilities;
 }
@@ -271,6 +281,8 @@ function normalizeCapabilities(raw = {}) {
     captureShortcut: raw.captureShortcut ?? raw.capture_shortcut,
     revealFile: raw.revealFile ?? raw.reveal_file,
     nativeFilePicker: raw.nativeFilePicker ?? raw.native_file_picker,
+    nativeCamera: raw.nativeCamera ?? raw.native_camera,
+    nativeVoiceRecorder: raw.nativeVoiceRecorder ?? raw.native_voice_recorder,
   };
   return {
     ...raw,
@@ -649,11 +661,39 @@ export function localFileAvailable(file = {}) {
 }
 
 export function messageDeliveryStatus(message = {}, peerOffline = false) {
+  if (message.own && ["text", "quote", "announcement"].includes(message.msg_type)) {
+    if (["delivered", "read"].includes(message.status)) return message.status;
+    if (message.delivery_state) return message.delivery_state;
+  }
   if (message.msg_type === "file" && fileStatus(message) === "waiting_peer") {
     return "waiting_peer";
   }
   if (peerOffline && message.status === "pending") return "waiting_peer";
   return message.status || "";
+}
+
+export function canRetryMessage(message = {}) {
+  return Boolean(message.own && message.client_message_id &&
+    ["text", "quote", "announcement"].includes(message.msg_type) &&
+    !["delivered", "read", "recalled"].includes(message.status) &&
+    (message.status === "failed" ||
+      ["unconfirmed", "waiting_connection"].includes(message.delivery_state)));
+}
+
+export function peerConnectionStatus(device = {}, refreshing = false) {
+  if (refreshing) return "verifying";
+  return device?.connection?.status || (device?.is_offline ? "missing" : "stale");
+}
+
+export function fileMessageActions(file = {}, capabilities = {}) {
+  const available = localFileAvailable(file) &&
+    ["accepted", "completed", "sent", "delivered", "read"].includes(fileStatus(file));
+  const outgoing = file.direction === "outgoing" || file.own;
+  return {
+    open: Boolean(available && (!outgoing || capabilities.openOutgoingFile)),
+    reveal: Boolean(available && capabilities.revealFile),
+    saveAs: Boolean(available && capabilities.saveFileAs),
+  };
 }
 
 function draftId() {
@@ -731,6 +771,7 @@ function messageKey(message) {
 function monotonicStatus(previous, next) {
   const before = MESSAGE_STATUS.indexOf(previous);
   const after = MESSAGE_STATUS.indexOf(next);
+  if (before >= 2 && next === "failed") return previous;
   if (before >= 0 && after >= 0) return MESSAGE_STATUS[Math.max(before, after)];
   return next || previous;
 }
@@ -1269,6 +1310,7 @@ export class TauriAdapter {
     content,
     msgType = "text",
     mentionIds = [],
+    allowLegacy = true,
   ) {
     try {
       return await this.invoke("send_conversation_message", {
@@ -1279,7 +1321,7 @@ export class TauriAdapter {
         mentionIds,
       });
     } catch (error) {
-      if (!unavailable(error) || conversation.kind !== "direct") throw error;
+      if (!allowLegacy || !unavailable(error) || conversation.kind !== "direct") throw error;
       const peer = conversation.peer;
       return this.invoke("send_message", {
         peerId: conversation.peer_id,
@@ -1358,6 +1400,26 @@ export class TauriAdapter {
 
   readClipboardFiles() {
     return this.invoke("read_clipboard_files");
+  }
+
+  // ─── Android 输入区：拍照 / 录音 ───
+  // 拍照是异步的（用户要按快门），命令只负责调起相机，
+  // 结果由 MainActivity 空投到 window.__XCHAT_NATIVE_CAPTURE__ 并派发
+  // xchat-native-capture 事件，前端在 Composer 里接住它。
+  capturePhoto() {
+    return this.invoke("open_camera_capture");
+  }
+
+  pickNativeFiles(mimeType = "*/*") {
+    return this.invoke("open_saf_picker", { mimeType });
+  }
+
+  startVoiceRecording() {
+    return this.invoke("start_voice_recording");
+  }
+
+  stopVoiceRecording(cancelled = false) {
+    return this.invoke("stop_voice_recording", { cancelled: Boolean(cancelled) });
   }
 
   async attachmentsFromPaths(paths) {
@@ -1519,6 +1581,14 @@ export class TauriAdapter {
 
   updateDevice(deviceId, patch) {
     return this.invoke("update_device_metadata", { deviceId, remark: patch.remark });
+  }
+
+  refreshPeerConnection(peerId) {
+    return this.invoke("refresh_peer_connection", { peerId });
+  }
+
+  rediscoverPeers() {
+    return this.invoke("rediscover_peers");
   }
 
   testEndpoint(peer, expectedDeviceId = null) {
@@ -1788,6 +1858,7 @@ export class HttpWsAdapter {
     content,
     msgType = "text",
     mentionIds = [],
+    allowLegacy = true,
   ) {
     try {
       return await this.json(
@@ -1801,7 +1872,7 @@ export class HttpWsAdapter {
         },
       );
     } catch (error) {
-      if (!unavailable(error) || conversation.kind !== "direct") throw error;
+      if (!allowLegacy || !unavailable(error) || conversation.kind !== "direct") throw error;
       return this.json("/api/send_message", "POST", {
         peer_id: conversation.peer_id,
         peer_addr: conversation.peer?.addr || "",
@@ -1867,6 +1938,14 @@ export class HttpWsAdapter {
 
   updateDevice(deviceId, patch) {
     return this.json(`/api/devices/${encodeURIComponent(deviceId)}`, "POST", patch);
+  }
+
+  refreshPeerConnection(peerId) {
+    return this.json(`/api/peers/${encodeURIComponent(peerId)}/refresh`, "POST", {});
+  }
+
+  rediscoverPeers() {
+    return this.json("/api/peers/rediscover", "POST", {});
   }
 
   testEndpoint(peer, expectedDeviceId = null) {
@@ -2266,6 +2345,8 @@ function makeInitialSnapshot(runtime) {
     transfer_sample_at: 0,
     draftAttachments: {},
     searchResults: [],
+    peerRefreshes: {},
+    rediscovering: false,
     settings: normalizeSettings(),
     capabilities: runtimeCapabilities(runtime, {}, true),
     notices: [],
@@ -2293,6 +2374,9 @@ export function createXChatModule() {
   const listeners = new Set();
   const alertedMessages = new Set();
   const reactionsInFlight = new Set();
+  const peerRefreshesInFlight = new Map();
+  const messagesRetrying = new Set();
+  let rediscoveryInFlight = null;
 
   const publish = (next) => {
     if (next === snapshot) return;
@@ -2301,6 +2385,24 @@ export function createXChatModule() {
   };
 
   const patch = (change) => publish({ ...snapshot, ...change });
+
+  const applyPeerConnection = (connection) => {
+    if (!connection?.peer_id) return;
+    const devices = snapshot.devices.map((device) => {
+      if (device.id !== connection.peer_id) return device;
+      return {
+        ...device,
+        connection,
+        addr: ["ready", "updated"].includes(connection.status) && connection.address
+          ? connection.address : device.addr,
+      };
+    });
+    patch({
+      devices,
+      conversations: snapshot.conversations.map((conversation) =>
+        normalizeConversation(conversation, devices)),
+    });
+  };
 
   const addNotice = (message, kind = "error") => {
     const notice = {
@@ -2426,6 +2528,11 @@ export function createXChatModule() {
     }
     const payload = event.payload?.payload ?? event.payload;
     const eventType = String(event.type || "").replaceAll("_", ".").replaceAll("-", ".");
+    if (eventType === "peer.connection.changed") {
+      applyPeerConnection(payload?.connection || payload);
+      scheduleRefresh();
+      return;
+    }
     if (eventType === "notifications.changed") {
       refreshSequence += 1;
       patch({
@@ -2440,7 +2547,7 @@ export function createXChatModule() {
       applyReaction(payload);
       return;
     }
-    if (eventType.includes("delivery.ack")) {
+    if (eventType.includes("delivery.ack") || payload?.msg_type === "delivery_ack") {
       // 单聊气泡直接显示状态文案，就地推进；群聊显示的是逐收件人计数，
       // 交给刷新重算，别在这里把部分送达说成全体送达。
       const conversationId = payload?.conversation_id;
@@ -2599,7 +2706,11 @@ export function createXChatModule() {
         normalizeMessage(item, snapshot.self.id, conversation.id),
       );
       const current = snapshot.messagesByConversation[conversation.id] ?? [];
-      const existing = offset ? current : retainInFlightMessages(current, messages);
+      const fetchedKeys = new Set(messages.map(messageKey));
+      const existing = offset ? current : [
+        ...retainInFlightMessages(current, messages),
+        ...current.filter((message) => fetchedKeys.has(messageKey(message))),
+      ];
       patch({
         messagesByConversation: {
           ...snapshot.messagesByConversation,
@@ -2845,6 +2956,51 @@ export function createXChatModule() {
           throw error;
         }
       }
+      case "message.retry": {
+        const conversation = conversationForAction(action);
+        const message = snapshot.messagesByConversation[conversation?.id]?.find(
+          (item) => item.client_message_id === action.clientMessageId,
+        );
+        if (!conversation || !canRetryMessage(message)) return;
+        const key = `${conversation.id}:${message.client_message_id}`;
+        if (messagesRetrying.has(key)) return;
+        messagesRetrying.add(key);
+        const mergeRetry = (change) => patch({
+          messagesByConversation: {
+            ...snapshot.messagesByConversation,
+            [conversation.id]: mergeMessages(snapshot.messagesByConversation[conversation.id], [change]),
+          },
+        });
+        mergeRetry({ ...message, status: message.status === "failed" ? "pending" : message.status, delivery_state: "sending", delivery_error: null });
+        try {
+          const result = await adapter.sendMessage(
+            conversation,
+            message.client_message_id,
+            message.raw_content ?? message.content,
+            message.msg_type,
+            message.mention_ids || [],
+            false,
+          );
+          const response = result?.message ?? result ?? {};
+          mergeRetry(normalizeMessage({
+            ...message,
+            ...response,
+            client_message_id: message.client_message_id,
+            content: response.content ?? message.raw_content ?? message.content,
+            status: response.status ?? "sent",
+            delivery_state: response.delivery_state ?? "awaiting_ack",
+            delivery_error: response.delivery_error ?? null,
+          }, snapshot.self.id, conversation.id));
+          scheduleRefresh();
+          return result;
+        } catch (error) {
+          mergeRetry({ ...message, delivery_error: errorText(error) });
+          scheduleRefresh();
+          throw error;
+        } finally {
+          messagesRetrying.delete(key);
+        }
+      }
       case "message.sendFiles": {
         const conversation = conversationForAction(action);
         if (!conversation) return;
@@ -2860,6 +3016,8 @@ export function createXChatModule() {
         addDraftAttachments(conversation.id, files);
         return files;
       }
+      case "draft.pickNative":
+        return adapter.pickNativeFiles(action.mimeType);
       case "draft.addFiles": {
         const conversationId = action.conversationId ?? snapshot.activeConversationId;
         if (!conversationId) return [];
@@ -2949,6 +3107,130 @@ export function createXChatModule() {
           current.filter((item) => item.id !== action.id),
         );
         return;
+      // ─── Android 输入区：拍照 ───
+      case "camera.capture": {
+        if (!snapshot.capabilities.nativeCamera) {
+          throw new TransportError(
+            uiCopy("当前平台不支持拍照", "Taking photos is unavailable on this platform"),
+            "camera_unsupported",
+            0,
+            false,
+          );
+        }
+        await adapter.capturePhoto();
+        return { ok: true };
+      }
+      // 相机结果由 MainActivity 空投回前端，Composer 收到事件后转成这个 action。
+      case "attachment.result":
+      case "camera.result": {
+        const result = action.result ?? {};
+        const conversationId = action.conversationId ?? snapshot.activeConversationId;
+        if (result.status === "ok" && (result.path || result.file_path)) {
+          if (!conversationId) {
+            addNotice(uiCopy("请先选择一个会话", "Select a conversation first"));
+            return { ok: false };
+          }
+          const attachment = normalizeDraftAttachment({
+            conversation_id: conversationId,
+            file_path: result.path ?? result.file_path,
+            file_name: result.name || "photo.jpg",
+            file_size: result.size ?? 0,
+            mime_type: result.mime_type || "image/jpeg",
+          });
+          addDraftAttachments(conversationId, [attachment]);
+          return { ok: true, attachment };
+        }
+        if (result.status === "permission_denied") {
+          addNotice(
+            uiCopy(
+              "需要相机权限才能拍照，请在系统弹窗里允许后重试",
+              "Camera permission is required to take a photo",
+            ),
+            "warning",
+          );
+          return { ok: false };
+        }
+        if (result.status === "no_camera") {
+          addNotice(
+            uiCopy("这台设备上没有可用的相机应用", "No camera app is available on this device"),
+            "warning",
+          );
+          return { ok: false };
+        }
+        if (result.status === "failed") {
+          addNotice(
+            uiCopy(
+              `拍照失败：${result.message || ""}`,
+              `Taking the photo failed: ${result.message || ""}`,
+            ),
+          );
+          return { ok: false };
+        }
+        // cancelled：用户自己取消的，不提示、不留空附件
+        return { ok: false, cancelled: true };
+      }
+      // ─── Android 输入区：按住说话 ───
+      case "voice.start": {
+        if (!snapshot.capabilities.nativeVoiceRecorder) {
+          throw new TransportError(
+            uiCopy("当前平台不支持录音", "Voice recording is unavailable on this platform"),
+            "voice_unsupported",
+            0,
+            false,
+          );
+        }
+        const status = await adapter.startVoiceRecording();
+        if (status?.status === "permission_denied") {
+          addNotice(
+            uiCopy(
+              "需要麦克风权限，允许后再按住录音",
+              "Microphone permission is required — allow it and hold again",
+            ),
+            "warning",
+          );
+          return { ok: false, reason: "permission_denied" };
+        }
+        if (status?.status !== "recording") {
+          addNotice(
+            uiCopy(
+              `无法开始录音：${status?.message || ""}`,
+              `Could not start recording: ${status?.message || ""}`,
+            ),
+          );
+          return { ok: false, reason: "failed" };
+        }
+        return { ok: true };
+      }
+      case "voice.stop": {
+        const conversationId = action.conversationId ?? snapshot.activeConversationId;
+        const result = await adapter.stopVoiceRecording(Boolean(action.cancelled));
+        if (action.cancelled || result?.status !== "ok") {
+          // 时长过短（误触）单独提示，上滑取消不打扰用户
+          if (action.reason === "too_short") {
+            addNotice(
+              uiCopy("录音时间太短，已取消", "Recording was too short and was cancelled"),
+              "warning",
+            );
+          } else if (!action.cancelled && result?.status !== "ok") {
+            addNotice(uiCopy("录音失败，已取消", "Recording failed and was cancelled"));
+          }
+          return { ok: false, cancelled: true };
+        }
+        if (!conversationId) {
+          addNotice(uiCopy("请先选择一个会话", "Select a conversation first"));
+          return { ok: false };
+        }
+        const attachment = normalizeDraftAttachment({
+          conversation_id: conversationId,
+          file_path: result.path ?? result.file_path,
+          file_name: result.name || "voice.m4a",
+          file_size: result.size ?? 0,
+          mime_type: result.mime_type || "audio/mp4",
+          duration_ms: result.duration_ms ?? 0,
+        });
+        addDraftAttachments(conversationId, [attachment]);
+        return { ok: true, attachment };
+      }
       case "capture.start": {
         const conversation = activeConversation();
         if (!snapshot.capabilities.capture) {
@@ -3091,6 +3373,45 @@ export function createXChatModule() {
       case "device.saveRemark":
         await adapter.updateDevice(action.id, { remark: action.remark });
         return refreshWorkspace();
+      case "device.refreshConnection": {
+        const peerId = action.id;
+        if (!peerId) return;
+        if (peerRefreshesInFlight.has(peerId)) return peerRefreshesInFlight.get(peerId);
+        const request = (async () => {
+          patch({ peerRefreshes: { ...snapshot.peerRefreshes, [peerId]: true } });
+          try {
+            const result = await adapter.refreshPeerConnection(peerId);
+            applyPeerConnection(result);
+            await refreshWorkspace({ quiet: true }).catch(() => {});
+            return result;
+          } finally {
+            peerRefreshesInFlight.delete(peerId);
+            const remaining = { ...snapshot.peerRefreshes };
+            delete remaining[peerId];
+            patch({ peerRefreshes: remaining });
+          }
+        })();
+        peerRefreshesInFlight.set(peerId, request);
+        return request;
+      }
+      case "device.rediscover": {
+        if (rediscoveryInFlight) return rediscoveryInFlight;
+        rediscoveryInFlight = (async () => {
+          patch({ rediscovering: true });
+          try {
+            const results = await adapter.rediscoverPeers();
+            if (Array.isArray(results)) results.forEach(applyPeerConnection);
+            await refreshWorkspace({ quiet: true }).catch(() => {});
+            const verified = (results || []).filter((result) => ["ready", "updated"].includes(result.status)).length;
+            addNotice(uiCopy(`重新发现完成，${verified} 台设备连接已验证`, `Rediscovery complete: ${verified} device connections verified`), verified ? "success" : "warning");
+            return results;
+          } finally {
+            rediscoveryInFlight = null;
+            patch({ rediscovering: false });
+          }
+        })();
+        return rediscoveryInFlight;
+      }
       case "device.testEndpoint":
         return adapter.testEndpoint(action.endpoint, action.expectedDeviceId ?? null);
       case "device.saveEndpoint":

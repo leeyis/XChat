@@ -3,6 +3,7 @@
     <!-- 网络权限 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     
@@ -19,8 +20,26 @@
     <!-- 查询运行中的任务 -->
     <uses-permission android:name="android.permission.GET_TASKS" />
 
+    <!-- 输入区拍照 / 录音（运行时申请，见 MainActivity） -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- 没有摄像头 / 麦克风的设备也要能装：这两个能力是可选功能，
+         缺失时前端会给出明确提示（相机按钮走系统相机 Intent，
+         设备上没有相机应用时回落到提示文案）。 -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="vnd.android.document/directory" />
+        </intent>
+    </queries>
 
     <application
         android:icon="@mipmap/ic_launcher"
@@ -32,6 +51,7 @@
             android:launchMode="singleTask"
             android:label="@string/main_activity_title"
             android:name=".MainActivity"
+            android:windowSoftInputMode="adjustResize"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -74,6 +94,17 @@
         </provider>
 
         <!-- FdContentProvider: 零拷贝跨进程分享 FD 缓存中的文件到第三方 App -->
+        <provider
+          android:name=".ChatDocumentsProvider"
+          android:authorities="${applicationId}.documents"
+          android:exported="true"
+          android:grantUriPermissions="true"
+          android:permission="android.permission.MANAGE_DOCUMENTS">
+          <intent-filter>
+            <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+          </intent-filter>
+        </provider>
+
         <provider
           android:name=".FdContentProvider"
           android:authorities="${applicationId}.fdprovider"

@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 const DISCOVERY_MULTICAST: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 167);
 const DISCOVERY_SETTINGS_KEY: &str = "network.discovery.settings.v1";
 pub(crate) const MAX_INTERFACE_DATAGRAMS_PER_CYCLE: usize = 48;
-static DISCOVERY_SETTINGS_CHANGED: OnceLock<tokio::sync::Notify> = OnceLock::new();
+static DISCOVERY_SETTINGS_CHANGED: OnceLock<tokio::sync::watch::Sender<u64>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -98,7 +98,7 @@ pub(crate) struct DiscoverySendPlan {
     pub budget: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct RawInterface {
     name: String,
     system_name: String,
@@ -361,44 +361,37 @@ fn enumerate_raw_interfaces() -> Result<Vec<RawInterface>, String> {
 
 #[cfg(target_os = "android")]
 fn enumerate_raw_interfaces() -> Result<Vec<RawInterface>, String> {
-    use std::net::UdpSocket;
+    use jni::objects::{JObject, JString};
 
-    let mut addresses = BTreeSet::new();
-    for target in [
-        Ipv4Addr::new(224, 0, 0, 167),
-        Ipv4Addr::new(172, 20, 10, 1),
-        Ipv4Addr::new(192, 168, 43, 1),
-        Ipv4Addr::new(192, 168, 137, 1),
-        Ipv4Addr::new(10, 0, 0, 1),
-    ] {
-        let Ok(socket) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else {
-            continue;
-        };
-        if socket.connect((target, 8888)).is_err() {
-            continue;
-        }
-        let Ok(local) = socket.local_addr() else {
-            continue;
-        };
-        if let std::net::IpAddr::V4(ipv4) = local.ip() {
-            if !ipv4.is_loopback() && !ipv4.is_unspecified() {
-                addresses.insert(ipv4);
-            }
-        }
+    let context = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast()) }
+        .map_err(|error| error.to_string())?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
+    // The NDK owns this Activity global reference; do not delete it.
+    let activity = unsafe { JObject::from_raw(context.context().cast()) };
+    let result = env.call_method(
+        &activity,
+        "getLanNetworkInterfaces",
+        "()Ljava/lang/String;",
+        &[],
+    );
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_describe();
+        let _ = env.exception_clear();
+        return Err("Android LAN network inventory failed".to_string());
     }
-
-    Ok(addresses
-        .into_iter()
-        .map(|ipv4| RawInterface {
-            name: "Android network".to_string(),
-            system_name: "android-network".to_string(),
-            index: Some(0),
-            ipv4,
-            prefix_length: None,
-            is_up: true,
-            is_loopback: false,
-        })
-        .collect())
+    let value = result
+        .map_err(|error| error.to_string())?
+        .l()
+        .map_err(|error| error.to_string())?;
+    let value = env.auto_local(value);
+    let encoded: String = env
+        .get_string(<&JString>::from(value.as_ref()))
+        .map_err(|error| error.to_string())?
+        .into();
+    serde_json::from_str(&encoded).map_err(|error| error.to_string())
 }
 
 fn snapshot_from_inventory(
@@ -421,16 +414,16 @@ pub(crate) fn system_network_snapshot(settings: DiscoverySettings) -> DiscoveryN
     snapshot_from_inventory(settings, enumerate_raw_interfaces())
 }
 
-fn settings_changed() -> &'static tokio::sync::Notify {
-    DISCOVERY_SETTINGS_CHANGED.get_or_init(tokio::sync::Notify::new)
+fn settings_changed() -> &'static tokio::sync::watch::Sender<u64> {
+    DISCOVERY_SETTINGS_CHANGED.get_or_init(|| tokio::sync::watch::channel(0).0)
 }
 
-pub(crate) async fn wait_for_settings_change() {
-    settings_changed().notified().await;
+pub(crate) fn subscribe_settings_changes() -> tokio::sync::watch::Receiver<u64> {
+    settings_changed().subscribe()
 }
 
 pub(crate) fn notify_settings_changed() {
-    settings_changed().notify_waiters();
+    settings_changed().send_modify(|generation| *generation = generation.wrapping_add(1));
 }
 
 pub(crate) async fn load_settings(
@@ -481,7 +474,8 @@ pub(crate) async fn save_settings(
     let encoded = serde_json::to_string(&settings)
         .map_err(|error| format!("serialize discovery settings failed: {error}"))?;
     crate::db::set_setting(pool, DISCOVERY_SETTINGS_KEY, &encoded).await?;
-    settings_changed().notify_waiters();
+    notify_settings_changed();
+    crate::web_server::refresh_connections_after_network_change();
     Ok(())
 }
 
@@ -568,6 +562,24 @@ mod tests {
         assert!(interface_is_operational(
             InterfaceFlags::UP | InterfaceFlags::RUNNING
         ));
+    }
+
+    #[test]
+    fn android_inventory_preserves_lan_prefix_and_excludes_tunnel() {
+        let inventory: Vec<RawInterface> = serde_json::from_str(r#"[
+            {"name":"wlan0","system_name":"wlan0","index":21,"ipv4":"192.168.20.106","prefix_length":24,"is_up":true,"is_loopback":false},
+            {"name":"tun0","system_name":"tun0","index":30,"ipv4":"198.18.0.1","prefix_length":30,"is_up":true,"is_loopback":false}
+        ]"#).unwrap();
+        let snapshot = network_snapshot_from_raw(inventory, DiscoverySettings::default());
+        let plan = build_send_plan(&snapshot, 8888);
+        assert_eq!(plan.targets.len(), 2);
+        assert!(plan.targets.iter().all(|target| {
+            target.source_ip == Ipv4Addr::new(192, 168, 20, 106)
+                && target.interface_index == Some(21)
+        }));
+        assert!(plan.targets.iter().any(|target| {
+            target.destination.ip() == &Ipv4Addr::new(192, 168, 20, 255)
+        }));
     }
 
     #[test]

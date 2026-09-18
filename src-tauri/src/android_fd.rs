@@ -597,7 +597,43 @@ impl AndroidFile {
     }
 
     /// JNI：主动调用 Kotlin 的 launchSafFilePicker 唤起系统文件选择器
-    pub fn trigger_saf_picker_jni() -> Result<(), String> {
+    pub fn trigger_saf_picker_jni(mime_type: &str) -> Result<(), String> {
+        use jni::objects::{JObject, JValue};
+        use jni::JavaVM;
+
+        let ctx = ndk_context::android_context();
+        let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }
+            .map_err(|e| format!("获取 JavaVM 失败: {}", e))?;
+        let mut env = vm.attach_current_thread()
+            .map_err(|e| format!("附加线程失败: {}", e))?;
+
+        let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+
+        let mime = env.new_string(mime_type).map_err(|error| error.to_string())?;
+        let mime = env.auto_local(mime);
+        env.call_method(
+            &activity,
+            "launchSafFilePicker",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(mime.as_ref())]
+        ).map_err(|e| format!("JNI 调用 launchSafFilePicker 失败: {}", e))?;
+
+        println!("[AndroidFD] JNI 已触发 launchSafFilePicker");
+        Ok(())
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 输入区扩展：拍照 / 录音
+    //
+    // 这三个方法都直接打在 MainActivity 上，和 launchSafFilePicker 一样。
+    // - 拍照是异步的：Kotlin 拍完/取消后通过 injectDataIntoWebView 把结果空投给前端，
+    //   这里只负责把意图送过去。
+    // - 录音的开始/结束是同步的：Kotlin 直接把 JSON 状态字符串返回给调用方，
+    //   由 commands 层转成 serde_json::Value 交给前端。
+    // ═══════════════════════════════════════════════════════════
+
+    /// JNI：调起 Kotlin 的 launchCameraCapture（拍照）
+    pub fn launch_camera_jni() -> Result<(), String> {
         use jni::objects::JObject;
         use jni::JavaVM;
 
@@ -611,13 +647,80 @@ impl AndroidFile {
 
         env.call_method(
             &activity,
-            "launchSafFilePicker",
+            "launchCameraCapture",
             "()V",
             &[]
-        ).map_err(|e| format!("JNI 调用 launchSafFilePicker 失败: {}", e))?;
+        ).map_err(|e| format!("JNI 调用 launchCameraCapture 失败: {}", e))?;
 
-        println!("[AndroidFD] JNI 已触发 launchSafFilePicker");
+        println!("[AndroidFD] JNI 已触发 launchCameraCapture");
         Ok(())
+    }
+
+    /// JNI：调起 Kotlin 的 startVoiceRecording，返回其 JSON 状态字符串
+    pub fn start_voice_recording_jni() -> Result<String, String> {
+        use jni::objects::JObject;
+        use jni::JavaVM;
+
+        let ctx = ndk_context::android_context();
+        let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }
+            .map_err(|e| format!("获取 JavaVM 失败: {}", e))?;
+        let mut env = vm.attach_current_thread()
+            .map_err(|e| format!("附加线程失败: {}", e))?;
+
+        let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+
+        let result = env.call_method(
+            &activity,
+            "startVoiceRecording",
+            "()Ljava/lang/String;",
+            &[]
+        ).map_err(|e| format!("JNI 调用 startVoiceRecording 失败: {}", e))?
+        .l().map_err(|e| format!("转换录音状态失败: {}", e))?;
+
+        if result.is_null() {
+            return Err("startVoiceRecording 返回空状态".to_string());
+        }
+        let jstr = unsafe { jni::objects::JString::from_raw(result.into_raw()) };
+        let status: String = env.get_string(&jstr)
+            .map(|s| s.into())
+            .map_err(|e| format!("读取录音状态失败: {}", e))?;
+
+        println!("[AndroidFD] startVoiceRecording → {}", status);
+        Ok(status)
+    }
+
+    /// JNI：调起 Kotlin 的 stopVoiceRecording(cancelled)，返回其 JSON 状态字符串
+    pub fn stop_voice_recording_jni(cancelled: bool) -> Result<String, String> {
+        use jni::objects::JObject;
+        use jni::JavaVM;
+        use jni::sys::jboolean;
+
+        let ctx = ndk_context::android_context();
+        let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }
+            .map_err(|e| format!("获取 JavaVM 失败: {}", e))?;
+        let mut env = vm.attach_current_thread()
+            .map_err(|e| format!("附加线程失败: {}", e))?;
+
+        let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+
+        let result = env.call_method(
+            &activity,
+            "stopVoiceRecording",
+            "(Z)Ljava/lang/String;",
+            &[jni::objects::JValue::Bool(cancelled as jboolean)]
+        ).map_err(|e| format!("JNI 调用 stopVoiceRecording 失败: {}", e))?
+        .l().map_err(|e| format!("转换录音状态失败: {}", e))?;
+
+        if result.is_null() {
+            return Err("stopVoiceRecording 返回空状态".to_string());
+        }
+        let jstr = unsafe { jni::objects::JString::from_raw(result.into_raw()) };
+        let status: String = env.get_string(&jstr)
+            .map(|s| s.into())
+            .map_err(|e| format!("读取录音状态失败: {}", e))?;
+
+        println!("[AndroidFD] stopVoiceRecording(cancelled={}) → {}", cancelled, status);
+        Ok(status)
     }
 }
 

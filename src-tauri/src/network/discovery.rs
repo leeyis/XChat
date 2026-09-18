@@ -3,9 +3,10 @@ use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "desktop")]
@@ -16,6 +17,11 @@ use crate::network::discovery_policy::{
     MAX_INTERFACE_DATAGRAMS_PER_CYCLE,
 };
 use crate::peers::PeerManager;
+
+static ACTIVE_DISCOVERY_PORT: AtomicU16 = AtomicU16::new(8888);
+pub fn active_discovery_port() -> u16 {
+    ACTIVE_DISCOVERY_PORT.load(Ordering::Relaxed)
+}
 
 pub const DISCOVERY_PROTOCOL_VERSION: u16 = 2;
 pub const DISCOVERY_CAPABILITIES: &[&str] = &[
@@ -34,6 +40,7 @@ static ALL_LOCAL_IPS: RwLock<Option<Vec<String>>> = RwLock::new(None);
 const DISCOVERY_STEADY_INTERVAL: Duration = Duration::from_secs(30);
 const FIXED_PEER_INITIAL_BACKOFF: Duration = Duration::from_secs(5);
 const FIXED_PEER_MAX_BACKOFF: Duration = Duration::from_secs(300);
+const MAX_ADVERTISED_ADDRESSES: usize = 4;
 
 #[derive(Debug, Default)]
 struct DiscoveryCadence {
@@ -250,6 +257,8 @@ pub struct DiscoveryAnnouncement {
     pub mac_address: Option<String>,
     pub capabilities: Vec<String>,
     pub app_version: Option<String>,
+    /// Untrusted service address hints; only a matching WebSocket identity can activate one.
+    pub addresses: Vec<Ipv4Addr>,
 }
 
 impl DiscoveryAnnouncement {
@@ -300,12 +309,13 @@ impl DiscoveryAnnouncement {
                 })
                 .unwrap_or_default(),
             app_version: optional_part(parts.get(11)),
+            addresses: discovery_addresses(parts.get(12).copied().unwrap_or_default().split(',')),
         }))
     }
 
     pub fn encode(&self) -> String {
         format!(
-            "LANChat|ONLINE|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "LANChat|ONLINE|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.peer_id,
             self.name,
             self.port,
@@ -315,9 +325,46 @@ impl DiscoveryAnnouncement {
             self.hostname.as_deref().unwrap_or_default(),
             self.mac_address.as_deref().unwrap_or_default(),
             self.capabilities.join(","),
-            self.app_version.as_deref().unwrap_or_default()
+            self.app_version.as_deref().unwrap_or_default(),
+            self.addresses.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
         )
     }
+
+    fn encode_for_source(&self, source_ip: Option<Ipv4Addr>) -> String {
+        let mut announcement = self.clone();
+        if let Some(source_ip) = source_ip {
+            announcement.addresses.retain(|ip| *ip != source_ip);
+            announcement.addresses.insert(0, source_ip);
+            announcement.addresses.truncate(MAX_ADVERTISED_ADDRESSES);
+        }
+        announcement.encode()
+    }
+
+    fn observe_addresses(&self, manager: &PeerManager, source_ip: Ipv4Addr) -> String {
+        let observed = SocketAddrV4::new(source_ip, self.port).to_string();
+        let active_address = manager.connections.observe(&self.peer_id, &observed);
+        for ip in &self.addresses {
+            let candidate = SocketAddrV4::new(*ip, self.port).to_string();
+            manager.connections.observe(&self.peer_id, &candidate);
+        }
+        active_address
+    }
+}
+
+fn discovery_addresses<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<Ipv4Addr> {
+    let mut addresses = Vec::new();
+    for ip in values.into_iter().filter_map(|value| value.parse::<Ipv4Addr>().ok()) {
+        if ip.octets()[0] == 0 || ip.octets()[0] >= 224 || ip.is_loopback()
+            || addresses.contains(&ip)
+        {
+            continue;
+        }
+        addresses.push(ip);
+        if addresses.len() == MAX_ADVERTISED_ADDRESSES {
+            break;
+        }
+    }
+    addresses
 }
 
 fn optional_part(value: Option<&&str>) -> Option<String> {
@@ -419,6 +466,7 @@ fn local_announcement(
     hostname: Option<String>,
     mac_address: Option<String>,
     app_version: Option<String>,
+    snapshot: &DiscoveryNetworkSnapshot,
 ) -> DiscoveryAnnouncement {
     DiscoveryAnnouncement {
         peer_id,
@@ -434,6 +482,7 @@ fn local_announcement(
             .map(|capability| (*capability).to_string())
             .collect(),
         app_version,
+        addresses: discovery_addresses(enabled_local_ips(snapshot).iter().map(String::as_str)),
     }
 }
 
@@ -1013,52 +1062,23 @@ fn rotating_fixed_peer_endpoints(
     selected
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PeerEndpointSource {
-    VerifiedFixed,
-    ObservedUdp,
-}
-
-struct SelectedPeerEndpoint {
-    endpoint: String,
-    source: PeerEndpointSource,
-}
-
-fn select_peer_endpoint(
-    peer_id: &str,
-    observed_ip: IpAddr,
-    announced_port: u16,
-    verified_endpoints: &HashMap<String, String>,
-) -> SelectedPeerEndpoint {
-    match verified_endpoints.get(peer_id) {
-        Some(endpoint) => SelectedPeerEndpoint {
-            endpoint: endpoint.clone(),
-            source: PeerEndpointSource::VerifiedFixed,
-        },
-        None => SelectedPeerEndpoint {
-            endpoint: SocketAddr::new(observed_ip, announced_port).to_string(),
-            source: PeerEndpointSource::ObservedUdp,
-        },
-    }
-}
-
 #[derive(Default)]
 struct FixedPeerSourceResolver {
     dns_cache: DnsCache,
     retry_states: HashMap<String, FixedPeerRetryState>,
-    resolved_by_endpoint: HashMap<String, HashSet<Ipv4Addr>>,
-    expected_ids_by_source: HashMap<Ipv4Addr, HashSet<String>>,
+    resolved_by_endpoint: HashMap<String, HashSet<SocketAddrV4>>,
+    expected_ids_by_source: HashMap<SocketAddrV4, HashSet<String>>,
     verified_endpoints_by_device_id: HashMap<String, String>,
     cursor: usize,
 }
 
 fn fixed_peer_identity_allowed(
-    expected_ids_by_source: &HashMap<Ipv4Addr, HashSet<String>>,
-    source_ip: Ipv4Addr,
+    expected_ids_by_source: &HashMap<SocketAddrV4, HashSet<String>>,
+    service_address: SocketAddrV4,
     peer_id: &str,
 ) -> bool {
     expected_ids_by_source
-        .get(&source_ip)
+        .get(&service_address)
         .is_none_or(|expected_ids| expected_ids.contains(peer_id))
 }
 
@@ -1097,8 +1117,43 @@ impl FixedPeerSourceResolver {
         }
     }
 
-    fn identity_allowed(&self, source_ip: Ipv4Addr, peer_id: &str) -> bool {
-        fixed_peer_identity_allowed(&self.expected_ids_by_source, source_ip, peer_id)
+    fn identity_allowed(&self, source_ip: Ipv4Addr, service_port: u16, peer_id: &str) -> bool {
+        fixed_peer_identity_allowed(
+            &self.expected_ids_by_source,
+            SocketAddrV4::new(source_ip, service_port),
+            peer_id,
+        )
+    }
+
+    fn matches_fixed_identity(&self, source_ip: Ipv4Addr, peer_id: &str) -> bool {
+        // A port mapping may differ from the advertised service port. The fixed
+        // discovery-policy exception still requires a positively matched UUID.
+        self.expected_ids_by_source.iter().any(|(address, expected_ids)| {
+            *address.ip() == source_ip && expected_ids.contains(peer_id)
+        })
+    }
+
+    fn packet_allowed(
+        &self,
+        snapshot: &DiscoveryNetworkSnapshot,
+        source_ip: Ipv4Addr,
+        ingress_index: Option<u32>,
+        announcement: &DiscoveryAnnouncement,
+    ) -> bool {
+        let explicitly_fixed = self.matches_fixed_identity(source_ip, &announcement.peer_id);
+        if !explicitly_fixed && !self.identity_allowed(source_ip, announcement.port, &announcement.peer_id) {
+            eprintln!(
+                "[UDP][security] ignored fixed-address announcement from {source_ip}:{}: device identity did not match",
+                announcement.port,
+            );
+            return false;
+        }
+        let fixed_sources = if explicitly_fixed {
+            HashSet::from([source_ip])
+        } else {
+            HashSet::new()
+        };
+        discovery_packet_allowed(snapshot, source_ip, ingress_index, &fixed_sources)
     }
 
     async fn refresh(&mut self, custom_peers: &[String], port: u16) -> HashSet<Ipv4Addr> {
@@ -1143,9 +1198,9 @@ impl FixedPeerSourceResolver {
                     let sources = resolved
                         .addresses
                         .into_iter()
-                        .filter_map(|address| match address.ip() {
-                            std::net::IpAddr::V4(ipv4) => Some(ipv4),
-                            std::net::IpAddr::V6(_) => None,
+                        .filter_map(|address| match address {
+                            SocketAddr::V4(ipv4) => Some(ipv4),
+                            SocketAddr::V6(_) => None,
                         })
                         .collect::<HashSet<_>>();
                     if !sources.is_empty() {
@@ -1167,7 +1222,7 @@ impl FixedPeerSourceResolver {
 
         self.resolved_by_endpoint
             .values()
-            .flat_map(|sources| sources.iter().copied())
+            .flat_map(|sources| sources.iter().map(|address| *address.ip()))
             .collect()
     }
 }
@@ -1454,7 +1509,7 @@ fn log_network_plan(snapshot: &DiscoveryNetworkSnapshot, plan: &DiscoverySendPla
 
 fn send_interface_announcements(
     plan: &DiscoverySendPlan,
-    message: &str,
+    announcement: &DiscoveryAnnouncement,
     metrics: &mut DiscoveryMetricsWindow,
 ) {
     let mut sockets = HashMap::<(String, Ipv4Addr), Option<UdpSocket>>::new();
@@ -1473,6 +1528,7 @@ fn send_interface_announcements(
                     }
                 }
             });
+        let message = announcement.encode_for_source(Some(target.source_ip));
         let success = socket.as_ref().is_some_and(|socket| {
             socket
                 .send_to(message.as_bytes(), target.destination)
@@ -1561,15 +1617,15 @@ async fn refresh_listener_policy(
 
 fn send_discovery_reply(
     snapshot: &DiscoveryNetworkSnapshot,
-    fixed_peer_ips: &HashSet<Ipv4Addr>,
+    explicitly_fixed: bool,
     source_ip: Ipv4Addr,
     ingress_index: Option<u32>,
     target: SocketAddr,
-    message: &[u8],
+    announcement: &DiscoveryAnnouncement,
 ) -> bool {
-    let explicitly_fixed = fixed_peer_ips.contains(&source_ip);
+    let local_ip = reply_source_ip_for_packet(snapshot, source_ip, ingress_index, explicitly_fixed);
     let socket =
-        match reply_source_ip_for_packet(snapshot, source_ip, ingress_index, explicitly_fixed) {
+        match local_ip {
             Some(local_ip) => bind_source_socket(
                 local_ip,
                 ingress_index.or_else(|| local_interface_index(snapshot, local_ip)),
@@ -1577,8 +1633,10 @@ fn send_discovery_reply(
             None if explicitly_fixed => create_discovery_socket("0.0.0.0:0"),
             None => return false,
         };
+    let advertised_source = local_ip.filter(|ip| enabled_local_ips(snapshot).contains(&ip.to_string()));
+    let message = announcement.encode_for_source(advertised_source);
     socket
-        .and_then(|socket| socket.send_to(message, target))
+        .and_then(|socket| socket.send_to(message.as_bytes(), target))
         .is_ok()
 }
 
@@ -1650,6 +1708,8 @@ async fn send_fixed_peer_announcements(
 }
 
 pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx::Sqlite>) {
+    ACTIVE_DISCOVERY_PORT.store(port, Ordering::Relaxed);
+    let mut settings_changes = discovery_policy::subscribe_settings_changes();
     use rand::Rng;
     use sysinfo::System;
 
@@ -1690,15 +1750,15 @@ pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx:
             hostname.clone(),
             mac_address.clone(),
             Some(env!("CARGO_PKG_VERSION").to_string()),
-        )
-        .encode();
+            &snapshot,
+        );
 
         let plan = discovery_policy::build_send_plan(&snapshot, port);
         send_interface_announcements(&plan, &message, &mut metrics);
         let custom_peers = crate::db::get_custom_peers(&pool).await;
         send_fixed_peer_announcements(
             &unicast_socket,
-            &message,
+            &message.encode(),
             &custom_peers,
             port,
             &mut dns_cache,
@@ -1729,7 +1789,7 @@ pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx:
                     deadline,
                     next_policy_check,
                 )) => false,
-                _ = discovery_policy::wait_for_settings_change() => true,
+                _ = settings_changes.changed() => true,
             };
             let now = Instant::now();
             if now >= deadline && !settings_changed {
@@ -1743,6 +1803,9 @@ pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx:
             let latest = read_network_snapshot(&pool, Some(&snapshot)).await;
             let latest_fingerprint = network_fingerprint(&latest);
             if settings_changed || latest_fingerprint != fingerprint {
+                if latest_fingerprint != fingerprint {
+                    crate::web_server::refresh_connections_after_network_change();
+                }
                 snapshot = latest;
                 fingerprint = latest_fingerprint;
                 update_local_ip_cache(&snapshot);
@@ -1761,7 +1824,7 @@ pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx:
             let custom_peers = crate::db::get_custom_peers(&pool).await;
             send_fixed_peer_announcements(
                 &unicast_socket,
-                &message,
+                &message.encode(),
                 &custom_peers,
                 port,
                 &mut dns_cache,
@@ -1801,6 +1864,7 @@ pub async fn start_listening(
         }
     };
 
+    let mut settings_changes = discovery_policy::subscribe_settings_changes();
     let mut buf = [0u8; 1024];
     let (hostname, mac_address) = local_device_metadata();
     let mut deduper = ReplyDeduper::new(Duration::from_secs(2));
@@ -1839,7 +1903,7 @@ pub async fn start_listening(
                 next_policy_refresh = tokio::time::Instant::now() + INTERFACE_POLL_INTERVAL;
                 continue;
             },
-            _ = discovery_policy::wait_for_settings_change() => {
+            _ = settings_changes.changed() => {
                 refresh_listener_policy(
                     &socket, &pool, port, &mut snapshot, &mut joined,
                     &mut fixed_peer_resolver, &mut fixed_peer_ips,
@@ -1871,15 +1935,10 @@ pub async fn start_listening(
                 let std::net::IpAddr::V4(source_ip) = addr.ip() else {
                     continue;
                 };
-                if !discovery_packet_allowed(&snapshot, source_ip, ingress_index, &fixed_peer_ips) {
+                if !fixed_peer_resolver.packet_allowed(&snapshot, source_ip, ingress_index, &announcement) {
                     continue;
                 }
-                if !fixed_peer_resolver.identity_allowed(source_ip, &peer_id) {
-                    eprintln!(
-                        "[UDP][security] ignored fixed-address announcement from {source_ip}: device identity did not match"
-                    );
-                    continue;
-                }
+                let explicitly_fixed = fixed_peer_resolver.matches_fixed_identity(source_ip, &peer_id);
                 let now = Instant::now();
                 if !deduper.should_accept(&peer_id, source_ip, &msg, now) {
                     metrics.record_receive(true, false);
@@ -1894,22 +1953,11 @@ pub async fn start_listening(
                 }
                 metrics.record_receive(false, false);
 
-                let observed_peer_addr = SocketAddr::new(addr.ip(), peer_port).to_string();
-                let selected = select_peer_endpoint(
-                    &peer_id,
-                    addr.ip(),
-                    peer_port,
-                    &fixed_peer_resolver.verified_endpoints_by_device_id,
-                );
-                let using_verified_override = selected.source == PeerEndpointSource::VerifiedFixed
-                    && selected.endpoint != observed_peer_addr;
-                let endpoint_changed = using_verified_override
-                    && peer_manager
-                        .get_active_peers()
-                        .into_iter()
-                        .find(|peer| peer.id == peer_id)
-                        .is_none_or(|peer| peer.addr != selected.endpoint);
-                let peer_addr = selected.endpoint;
+                // Keep the fixed endpoint as a candidate; it must not suppress a new LAN address.
+                if let Some(endpoint) = fixed_peer_resolver.verified_endpoints_by_device_id.get(&peer_id) {
+                    peer_manager.connections.observe(&peer_id, endpoint);
+                }
+                let peer_addr = announcement.observe_addresses(&peer_manager, source_ip);
 
                 let is_new_or_reconnected = peer_manager.add_or_update_with_details(
                     peer_id.clone(),
@@ -1924,13 +1972,11 @@ pub async fn start_listening(
                     announcement.has_authoritative_metadata(),
                 );
 
-                if using_verified_override && (is_new_or_reconnected || endpoint_changed) {
-                    eprintln!(
-                        "[UDP][endpoint] peer {peer_id}: observed {observed_peer_addr}, using verified {peer_addr}"
-                    );
-                }
-
-                // 保存或更新用户到数据库
+                // Serialize only the database commit, never the network probe, with address validation.
+                let Some(persist_guard) = peer_manager.connections.persistence_guard(&peer_id).await else {
+                    continue;
+                };
+                let peer_addr = peer_manager.connection_snapshot(&peer_id).map(|status| status.address).unwrap_or(peer_addr);
                 let _ = crate::db::save_or_update_discovered_user(
                     &pool,
                     &peer_id,
@@ -1944,6 +1990,8 @@ pub async fn start_listening(
                     announcement.has_authoritative_metadata(),
                 )
                 .await;
+                drop(persist_guard);
+                super::peer_connection::schedule_validation(&pool, &peer_manager, &peer_id);
 
                 // 只在新用户或重新上线时打印日志
                 if is_new_or_reconnected {
@@ -1964,12 +2012,17 @@ pub async fn start_listening(
 
                     let pool_clone = pool.clone();
                     let peer_id_clone = peer_id.clone();
-                    let peer_addr_clone = peer_addr.clone();
                     let app_clone = app.clone();
                     let peer_manager_clone = peer_manager.clone();
 
                     // 扔进后台线程执行，不要阻挡 UDP 监听其他用户的广播！
                     tokio::spawn(async move {
+                        let peer_addr_clone = match super::peer_connection::ensure_peer_connection(
+                            &pool_clone, &peer_manager_clone, &peer_id_clone,
+                        ).await {
+                            Ok(address) => address,
+                            Err(_) => return,
+                        };
                         if let Err(e) = crate::network::messaging::resend_pending_messages(
                             &pool_clone,
                             &peer_id_clone,
@@ -2024,16 +2077,16 @@ pub async fn start_listening(
                         hostname.clone(),
                         mac_address.clone(),
                         Some(env!("CARGO_PKG_VERSION").to_string()),
-                    )
-                    .encode();
+                        &snapshot,
+                    );
                     let target = SocketAddr::new(addr.ip(), peer_port);
                     if send_discovery_reply(
                         &snapshot,
-                        &fixed_peer_ips,
+                        explicitly_fixed,
                         source_ip,
                         ingress_index,
                         target,
-                        reply.as_bytes(),
+                        &reply,
                     ) {
                         metrics.record_reply();
                     }
@@ -2068,6 +2121,7 @@ pub async fn start_listening(
         }
     };
 
+    let mut settings_changes = discovery_policy::subscribe_settings_changes();
     let mut buf = [0u8; 1024];
     let (hostname, mac_address) = local_device_metadata();
     let mut deduper = ReplyDeduper::new(Duration::from_secs(2));
@@ -2104,7 +2158,7 @@ pub async fn start_listening(
                 next_policy_refresh = tokio::time::Instant::now() + INTERFACE_POLL_INTERVAL;
                 continue;
             },
-            _ = discovery_policy::wait_for_settings_change() => {
+            _ = settings_changes.changed() => {
                 refresh_listener_policy(
                     &socket, &pool, port, &mut snapshot, &mut joined,
                     &mut fixed_peer_resolver, &mut fixed_peer_ips,
@@ -2135,15 +2189,10 @@ pub async fn start_listening(
                 let std::net::IpAddr::V4(source_ip) = addr.ip() else {
                     continue;
                 };
-                if !discovery_packet_allowed(&snapshot, source_ip, ingress_index, &fixed_peer_ips) {
+                if !fixed_peer_resolver.packet_allowed(&snapshot, source_ip, ingress_index, &announcement) {
                     continue;
                 }
-                if !fixed_peer_resolver.identity_allowed(source_ip, &peer_id) {
-                    eprintln!(
-                        "[UDP][security] ignored fixed-address announcement from {source_ip}: device identity did not match"
-                    );
-                    continue;
-                }
+                let explicitly_fixed = fixed_peer_resolver.matches_fixed_identity(source_ip, &peer_id);
                 let now = Instant::now();
                 if !deduper.should_accept(&peer_id, source_ip, &msg, now) {
                     metrics.record_receive(true, false);
@@ -2157,22 +2206,11 @@ pub async fn start_listening(
                     continue;
                 }
                 metrics.record_receive(false, false);
-                let observed_peer_addr = SocketAddr::new(addr.ip(), peer_port).to_string();
-                let selected = select_peer_endpoint(
-                    &peer_id,
-                    addr.ip(),
-                    peer_port,
-                    &fixed_peer_resolver.verified_endpoints_by_device_id,
-                );
-                let using_verified_override = selected.source == PeerEndpointSource::VerifiedFixed
-                    && selected.endpoint != observed_peer_addr;
-                let endpoint_changed = using_verified_override
-                    && peer_manager
-                        .get_active_peers()
-                        .into_iter()
-                        .find(|peer| peer.id == peer_id)
-                        .is_none_or(|peer| peer.addr != selected.endpoint);
-                let peer_addr = selected.endpoint;
+                // Keep the fixed endpoint as a candidate; it must not suppress a new LAN address.
+                if let Some(endpoint) = fixed_peer_resolver.verified_endpoints_by_device_id.get(&peer_id) {
+                    peer_manager.connections.observe(&peer_id, endpoint);
+                }
+                let peer_addr = announcement.observe_addresses(&peer_manager, source_ip);
 
                 let is_new_or_reconnected = peer_manager.add_or_update_with_details(
                     peer_id.clone(),
@@ -2187,13 +2225,11 @@ pub async fn start_listening(
                     announcement.has_authoritative_metadata(),
                 );
 
-                if using_verified_override && (is_new_or_reconnected || endpoint_changed) {
-                    eprintln!(
-                        "[UDP][endpoint] peer {peer_id}: observed {observed_peer_addr}, using verified {peer_addr}"
-                    );
-                }
-
-                // 保存或更新用户到数据库
+                // Serialize only the database commit, never the network probe, with address validation.
+                let Some(persist_guard) = peer_manager.connections.persistence_guard(&peer_id).await else {
+                    continue;
+                };
+                let peer_addr = peer_manager.connection_snapshot(&peer_id).map(|status| status.address).unwrap_or(peer_addr);
                 let _ = crate::db::save_or_update_discovered_user(
                     &pool,
                     &peer_id,
@@ -2207,17 +2243,24 @@ pub async fn start_listening(
                     announcement.has_authoritative_metadata(),
                 )
                 .await;
+                drop(persist_guard);
+                super::peer_connection::schedule_validation(&pool, &peer_manager, &peer_id);
 
                 // 用户重新上线，补发挂起的消息
                 if is_new_or_reconnected {
                     println!("[UDP] 发现用户或重新上线，准备检查补发队列...");
                     let pool_clone = pool.clone();
                     let peer_id_clone = peer_id.clone();
-                    let peer_addr_clone = peer_addr.clone();
                     let peer_manager_clone = peer_manager.clone();
 
                     // 扔进后台线程执行，不要阻挡 UDP 监听其他用户的广播！
                     tokio::spawn(async move {
+                        let peer_addr_clone = match super::peer_connection::ensure_peer_connection(
+                            &pool_clone, &peer_manager_clone, &peer_id_clone,
+                        ).await {
+                            Ok(address) => address,
+                            Err(_) => return,
+                        };
                         if let Err(e) = crate::network::messaging::resend_pending_messages(
                             &pool_clone,
                             &peer_id_clone,
@@ -2256,16 +2299,16 @@ pub async fn start_listening(
                         hostname.clone(),
                         mac_address.clone(),
                         Some(env!("CARGO_PKG_VERSION").to_string()),
-                    )
-                    .encode();
+                        &snapshot,
+                    );
                     let target = SocketAddr::new(addr.ip(), peer_port);
                     if send_discovery_reply(
                         &snapshot,
-                        &fixed_peer_ips,
+                        explicitly_fixed,
                         source_ip,
                         ingress_index,
                         target,
-                        reply.as_bytes(),
+                        &reply,
                     ) {
                         metrics.record_reply();
                     }
@@ -2290,10 +2333,8 @@ const OFFLINE_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 /// 主动扫描超时未见的用户并广播离线事件。
 /// 必须独立于前端轮询运行：`is_offline` 是补发链路的触发条件，
 /// 不能依赖界面是否恰好在拉数据。
-/// 每隔多少次扫描顺带清一次在线用户的待发队列（2 秒一拍，约 30 秒）。
-/// 补发本来只靠「离线→上线」跳变触发，跳变一旦错过消息就永久卡住；
-/// 这条兜底保证队列最终一定会被清掉。
-const RESEND_SWEEP_TICKS: u32 = 15;
+/// Wake the durable scheduler every two seconds; each recipient controls its own retry deadline.
+const RESEND_SWEEP_TICKS: u32 = 1;
 
 /// 扫描一轮：把超时未见的用户标离线，并周期性重试在线用户的待发队列
 async fn offline_scan_tick(
@@ -2310,13 +2351,19 @@ async fn offline_scan_tick(
         }
     }
 
+    // Each peer has an outbox lease/guard. Network waits must never block presence scans.
     if tick % RESEND_SWEEP_TICKS == 0 {
-        for peer in peer_manager.get_active_peers() {
-            if let Err(error) =
-                crate::workspace::resend_for_peer(pool, peer_manager, &peer.id, &peer.addr).await
-            {
-                eprintln!("[UDP] 队列兜底补发失败 {}: {error}", peer.id);
+        for peer in peer_manager.get_all_peers() {
+            if !peer.is_offline {
+                super::peer_connection::schedule_validation(pool, peer_manager, &peer.id);
             }
+            let pool = pool.clone();
+            let manager = peer_manager.clone();
+            tokio::spawn(async move {
+                if let Err(error) = crate::workspace::resend_for_peer(&pool, &manager, &peer.id, &peer.addr).await {
+                    eprintln!("[UDP] 队列补发失败 {}: {error}", peer.id);
+                }
+            });
         }
     }
 
@@ -2378,6 +2425,7 @@ pub async fn send_single_broadcast(
     username: String,
 ) -> Result<(), String> {
     let (hostname, mac_address) = local_device_metadata();
+    let snapshot = read_default_network_snapshot();
     let msg = local_announcement(
         user_id,
         username,
@@ -2387,9 +2435,8 @@ pub async fn send_single_broadcast(
         hostname,
         mac_address,
         Some(env!("CARGO_PKG_VERSION").to_string()),
-    )
-    .encode();
-    let snapshot = read_default_network_snapshot();
+        &snapshot,
+    );
     let plan = discovery_policy::build_send_plan(&snapshot, port);
     let mut metrics = DiscoveryMetricsWindow::new(Instant::now());
     send_interface_announcements(&plan, &msg, &mut metrics);
@@ -2403,8 +2450,8 @@ mod tests {
 
     #[test]
     fn fixed_peer_source_requires_the_bound_device_identity() {
-        let fixed_source = Ipv4Addr::new(192, 168, 10, 22);
-        let ordinary_lan_source = Ipv4Addr::new(192, 168, 10, 111);
+        let fixed_source = SocketAddrV4::new(Ipv4Addr::new(192, 168, 10, 22), 18891);
+        let ordinary_lan_source = SocketAddrV4::new(Ipv4Addr::new(192, 168, 10, 111), 8888);
         let expected_ids =
             HashMap::from([(fixed_source, HashSet::from(["device-zhangsan".to_string()]))]);
 
@@ -2423,79 +2470,46 @@ mod tests {
             ordinary_lan_source,
             "device-lisi"
         ));
-    }
-
-    #[test]
-    fn peer_endpoint_prefers_verified_endpoint_over_nat_source() {
-        let verified_endpoints = HashMap::from([(
-            "peer-20".to_string(),
-            "192.168.20.105:8888".to_string(),
-        )]);
-
-        let selected = select_peer_endpoint(
-            "peer-20",
-            "192.168.10.120".parse().unwrap(),
-            8888,
-            &verified_endpoints,
+        // A fixed diagnostic instance must not claim every service on this IP.
+        assert!(fixed_peer_identity_allowed(
+            &expected_ids,
+            SocketAddrV4::new(*fixed_source.ip(), 8888),
+            "device-lisi"
+        ));
+        let mut resolver = FixedPeerSourceResolver {
+            expected_ids_by_source: expected_ids,
+            ..Default::default()
+        };
+        let mut announcement = DiscoveryAnnouncement::parse(
+            "LANChat|ONLINE|device-lisi|Desktop|8888|0",
+        ).unwrap().unwrap();
+        let enabled = listener_test_snapshot();
+        let disabled = fail_closed_network_snapshot();
+        assert!(resolver.packet_allowed(&enabled, *fixed_source.ip(), Some(14), &announcement));
+        assert!(!resolver.packet_allowed(&disabled, *fixed_source.ip(), Some(14), &announcement));
+        // A positively matched UUID retains the fixed-address exception, even
+        // with an external mapped port that differs from its advertised port.
+        announcement.peer_id = "device-zhangsan".into();
+        assert!(resolver.packet_allowed(&disabled, *fixed_source.ip(), Some(14), &announcement));
+        announcement.port = fixed_source.port();
+        announcement.peer_id = "device-lisi".into();
+        assert!(!resolver.packet_allowed(&enabled, *fixed_source.ip(), Some(14), &announcement));
+        // Two mapped services may advertise the same internal port. Keep the
+        // positively bound instance discoverable; WS validation selects its endpoint.
+        resolver.expected_ids_by_source.insert(
+            SocketAddrV4::new(*fixed_source.ip(), 8888),
+            HashSet::from(["another-bound-device".into()]),
         );
-
-        assert_eq!(selected.endpoint, "192.168.20.105:8888");
-        assert_eq!(selected.source, PeerEndpointSource::VerifiedFixed);
+        announcement.port = 8888;
+        announcement.peer_id = "device-zhangsan".into();
+        assert!(resolver.packet_allowed(&disabled, *fixed_source.ip(), Some(14), &announcement));
     }
 
     #[test]
-    fn peer_endpoint_uses_observed_source_without_verified_endpoint() {
-        let selected = select_peer_endpoint(
-            "peer-lan",
-            "192.168.20.106".parse().unwrap(),
-            8888,
-            &HashMap::new(),
-        );
-
-        assert_eq!(selected.endpoint, "192.168.20.106:8888");
-        assert_eq!(selected.source, PeerEndpointSource::ObservedUdp);
-    }
-
-    #[test]
-    fn peer_endpoint_does_not_reuse_another_devices_verified_endpoint() {
-        let verified_endpoints = HashMap::from([(
-            "peer-a".to_string(),
-            "192.168.20.105:8888".to_string(),
-        )]);
-
-        let selected = select_peer_endpoint(
-            "peer-b",
-            "192.168.20.106".parse().unwrap(),
-            8888,
-            &verified_endpoints,
-        );
-
-        assert_eq!(selected.endpoint, "192.168.20.106:8888");
-        assert_eq!(selected.source, PeerEndpointSource::ObservedUdp);
-    }
-
-    #[test]
-    fn peer_endpoint_preserves_verified_port() {
-        let verified_endpoints = HashMap::from([(
-            "peer-20".to_string(),
-            "192.168.20.105:18888".to_string(),
-        )]);
-
-        let selected = select_peer_endpoint(
-            "peer-20",
-            "192.168.10.120".parse().unwrap(),
-            8888,
-            &verified_endpoints,
-        );
-
-        assert_eq!(selected.endpoint, "192.168.20.105:18888");
-    }
-
-    #[test]
-    fn peer_endpoint_falls_back_after_verified_record_is_removed() {
+    fn removed_fixed_records_stop_contributing_discovery_candidates() {
         let mut resolver = FixedPeerSourceResolver::default();
         resolver.bind_verified_identities(&[crate::db::CustomPeerRecord {
-            endpoint: "192.168.20.105:8888".into(),
+            endpoint: "192.168.20.105:18888".into(),
             device_id: Some("peer-20".into()),
             name: None,
             hostname: None,
@@ -2503,29 +2517,10 @@ mod tests {
             app_version: None,
             last_verified_at: Some(20),
         }]);
-        assert_eq!(
-            select_peer_endpoint(
-                "peer-20",
-                "192.168.10.120".parse().unwrap(),
-                8888,
-                &resolver.verified_endpoints_by_device_id,
-            )
-            .endpoint,
-            "192.168.20.105:8888",
-        );
-
+        assert_eq!(resolver.verified_endpoints_by_device_id.get("peer-20").map(String::as_str), Some("192.168.20.105:18888"));
+        assert!(!resolver.verified_endpoints_by_device_id.contains_key("peer-other"));
         resolver.bind_verified_identities(&[]);
-
-        assert_eq!(
-            select_peer_endpoint(
-                "peer-20",
-                "192.168.10.120".parse().unwrap(),
-                8888,
-                &resolver.verified_endpoints_by_device_id,
-            )
-            .endpoint,
-            "192.168.10.120:8888",
-        );
+        assert!(resolver.verified_endpoints_by_device_id.is_empty());
     }
 
     #[test]
@@ -2842,7 +2837,7 @@ mod tests {
         let mut resolver = FixedPeerSourceResolver::default();
         resolver
             .resolved_by_endpoint
-            .insert(endpoint.clone(), HashSet::from([expected]));
+            .insert(endpoint.clone(), HashSet::from([SocketAddrV4::new(expected, 8888)]));
 
         let sources = resolver.refresh(&[endpoint], 8888).await;
 
@@ -2856,7 +2851,7 @@ mod tests {
         let mut resolver = FixedPeerSourceResolver::default();
         resolver.resolved_by_endpoint.insert(
             endpoint.clone(),
-            HashSet::from([Ipv4Addr::new(100, 64, 0, 8)]),
+            HashSet::from([SocketAddrV4::new(Ipv4Addr::new(100, 64, 0, 8), 8888)]),
         );
         resolver.retry_states.insert(
             endpoint,
@@ -2978,11 +2973,11 @@ mod tests {
             "扫描间隔 {scan}s 相对离线超时 {timeout}s 太粗，感知会明显滞后"
         );
 
-        // 兜底补发是网络开销，不能因为扫描变快就跟着变频繁；保持 30 秒左右
+        // 扫描只领取已到期的持久队列；实际网络重试由每条消息的退避和租约限频。
         let sweep = scan * u64::from(RESEND_SWEEP_TICKS);
         assert!(
-            (20..=40).contains(&sweep),
-            "队列兜底补发间隔 {sweep}s 偏离预期的 30 秒"
+            (1..=2).contains(&sweep),
+            "到期队列扫描间隔 {sweep}s 会延迟断线恢复"
         );
     }
 
@@ -2994,6 +2989,7 @@ mod tests {
         assert!(!announce.is_reply);
         assert_eq!(announce.protocol_version, 1);
         assert!(announce.capabilities.is_empty());
+        assert!(announce.addresses.is_empty());
 
         let reply = DiscoveryAnnouncement::parse("LANChat|ONLINE|peer-1|Alice|8888|0|1")
             .unwrap()
@@ -3016,6 +3012,7 @@ mod tests {
             mac_address: Some("01:02:03:04:05:06".into()),
             capabilities: vec!["group_chat".into(), "receipts".into()],
             app_version: Some("0.1.5".into()),
+            addresses: vec![Ipv4Addr::new(192, 168, 20, 106)],
         };
 
         let encoded = announcement.encode();
@@ -3027,6 +3024,37 @@ mod tests {
     }
 
     #[test]
+    fn discovery_address_hints_are_bounded_and_do_not_replace_the_active_address() {
+        let announcement = DiscoveryAnnouncement::parse(concat!(
+            "LANChat|ONLINE|phone|OnePlus 6|8888|0|0|2|||receipts|0.1.6|",
+            "http://example.com,0.0.0.0,127.0.0.1,224.0.0.1,255.255.255.255,",
+            "192.168.20.106,192.168.20.106,192.168.20.107:9999,",
+            "10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4",
+        )).unwrap().unwrap();
+        assert_eq!(announcement.addresses, vec![
+            Ipv4Addr::new(192, 168, 20, 106),
+            Ipv4Addr::new(10, 0, 0, 1),
+            Ipv4Addr::new(10, 0, 0, 2),
+            Ipv4Addr::new(10, 0, 0, 3),
+        ]);
+        let manager = PeerManager::new();
+        let source = Ipv4Addr::new(192, 168, 10, 120);
+        assert_eq!(announcement.observe_addresses(&manager, source), "192.168.10.120:8888");
+        assert_eq!(manager.connection_snapshot("phone").unwrap().address, "192.168.10.120:8888");
+        let local = local_announcement(
+            "desktop".into(), "Desktop".into(), 8888, 0, false,
+            None, None, None, &listener_test_snapshot(),
+        );
+        assert_eq!(local.addresses, vec![Ipv4Addr::new(192, 168, 10, 152)]);
+        // The sending interface must survive the four-address wire budget.
+        let egress = Ipv4Addr::new(192, 168, 99, 9);
+        let encoded = announcement.encode_for_source(Some(egress));
+        let decoded = DiscoveryAnnouncement::parse(&encoded).unwrap().unwrap();
+        assert_eq!(decoded.addresses.len(), MAX_ADVERTISED_ADDRESSES);
+        assert_eq!(decoded.addresses[0], egress);
+    }
+
+    #[test]
     fn app_version_round_trips_and_defaults_to_none() {
         let with_version = DiscoveryAnnouncement::parse(
             "LANChat|ONLINE|peer-1|Alice|8888|512|0|2|alice-mac|01:02:03:04:05:06|group_chat|0.1.5",
@@ -3034,7 +3062,8 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(with_version.app_version.as_deref(), Some("0.1.5"));
-        assert_eq!(with_version.encode().split('|').count(), 12);
+        assert_eq!(with_version.encode().split('|').count(), 13);
+        assert!(with_version.addresses.is_empty());
 
         let legacy = DiscoveryAnnouncement::parse(
             "LANChat|ONLINE|peer-1|Alice|8888|512|0|2|alice-mac|01:02:03:04:05:06|group_chat",

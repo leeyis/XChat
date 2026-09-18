@@ -19,6 +19,23 @@ use std::{
 
 // ponytail: text sends are rare; shard this lock by client_message_id if throughput matters.
 static MESSAGE_WRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static DELIVERY_NETWORK_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+static RESEND_NETWORK_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+const CONTROL_RESEND_BUDGET: std::time::Duration = std::time::Duration::from_secs(4);
+static RESEND_PEERS: std::sync::LazyLock<std::sync::Mutex<BTreeSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(BTreeSet::new()));
+static GROUP_SYNC_TIMES: std::sync::LazyLock<std::sync::Mutex<HashMap<String, i64>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+struct ResendPeerGuard(String);
+
+impl Drop for ResendPeerGuard {
+    fn drop(&mut self) {
+        if let Ok(mut active) = RESEND_PEERS.lock() {
+            active.remove(&self.0);
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,7 +64,7 @@ impl RuntimeCapabilities {
         Self {
             capture,
             capture_shortcut: capture,
-            reveal_file: cfg!(all(feature = "desktop", not(target_os = "android"))),
+            reveal_file: cfg!(all(feature = "desktop", not(target_os = "ios"))),
             notifications: notifications_available(),
             group_chat: true,
             read_receipts: true,
@@ -103,6 +120,7 @@ pub struct WorkspaceDevice {
     pub available_memory_mb: i64,
     pub capabilities: Vec<String>,
     pub app_version: Option<String>,
+    pub connection: Option<crate::peers::PeerConnectionStatus>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -151,6 +169,9 @@ pub struct WorkspaceMessage {
     pub recipient_count: usize,
     pub mention_ids: Vec<String>,
     pub reactions: Vec<WorkspaceReaction>,
+    pub delivery_state: Option<String>,
+    pub delivery_error: Option<String>,
+    pub next_retry_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -224,6 +245,7 @@ fn device_from_peer(peer: Peer) -> WorkspaceDevice {
         available_memory_mb: peer.available_memory_mb as i64,
         capabilities: peer.capabilities,
         app_version: peer.app_version,
+        connection: None,
     }
 }
 
@@ -252,6 +274,7 @@ async fn devices(
                 available_memory_mb: user.available_memory_mb,
                 capabilities: Vec::new(),
                 app_version: user.app_version,
+                connection: None,
             },
         );
     }
@@ -272,7 +295,13 @@ async fn devices(
         }
         merged.insert(device.id.clone(), device);
     }
-    Ok(merged.into_values().collect())
+    Ok(merged
+        .into_values()
+        .map(|mut device| {
+            device.connection = peer_manager.connection_snapshot(&device.id);
+            device
+        })
+        .collect())
 }
 
 async fn names_and_addresses(
@@ -352,6 +381,60 @@ async fn message_view(
     }
     let is_file = message.msg_type == "file";
     let local_available = is_file && trusted_file_path(pool, message.id).await.is_ok();
+    let mut delivery_state = None;
+    let mut delivery_error = None;
+    let mut next_retry_at = None;
+    if own
+        && matches!(message.msg_type.as_str(), "text" | "quote" | "announcement")
+        && status != "recalled"
+    {
+        let attempts = match message.client_message_id.as_deref() {
+            Some(id) => db::get_message_delivery_attempts(pool, id).await?,
+            None => Vec::new(),
+        };
+        let pending = attempts
+            .iter()
+            .filter(|attempt| {
+                receipts.iter().any(|receipt| {
+                    receipt.reader_id == attempt.reader_id
+                        && receipt.delivered_at.is_none()
+                        && receipt.read_at.is_none()
+                })
+            })
+            .collect::<Vec<_>>();
+        let state = if matches!(status.as_str(), "delivered" | "read") {
+            status.as_str()
+        } else if pending
+            .iter()
+            .any(|attempt| attempt.lease_until > now() && attempt.state == "sending")
+        {
+            "sending"
+        } else if pending
+            .iter()
+            .any(|attempt| attempt.lease_until > now() && attempt.state == "awaiting_ack")
+        {
+            "awaiting_ack"
+        } else if status == "sent"
+            || pending
+                .iter()
+                .any(|attempt| attempt.last_written_at.is_some())
+        {
+            "unconfirmed"
+        } else {
+            "waiting_connection"
+        };
+        if !matches!(state, "delivered" | "read") {
+            delivery_error = pending
+                .iter()
+                .find_map(|attempt| attempt.last_error.clone());
+            next_retry_at = pending
+                .iter()
+                .map(|attempt| attempt.next_retry_at)
+                .filter(|timestamp| *timestamp > 0)
+                .min();
+        }
+        delivery_state = Some(state.to_string());
+    }
     Ok(WorkspaceMessage {
         id: message.id,
         message_id: message.id,
@@ -383,6 +466,9 @@ async fn message_view(
         recipient_count,
         mention_ids,
         reactions,
+        delivery_state,
+        delivery_error,
+        next_retry_at,
     })
 }
 
@@ -1025,16 +1111,141 @@ async fn send_message_control(
     Ok(reaction.map(|(_, active)| active))
 }
 
-/// 消息落库时的初始状态。
-/// 单聊先落 pending，等后台真的发出去再升到 sent —— 状态阶梯不允许 sent 退回 pending，
-/// 所以只能先低后高，否则「已发送」在对方收不到时也照样显示。
-/// 群聊维持原状：多收件人下 sent 表示已进网络，单个成员的送达由 message_receipts 单独追踪。
-fn initial_send_status(kind: &str, no_one_online: bool) -> &'static str {
-    if kind == "group" && !no_one_online {
-        "sent"
-    } else {
-        "pending"
+/// Neither direct nor group messages are sent until an actual payload was written.
+fn initial_send_status(_kind: &str, _no_one_online: bool) -> &'static str {
+    "pending"
+}
+
+async fn deliver_stored_message(
+    pool: &Pool<Sqlite>,
+    peer_manager: &PeerManager,
+    peer_id: &str,
+    client_message_id: &str,
+    force: bool,
+) -> Result<(), String> {
+    let _slot = DELIVERY_NETWORK_SLOTS
+        .acquire()
+        .await
+        .map_err(|error| error.to_string())?;
+    let self_id = db::get_user_id(pool).await?;
+    let Some(message) = db::get_message_by_client_id(pool, client_message_id).await? else {
+        return Ok(());
+    };
+    if (message.sender_id != self_id && message.sender_id != "me")
+        || !matches!(message.msg_type.as_str(), "text" | "quote" | "announcement")
+    {
+        return Ok(());
     }
+    let Some(conversation_id) = message.conversation_id.as_deref() else {
+        return Ok(());
+    };
+    let Some(conversation) = db::get_conversation(pool, conversation_id).await? else {
+        return Ok(());
+    };
+    let Some(attempt) = db::claim_message_delivery(pool, client_message_id, peer_id, force).await?
+    else {
+        return Ok(());
+    };
+    crate::web_server::notify_message_delivery_changed(conversation_id, client_message_id);
+    let result = async {
+        let address =
+            crate::network::peer_connection::ensure_peer_connection(pool, peer_manager, peer_id)
+                .await?;
+        let self_name = db::get_username(pool).await?;
+        let (prerequisite, outgoing) = if conversation.kind == "group" {
+            let members = db::get_conversation_members(pool, conversation_id).await?;
+            let mention_ids = db::get_message_receipts(pool, client_message_id)
+                .await?
+                .into_iter()
+                .filter(|receipt| receipt.mentioned)
+                .map(|receipt| receipt.reader_id)
+                .collect();
+            (
+                Some(
+                    serde_json::to_string(&group_sync_message(&conversation, &members))
+                        .map_err(|error| error.to_string())?,
+                ),
+                serde_json::to_string(&ProtocolMessage::GroupMessage {
+                    group_id: conversation_id.to_string(),
+                    client_message_id: client_message_id.to_string(),
+                    from_id: self_id.clone(),
+                    from_name: self_name,
+                    content: message.content.clone(),
+                    content_type: message.msg_type.clone(),
+                    mention_ids,
+                    timestamp: message.timestamp.max(0) as u64,
+                })
+                .map_err(|error| error.to_string())?,
+            )
+        } else {
+            (
+                None,
+                serde_json::to_string(&messaging::TextMessage {
+                    msg_type: message.msg_type.clone(),
+                    from_id: self_id.clone(),
+                    from_name: self_name,
+                    content: message.content.clone(),
+                    timestamp: message.timestamp.max(0) as u64,
+                    conversation_id: Some(conversation_id.to_string()),
+                    client_message_id: Some(client_message_id.to_string()),
+                })
+                .map_err(|error| error.to_string())?,
+            )
+        };
+        let connection = match messaging::write_delivery_message(
+            &address,
+            peer_id,
+            prerequisite.as_deref(),
+            &outgoing,
+        )
+        .await
+        {
+            Ok(connection) => connection,
+            Err(error) => {
+                crate::network::peer_connection::invalidate_peer_connection(
+                    peer_manager,
+                    peer_id,
+                    &error,
+                );
+                return Err(error);
+            }
+        };
+        db::mark_delivery_written(pool, &attempt).await?;
+        crate::web_server::notify_message_delivery_changed(conversation_id, client_message_id);
+        let ack = connection
+            .wait_for_ack(conversation_id, client_message_id)
+            .await?;
+        let acknowledged_at = if ack.timestamp > 0 {
+            ack.timestamp
+        } else {
+            now()
+        };
+        db::save_message_receipt(
+            pool,
+            client_message_id,
+            peer_id,
+            Some(acknowledged_at),
+            ack.read.then_some(acknowledged_at),
+        )
+        .await?;
+        let receipts = db::get_message_receipts(pool, client_message_id).await?;
+        if receipts.iter().all(|receipt| receipt.read_at.is_some()) {
+            db::mark_message_status_by_client_id(pool, client_message_id, "read").await?;
+        } else if receipts
+            .iter()
+            .all(|receipt| receipt.delivered_at.is_some())
+        {
+            db::mark_message_status_by_client_id(pool, client_message_id, "delivered").await?;
+        }
+        // Preserve the normal desktop/web event path; persistence above also works without
+        // a globally registered HTTP server (isolated runtimes and tests).
+        crate::web_server::dispatch_reply_frame(&ack.raw).await;
+        Ok::<(), String>(())
+    }
+    .await;
+    db::finish_message_delivery(pool, &attempt, result.as_ref().err().map(String::as_str)).await?;
+    crate::web_server::notify_message_delivery_changed(conversation_id, client_message_id);
+    result
 }
 
 pub async fn send_message(
@@ -1062,7 +1273,7 @@ pub async fn send_message(
     let self_id = db::get_user_id(pool).await?;
     let self_name = db::get_username(pool).await?;
     let peers = peer_map(peer_manager);
-    let (recipients, members) = if conversation.kind == "group" {
+    let (recipients, _members) = if conversation.kind == "group" {
         let members = db::get_conversation_members(pool, conversation_id).await?;
         let recipients = members
             .iter()
@@ -1128,83 +1339,23 @@ pub async fn send_message(
     }
     drop(write_guard);
 
-    if is_new && conversation.kind == "group" {
-        let sync = group_sync_message(&conversation, members.as_deref().unwrap_or_default());
-        for peer in online {
-            let addr = peer.addr;
-            let expected_peer_id = peer.id;
-            let sync = sync.clone();
-            let outgoing = ProtocolMessage::GroupMessage {
-                group_id: conversation_id.to_string(),
-                client_message_id: client_message_id.to_string(),
-                from_id: self_id.clone(),
-                from_name: self_name.clone(),
-                content: content.to_string(),
-                content_type: msg_type.to_string(),
-                mention_ids: mention_ids.clone(),
-                timestamp: message.timestamp as u64,
-            };
-            tokio::spawn(async move {
-                let _ = crate::network::protocol::send_protocol_message(
-                    &addr,
-                    &expected_peer_id,
-                    &sync,
-                )
-                .await;
-                if let Err(error) = crate::network::protocol::send_protocol_message(
-                    &addr,
-                    &expected_peer_id,
-                    &outgoing,
-                )
-                .await
-                {
-                    eprintln!("[Workspace] 群消息发送失败: {error}");
-                }
-            });
+    // Reusing an existing ID is a manual retry, not a second message. Atomic recipient
+    // leases also deduplicate simultaneous API requests and the background sweep.
+    for peer_id in recipients {
+        if is_new && !peers.contains_key(&peer_id) {
+            continue;
         }
-    } else if is_new {
-        if let Some(peer) = online.into_iter().next() {
-            let conversation_id = conversation_id.to_string();
-            let client_message_id = client_message_id.to_string();
-            let content = content.to_string();
-            let msg_type = msg_type.to_string();
-            let sender_id = self_id.clone();
-            let sender_name = self_name.clone();
-            let pool = pool.clone();
-            let peer_manager = peer_manager.clone();
-            tokio::spawn(async move {
-                // 发完在这条连接上等一小会对端的送达回执：对端是否回送取决于它能否
-                // 反向连回本机，等满即结束，不会让发送卡住。
-                match messaging::send_direct_message_expecting_reply(
-                    &peer.addr,
-                    &peer.id,
-                    sender_id,
-                    sender_name,
-                    conversation_id,
-                    client_message_id.clone(),
-                    content,
-                    msg_type,
-                )
-                .await
-                {
-                    // 只有真的发出去了才升到 sent，界面上的「已发送」从此有实际含义
-                    Ok(()) => {
-                        if let Err(error) =
-                            db::mark_message_status_by_client_id(&pool, &client_message_id, "sent")
-                                .await
-                        {
-                            eprintln!("[Workspace] 回写 sent 失败: {error}");
-                        }
-                    }
-                    Err(error) => {
-                        eprintln!("[Workspace] 单聊消息发送失败: {error}");
-                        // 立刻判对方离线：补发靠「离线→上线」跳变触发，
-                        // 不标记的话对方回来时不会走补发分支，消息就永久卡住了。
-                        peer_manager.force_mark_offline(&peer.id);
-                    }
-                }
-            });
-        }
+        let client_message_id = client_message_id.to_string();
+        let pool = pool.clone();
+        let peer_manager = peer_manager.clone();
+        tokio::spawn(async move {
+            if let Err(error) =
+                deliver_stored_message(&pool, &peer_manager, &peer_id, &client_message_id, !is_new)
+                    .await
+            {
+                eprintln!("[Workspace] 消息投递未确认 {client_message_id} -> {peer_id}: {error}");
+            }
+        });
     }
 
     let (names, addresses) = names_and_addresses(pool, peer_manager, &self_id, &self_name).await?;
@@ -1391,151 +1542,137 @@ pub async fn resend_for_peer(
     peer_addr: &str,
 ) -> Result<(), String> {
     let self_id = db::get_user_id(pool).await?;
-    let self_name = db::get_username(pool).await?;
-    // 下面每一段都逐条容错：任何一条发失败都不能 `?` 早退，
-    // 否则排在后面的待发消息会被一条失败的群同步整段跳过。
-    for group in db::list_groups_for_member(pool, peer_id).await? {
-        let members = db::get_conversation_members(pool, &group.id).await?;
-        if let Err(error) = crate::network::protocol::send_protocol_message(
-            peer_addr,
-            peer_id,
-            &group_sync_message(&group, &members),
-        )
-        .await
-        {
-            eprintln!("[Workspace] 群同步补发失败 {}: {error}", group.id);
+    let key = format!("{self_id}:{peer_id}");
+    {
+        let mut active = RESEND_PEERS.lock().map_err(|error| error.to_string())?;
+        if !active.insert(key.clone()) {
+            return Ok(());
         }
     }
-    for pending in db::get_pending_recalls_for_peer(pool, peer_id).await? {
-        match crate::network::protocol::send_protocol_message(
-            peer_addr,
-            peer_id,
-            &ProtocolMessage::MessageRecall {
-                conversation_id: pending.conversation_id,
-                client_message_id: pending.message_client_id.clone(),
-                from_id: pending.sender_id,
-                timestamp: pending.recall_requested_at.max(0) as u64,
-            },
-        )
-        .await
-        {
-            // 只有确认发出去了才记 sent，失败的下次上线再试
-            Ok(()) => db::mark_recall_sent(pool, &pending.message_client_id, peer_id).await?,
-            Err(error) => {
-                eprintln!(
-                    "[Workspace] 撤回补发失败 {}: {error}",
-                    pending.message_client_id
-                );
+    let _peer_guard = ResendPeerGuard(key);
+    // Payload attempts have their own fair network semaphore. Never hold a control
+    // slot while delivering them: slow sync/recall/receipt traffic must not delay text.
+    for message in db::get_due_messages_for_peer(pool, peer_id).await? {
+        if let Some(client_message_id) = message.client_message_id.as_deref() {
+            if let Err(error) =
+                deliver_stored_message(pool, peer_manager, peer_id, client_message_id, false).await
+            {
+                eprintln!("[Workspace] 消息补发未确认 {client_message_id} -> {peer_id}: {error}");
             }
         }
     }
-    for receipt in db::get_pending_receipts_for_peer(pool, peer_id).await? {
-        if receipt.delivered_at.is_some() && receipt.delivery_ack_sent_at.is_none() {
-            let ack = ProtocolMessage::DeliveryAck {
-                conversation_id: receipt.conversation_id.clone(),
-                from_id: receipt.reader_id.clone(),
-                message_ids: vec![receipt.message_client_id.clone()],
-                timestamp: now() as u64,
+    // Do not queue behind busy control slots. The next sweep can try again without
+    // keeping this peer's payload guard occupied. Unfinished controls remain durable.
+    if let Ok(_control_slot) = RESEND_NETWORK_SLOTS.try_acquire() {
+        match tokio::time::timeout(CONTROL_RESEND_BUDGET, async {
+            let sync_groups = {
+                let mut times = GROUP_SYNC_TIMES.lock().map_err(|error| error.to_string())?;
+                let last_sync = times.entry(_peer_guard.0.clone()).or_default();
+                let due = now() - *last_sync >= 30;
+                if due {
+                    *last_sync = now();
+                }
+                due
             };
-            if crate::network::protocol::send_protocol_message(peer_addr, peer_id, &ack)
-                .await
-                .is_ok()
-            {
-                db::mark_receipt_ack_sent(
-                    pool,
-                    &receipt.message_client_id,
-                    &receipt.reader_id,
-                    "delivery",
-                )
-                .await?;
-            }
-        }
-        if receipt.read_at.is_some() && receipt.read_ack_sent_at.is_none() {
-            let ack = ProtocolMessage::ReadAck {
-                conversation_id: receipt.conversation_id,
-                from_id: receipt.reader_id.clone(),
-                message_ids: vec![receipt.message_client_id.clone()],
-                timestamp: now() as u64,
-            };
-            if crate::network::protocol::send_protocol_message(peer_addr, peer_id, &ack)
-                .await
-                .is_ok()
-            {
-                db::mark_receipt_ack_sent(
-                    pool,
-                    &receipt.message_client_id,
-                    &receipt.reader_id,
-                    "read",
-                )
-                .await?;
-            }
-        }
-    }
-    for message in db::get_undelivered_messages_for_peer(pool, peer_id).await? {
-        if message.sender_id != self_id && message.sender_id != "me" || message.msg_type != "text" {
-            continue;
-        }
-        let Some(conversation_id) = message.conversation_id.clone() else {
-            continue;
-        };
-        let Some(client_message_id) = message.client_message_id.clone() else {
-            continue;
-        };
-        // 会话被删掉的历史消息不该让整轮补发失败，跳过即可
-        let Some(conversation) = db::get_conversation(pool, &conversation_id).await? else {
-            continue;
-        };
-        if conversation.kind == "group" {
-            let mention_ids = db::get_message_receipts(pool, &client_message_id)
-                .await?
-                .into_iter()
-                .filter(|receipt| receipt.mentioned)
-                .map(|receipt| receipt.reader_id)
-                .collect();
-            let outgoing = ProtocolMessage::GroupMessage {
-                group_id: conversation_id,
-                client_message_id,
-                from_id: self_id.clone(),
-                from_name: self_name.clone(),
-                content: message.content,
-                content_type: message.msg_type,
-                mention_ids,
-                timestamp: message.timestamp as u64,
-            };
-            if let Err(error) = crate::network::protocol::send_protocol_message(
-                peer_addr,
-                peer_id,
-                &outgoing,
-            )
-            .await
-            {
-                eprintln!("[Workspace] 群消息补发失败: {error}");
-            }
-        } else {
-            let sent = messaging::send_direct_message(
-                peer_addr,
-                peer_id,
-                self_id.clone(),
-                self_name.clone(),
-                conversation_id,
-                client_message_id.clone(),
-                message.content,
-                message.msg_type,
-            )
-            .await;
-            match sent {
-                // 补发成功后把 pending 升到 sent，界面不再一直显示未发送
-                Ok(()) => {
-                    if let Err(error) =
-                        db::mark_message_status_by_client_id(pool, &client_message_id, "sent").await
+            // 下面每一段都逐条容错：任何一条发失败都不能 `?` 早退，
+            // 否则排在后面的待发消息会被一条失败的群同步整段跳过。
+            if sync_groups {
+                for group in db::list_groups_for_member(pool, peer_id).await? {
+                    let members = db::get_conversation_members(pool, &group.id).await?;
+                    if let Err(error) = crate::network::protocol::send_protocol_message(
+                        peer_addr,
+                        peer_id,
+                        &group_sync_message(&group, &members),
+                    )
+                    .await
                     {
-                        eprintln!("[Workspace] 补发后回写 sent 失败: {error}");
+                        eprintln!("[Workspace] 群同步补发失败 {}: {error}", group.id);
                     }
                 }
-                Err(error) => {
-                    eprintln!("[Workspace] 单聊消息补发失败 {client_message_id}: {error}");
+            }
+            // A pending group message also carries sync on its own ordered connection.
+            for pending in db::get_pending_recalls_for_peer(pool, peer_id)
+                .await?
+                .into_iter()
+                .take(16)
+            {
+                match crate::network::protocol::send_protocol_message(
+                    peer_addr,
+                    peer_id,
+                    &ProtocolMessage::MessageRecall {
+                        conversation_id: pending.conversation_id,
+                        client_message_id: pending.message_client_id.clone(),
+                        from_id: pending.sender_id,
+                        timestamp: pending.recall_requested_at.max(0) as u64,
+                    },
+                )
+                .await
+                {
+                    // 只有确认发出去了才记 sent，失败的下次上线再试
+                    Ok(()) => {
+                        db::mark_recall_sent(pool, &pending.message_client_id, peer_id).await?
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "[Workspace] 撤回补发失败 {}: {error}",
+                            pending.message_client_id
+                        );
+                    }
                 }
             }
+            for receipt in db::get_pending_receipts_for_peer(pool, peer_id)
+                .await?
+                .into_iter()
+                .take(16)
+            {
+                if receipt.delivered_at.is_some() && receipt.delivery_ack_sent_at.is_none() {
+                    let ack = ProtocolMessage::DeliveryAck {
+                        conversation_id: receipt.conversation_id.clone(),
+                        from_id: receipt.reader_id.clone(),
+                        message_ids: vec![receipt.message_client_id.clone()],
+                        timestamp: now() as u64,
+                    };
+                    if crate::network::protocol::send_protocol_message(peer_addr, peer_id, &ack)
+                        .await
+                        .is_ok()
+                    {
+                        db::mark_receipt_ack_sent(
+                            pool,
+                            &receipt.message_client_id,
+                            &receipt.reader_id,
+                            "delivery",
+                        )
+                        .await?;
+                    }
+                }
+                if receipt.read_at.is_some() && receipt.read_ack_sent_at.is_none() {
+                    let ack = ProtocolMessage::ReadAck {
+                        conversation_id: receipt.conversation_id,
+                        from_id: receipt.reader_id.clone(),
+                        message_ids: vec![receipt.message_client_id.clone()],
+                        timestamp: now() as u64,
+                    };
+                    if crate::network::protocol::send_protocol_message(peer_addr, peer_id, &ack)
+                        .await
+                        .is_ok()
+                    {
+                        db::mark_receipt_ack_sent(
+                            pool,
+                            &receipt.message_client_id,
+                            &receipt.reader_id,
+                            "read",
+                        )
+                        .await?;
+                    }
+                }
+            }
+            Ok::<(), String>(())
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => eprintln!("[Workspace] 控制消息补发失败 {peer_id}: {error}"),
+            Err(_) => eprintln!("[Workspace] 控制消息补发达到本轮预算 {peer_id}，余项留待下轮"),
         }
     }
     if let Err(error) = crate::network::conversation_file::resume_waiting_for_peer(
@@ -1617,6 +1754,18 @@ pub async fn trusted_file_path(
         .as_deref()
         .ok_or_else(|| "文件尚未下载".to_string())?;
     let self_id = db::get_user_id(pool).await?;
+    #[cfg(target_os = "android")]
+    if path.starts_with("content://") && (message.sender_id == self_id || message.sender_id == "me") {
+        // Only a stored outgoing URI is trusted; the persisted Android grant
+        // remains the authority for access, including revocation/deletion.
+        let uri = path.to_owned();
+        return tokio::task::spawn_blocking(move || {
+            let _file = crate::android_fd::AndroidFile::from_content_uri(&uri)?;
+            Ok(PathBuf::from(uri))
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    }
     validate_known_file_path(
         Path::new(path),
         Path::new(&db::get_download_path(pool).await?),
@@ -1869,6 +2018,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn busy_control_resends_do_not_block_pending_payloads() {
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-control-budget-{}", uuid::Uuid::new_v4()));
+        let pool = db::init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        let self_id = db::get_user_id(&pool).await.unwrap();
+        let conversation = db::ensure_direct_conversation(&pool, "peer-busy-control")
+            .await
+            .unwrap();
+        db::save_conversation_message(
+            &pool,
+            &conversation.id,
+            &self_id,
+            Some("peer-busy-control"),
+            "queued payload",
+            "text",
+            now(),
+            "pending",
+            "busy-control-message",
+        )
+        .await
+        .unwrap();
+        db::ensure_message_recipients(
+            &pool,
+            "busy-control-message",
+            &["peer-busy-control".to_string()],
+        )
+        .await
+        .unwrap();
+
+        // Model four other peers stalled in group-sync/receipt connections. Their
+        // control slots must neither suppress this payload attempt nor queue this peer.
+        let busy_controls = RESEND_NETWORK_SLOTS.acquire_many(4).await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            resend_for_peer(
+                &pool,
+                &PeerManager::new(),
+                "peer-busy-control",
+                "127.0.0.1:9",
+            ),
+        )
+        .await
+        .expect("control slots must not block the payload queue")
+        .unwrap();
+        let attempts = db::get_message_delivery_attempts(&pool, "busy-control-message")
+            .await
+            .unwrap();
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].attempt_count, 1);
+        assert_eq!(attempts[0].state, "waiting_connection");
+        drop(busy_controls);
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn one_failed_send_does_not_abort_the_rest_of_the_resend_queue() {
         let app_dir =
             std::env::temp_dir().join(format!("xchat-resend-test-{}", uuid::Uuid::new_v4()));
@@ -1987,8 +2192,8 @@ mod tests {
         assert_eq!(initial_send_status("direct", false), "pending");
         assert_eq!(initial_send_status("direct", true), "pending");
 
-        // 群聊有在线成员就算已进网络，单个成员的送达交给 message_receipts
-        assert_eq!(initial_send_status("group", false), "sent");
+        // An online member does not prove that a group payload was written.
+        assert_eq!(initial_send_status("group", false), "pending");
         // 全员离线的群聊没发出去任何东西，同样只能是 pending
         assert_eq!(initial_send_status("group", true), "pending");
     }

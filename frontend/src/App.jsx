@@ -6,11 +6,14 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import MobileMessageMenu, { MobileIcon } from "./MobileMessageMenu.jsx";
 import {
   ACTIVE_TRANSFER_STATES,
   EMOJI_SET,
   avatarText,
   canSaveVerifiedEndpoint,
+  canRetryMessage,
+  fileMessageActions,
   fileKind,
   fileStatus,
   groupMentionCandidates,
@@ -22,6 +25,7 @@ import {
   isPhysicalPointInsideRect,
   localFileAvailable,
   messageDeliveryStatus,
+  peerConnectionStatus,
   matchesShortcut,
   mentionQueryAtCaret,
   mentionToken,
@@ -114,6 +118,38 @@ const copy = {
     sourceDevice: "设备",
     newGroup: "新建群聊",
     addDevice: "手动添加设备",
+    refreshPeer: "刷新地址",
+    refreshDeviceAddress: "刷新设备地址",
+    refreshingPeer: "正在刷新…",
+    rediscoverPeers: "重新发现",
+    rediscoveringPeers: "正在发现…",
+    discoveryEnabled: "在已启用的网络中发现设备",
+    discoveryPaused: "自动发现已关闭",
+    previousAddress: "上次地址",
+    connectionVerifiedAt: "上次连接验证",
+    connectionNotVerified: "尚未确认",
+    retryMessage: "重新发送",
+    deliveryUnconfirmedHint: "回执尚未收到，对方可能已经收到。重试会复用同一条消息。",
+    connectionStates: {
+      stale: "已发现 · 连接待验证",
+      discovering: "正在查找最新地址",
+      verifying: "正在验证设备连接",
+      ready: "在线 · 连接已验证",
+      updated: "在线 · 地址已更新",
+      missing: "暂时无法连接",
+      mismatch: "设备身份不匹配",
+      policy_disabled: "网络发现已关闭",
+    },
+    connectionHints: {
+      stale: "收到上线广播后，还需确认消息服务可连接。点击刷新地址重新验证。",
+      discovering: "正在已启用的网络中查找设备最新地址。",
+      verifying: "正在核对设备 ID 与消息连接，请稍候。",
+      ready: "设备 ID 与消息连接已验证。",
+      updated: "已核对设备 ID，聊天记录和备注继续保留。",
+      missing: "本次未找到可连接的地址，历史地址已保留。确认对方已打开 XChat 且网络可达后重试。",
+      mismatch: "发现地址对应其他设备，已停止连接。原设备和聊天记录保持不变。",
+      policy_disabled: "在网络设置中启用发现后重试；本次未更改历史地址。",
+    },
     closeList: "关闭列表",
     messageSearch: "消息搜索",
     chatHistory: "聊天记录",
@@ -152,6 +188,11 @@ const copy = {
     capture: "截屏",
     captureUnsupported: "当前平台不支持截屏",
     sendFile: "发送文件",
+    camera: "拍照",
+    voice: "按住说话",
+    voiceRecording: "录音中",
+    voiceSlideUpToCancel: "上滑取消",
+    voiceReleaseToCancel: "松开取消",
     memberCount: (count) => `${count} 位成员`,
     backConversationList: "返回会话列表",
     conversationInfo: "会话信息",
@@ -354,6 +395,10 @@ const copy = {
     status: {
       pending: "发送中",
       sent: "已发出",
+      sending: "发送中",
+      awaiting_ack: "已发出 · 等待回执",
+      unconfirmed: "未确认送达",
+      waiting_connection: "等待连接",
       delivered: "已送达",
       read: "已读",
       received: "已接收",
@@ -433,6 +478,38 @@ const copy = {
     sourceDevice: "Device",
     newGroup: "New group",
     addDevice: "Add device manually",
+    refreshPeer: "Refresh address",
+    refreshDeviceAddress: "Refresh device address",
+    refreshingPeer: "Refreshing…",
+    rediscoverPeers: "Rediscover",
+    rediscoveringPeers: "Discovering…",
+    discoveryEnabled: "Discover on enabled networks",
+    discoveryPaused: "Discovery is disabled",
+    previousAddress: "Previous address",
+    connectionVerifiedAt: "Last connection check",
+    connectionNotVerified: "Not verified yet",
+    retryMessage: "Retry sending",
+    deliveryUnconfirmedHint: "No receipt yet. The recipient may have received this message. Retrying reuses the same message.",
+    connectionStates: {
+      stale: "Discovered · Connection not verified",
+      discovering: "Looking for current address",
+      verifying: "Verifying device connection",
+      ready: "Online · Connection verified",
+      updated: "Online · Address updated",
+      missing: "Connection unavailable",
+      mismatch: "Device identity mismatch",
+      policy_disabled: "Network discovery disabled",
+    },
+    connectionHints: {
+      stale: "The device was discovered. Refresh its address to verify the messaging connection.",
+      discovering: "Looking for the device on enabled networks.",
+      verifying: "Checking the device ID and messaging connection.",
+      ready: "The device ID and messaging connection are verified.",
+      updated: "Device ID verified. Your conversation and remark are preserved.",
+      missing: "No reachable address found. The previous address is preserved. Check that XChat is running and the device is reachable.",
+      mismatch: "The address belongs to another device. Connection stopped; the original conversation is preserved.",
+      policy_disabled: "Enable discovery in network settings and retry. The previous address is preserved.",
+    },
     closeList: "Close list",
     messageSearch: "Message search",
     chatHistory: "Chat history",
@@ -471,6 +548,11 @@ const copy = {
     capture: "Capture",
     captureUnsupported: "Screen capture is unavailable on this platform",
     sendFile: "Send file",
+    camera: "Take photo",
+    voice: "Hold to talk",
+    voiceRecording: "Recording",
+    voiceSlideUpToCancel: "Slide up to cancel",
+    voiceReleaseToCancel: "Release to cancel",
     memberCount: (count) => `${count} ${count === 1 ? "member" : "members"}`,
     backConversationList: "Back to conversations",
     conversationInfo: "Conversation info",
@@ -676,6 +758,10 @@ const copy = {
     status: {
       pending: "Sending",
       sent: "Sent",
+      sending: "Sending",
+      awaiting_ack: "Sent · Awaiting receipt",
+      unconfirmed: "Delivery unconfirmed",
+      waiting_connection: "Waiting for connection",
       delivered: "Delivered",
       read: "Read",
       received: "Received",
@@ -815,6 +901,23 @@ function Icon({ name, size = 20, spin = false }) {
         <>
           <circle cx="12" cy="12" r="9" />
           <path d="M8.5 10h.01M15.5 10h.01M8 14c1 2 2.3 3 4 3s3-1 4-3" />
+        </>
+      );
+      break;
+    case "camera":
+      body = (
+        <>
+          <path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z" />
+          <circle cx="12" cy="13" r="3.5" />
+        </>
+      );
+      break;
+    case "mic":
+      body = (
+        <>
+          <rect x="9" y="3" width="6" height="11" rx="3" />
+          <path d="M5 11a7 7 0 0 0 14 0" />
+          <path d="M12 18v3" />
         </>
       );
       break;
@@ -1198,12 +1301,41 @@ function statusLabel(message, group, labels, peerOffline = false) {
     return labels.status.waiting_peer;
   }
   if (group && message.recipient_count) {
-    return `${labels.deliveredCount(
+    const totals = `${labels.deliveredCount(
       message.delivered_count || 0,
       message.recipient_count,
     )} · ${labels.readCount(message.read_count || 0, message.recipient_count)}`;
+    return message.delivery_state && !["delivered", "read"].includes(deliveryStatus)
+      ? `${statusText(deliveryStatus, labels)} · ${totals}` : totals;
   }
-  return statusText(deliveryStatus, labels);
+  return statusText(deliveryStatus === "sent" && message.msg_type !== "file"
+    ? "awaiting_ack" : deliveryStatus, labels);
+}
+
+function PeerRefreshButton({ device, state, workspace, labels, detailed = false }) {
+  const status = peerConnectionStatus(device, state.peerRefreshes?.[device?.id]);
+  const busy = state.rediscovering || ["discovering", "verifying"].includes(status);
+  return <button
+    type="button"
+    className="peer-refresh-btn desktop-network-control"
+    disabled={!device?.id || busy}
+    aria-busy={Boolean(busy)}
+    title={labels.refreshDeviceAddress}
+    onClick={() => workspace.dispatch({ type: "device.refreshConnection", id: device.id })}
+  ><Icon name="refresh" size={15} /><span>{busy ? labels.refreshingPeer : detailed ? labels.refreshDeviceAddress : labels.refreshPeer}</span></button>;
+}
+
+function PeerConnectionCard({ device, state, workspace, labels }) {
+  if (!device) return null;
+  const status = peerConnectionStatus(device, state.peerRefreshes?.[device.id]);
+  const connection = device.connection || {};
+  return <section className="peer-route-card desktop-network-control" data-state={status} aria-live="polite">
+    <b><i className="route-status-dot" />{labels.connectionStates[status] || labels.connectionStates.stale}</b>
+    {connection.previous_address && connection.previous_address !== device.addr && <p>{labels.previousAddress}<span className="numeric">{connection.previous_address}</span></p>}
+    <p>{labels.connectionHints[status] || labels.connectionHints.stale}</p>
+    <p>{labels.connectionVerifiedAt}：{connection.verified_at ? formatTime(connection.verified_at, labels.locale) : labels.connectionNotVerified}</p>
+    <PeerRefreshButton device={device} state={state} workspace={workspace} labels={labels} detailed />
+  </section>;
 }
 
 function useTheme(theme) {
@@ -1348,6 +1480,7 @@ function ConversationRow({ conversation, labels, selected, onOpen }) {
 }
 
 function DeviceRow({ device, labels, selected, onOpen }) {
+  const connection = peerConnectionStatus(device);
   return (
     <button
       className={`device-row ${selected ? "selected" : ""}`}
@@ -1367,8 +1500,8 @@ function DeviceRow({ device, labels, selected, onOpen }) {
         </span>
       </span>
       <i
-        className={device.is_offline ? "status-ring" : "status-dot"}
-        title={device.is_offline ? labels.offline : labels.online}
+        className={["ready", "updated"].includes(connection) ? "status-dot" : device.is_offline ? "status-ring" : "status-dot connection-unverified"}
+        title={labels.connectionStates[connection] || labels.connectionStates.stale}
       />
     </button>
   );
@@ -1376,6 +1509,7 @@ function DeviceRow({ device, labels, selected, onOpen }) {
 
 function ListPane({
   state,
+  workspace,
   labels,
   query,
   setQuery,
@@ -1446,6 +1580,16 @@ function ListPane({
             Tab 的根页面，没有「关闭」这回事，切 Tab 或者点会话离开即可，
             所以连同 onCloseMobile 一起删掉了。 */}
       </header>
+      {section === "hosts" && <div className="device-discovery-tools desktop-network-control">
+        <small role="status">{state.rediscovering ? labels.rediscoveringPeers :
+          state.settings.discovery_settings.local_discovery || state.settings.discovery_settings.vpn_discovery
+            ? labels.discoveryEnabled : labels.discoveryPaused}</small>
+        <button className="peer-refresh-btn" type="button" disabled={state.rediscovering}
+          aria-busy={state.rediscovering}
+          onClick={() => workspace.dispatch({ type: "device.rediscover" })}>
+          <Icon name="refresh" size={15} />{labels.rediscoverPeers}
+        </button>
+      </div>}
       <div
         className={`list-scroll ${
           chatEmpty || hostsEmpty ? "has-centered-empty" : ""
@@ -1693,7 +1837,7 @@ function FileOpenMenu({ file, workspace, labels, canReveal }) {
   };
 
   return (
-    <span className="file-open-menu" ref={root}>
+    <span className="file-open-menu mobile-file-open" ref={root}>
       <button
         type="button"
         className="file-open-trigger"
@@ -1878,8 +2022,24 @@ function usesTouchKeyboard() {
   );
 }
 
+// 录音计时显示：秒数 → 0:07
+function formatVoiceDuration(seconds = 0) {
+  const total = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+// 录音手势阈值：手指上滑超过这个像素数就算「松开取消」（微信的手感）
+const VOICE_CANCEL_DISTANCE = 70;
+// 短于这个时长视为误触，不发送
+const VOICE_MIN_MS = 1000;
+// 单条语音上限，到点自动结束并发送
+const VOICE_MAX_MS = 60_000;
+
 function Composer({ state, conversation, workspace, labels, quote, onClearQuote }) {
   const [text, setText] = useState(conversation?.draft || "");
+  const [attachmentOpen, setAttachmentOpen] = useState(false);
+  const albumInput = useRef(null);
+  const cameraInput = useRef(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [recentEmoji, setRecentEmoji] = useState(readRecentEmoji);
   const [mention, setMention] = useState(null);
@@ -1887,11 +2047,29 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
   const [mentionTargets, setMentionTargets] = useState([]);
   const [dragActive, setDragActive] = useState(false);
   const [sending, setSending] = useState(false);
+  // 录音状态只用于渲染：null = 没在录，{ elapsed, armed } = 录音中
+  const [voiceRecording, setVoiceRecording] = useState(null);
   const composer = useRef(null);
   const textarea = useRef(null);
   const input = useRef(null);
   const emojiPanel = useRef(null);
   const nativeDragInside = useRef(false);
+  // 录音手势的状态机全部放 ref：pointerup 可能早于 react 状态更新，
+  // 用 state 判断会漏事件（松手后原生还在录）。
+  const voicePending = useRef(false);
+  const voiceActive = useRef(false);
+  const voiceArmed = useRef(false);
+  const voicePressedAt = useRef(0);
+  const voiceStartY = useRef(0);
+  const voiceTimer = useRef(null);
+  const voiceRelease = useRef(null);
+  const voiceHandlers = useRef(null);
+  // 拍照是异步的：记住发起时所在的会话，相机结果回来时按它入草稿
+  const cameraConversation = useRef(null);
+  const attachmentConversation = useRef(null);
+  // 手势回调里读不到最新的 props，用 ref 兜住当前会话
+  const conversationRef = useRef(conversation.id);
+  conversationRef.current = conversation.id;
   const attachments = state.draftAttachments?.[conversation.id] || [];
   const mentionCandidates = useMemo(
     () =>
@@ -1920,6 +2098,7 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
     setEmojiOpen(false);
     setMention(null);
     setMentionIndex(0);
+    setAttachmentOpen(false);
   }, [conversation?.id]);
 
   useEffect(() => {
@@ -2006,6 +2185,195 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
     return () => {
       disposed = true;
       unlisten();
+    };
+  }, [conversation.id, workspace]);
+
+  // ─── 拍照：接住 MainActivity 空投的相机结果 ───
+  useEffect(() => {
+    if (!state.capabilities.nativeCamera) return;
+    const onCapture = (event) => {
+      workspace.dispatch({
+        type: "camera.result",
+        conversationId: cameraConversation.current ?? conversationRef.current,
+        result: event?.detail ?? globalThis.__XCHAT_NATIVE_CAPTURE__ ?? {},
+      });
+    };
+    addEventListener("xchat-native-capture", onCapture);
+    return () => removeEventListener("xchat-native-capture", onCapture);
+  }, [state.capabilities.nativeCamera, workspace]);
+
+  useEffect(() => {
+    if (!state.capabilities.nativeCamera) return;
+    const onAttachment = (event) => workspace.dispatch({
+      type: "attachment.result",
+      conversationId: attachmentConversation.current ?? conversationRef.current,
+      result: event.detail,
+    });
+    addEventListener("xchat-native-attachment", onAttachment);
+    return () => removeEventListener("xchat-native-attachment", onAttachment);
+  }, [state.capabilities.nativeCamera, workspace]);
+
+  // ─── 录音：按住说话，松手发送，上滑取消 ───
+  const VOICE_EVENT_NAMES = globalThis.PointerEvent
+    ? ["pointermove", "pointerup", "pointercancel"]
+    : // 老 WebView 没有 Pointer Events，退回 touch 三件套
+      ["touchmove", "touchend", "touchcancel"];
+
+  const detachVoiceHandlers = () => {
+    const handlers = voiceHandlers.current;
+    if (!handlers) return;
+    voiceHandlers.current = null;
+    removeEventListener(VOICE_EVENT_NAMES[0], handlers.move);
+    removeEventListener(VOICE_EVENT_NAMES[1], handlers.up);
+    removeEventListener(VOICE_EVENT_NAMES[2], handlers.cancel);
+  };
+
+  const clearVoiceTimer = () => {
+    if (voiceTimer.current) {
+      clearInterval(voiceTimer.current);
+      voiceTimer.current = null;
+    }
+  };
+
+  // 录音附件走和拍照一样的草稿链路，区别只是松手后立刻发出去（微信的按住说话）
+  const sendVoiceAttachment = async (attachment) => {
+    const target = attachment?.conversation_id ?? conversationRef.current;
+    setSending(true);
+    try {
+      const result = await workspace.dispatch({
+        type: "message.sendFiles",
+        conversationId: target,
+        files: [attachment],
+      });
+      if (result.ok) {
+        await workspace.dispatch({ type: "draft.sent", conversationId: target, id: attachment.id });
+      }
+      // 发送失败时附件留在草稿里，用户可以改完再发或手动删掉
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const stopNativeVoice = (cancelled, reason) => {
+    workspace
+      .dispatch({
+        type: "voice.stop",
+        conversationId: conversationRef.current,
+        cancelled,
+        reason,
+      })
+      .then((dispatched) => {
+        const attachment = dispatched?.data?.attachment;
+        return attachment ? sendVoiceAttachment(attachment) : undefined;
+      })
+      .catch(() => {});
+  };
+
+  // 统一收尾：计算时长，决定「发送」还是「取消」，并通知原生侧结束录音
+  const stopVoice = (cancelled, reason) => {
+    clearVoiceTimer();
+    detachVoiceHandlers();
+    setVoiceRecording(null);
+    voiceArmed.current = false;
+    const durationMs = Date.now() - voicePressedAt.current;
+    const tooShort = durationMs < VOICE_MIN_MS;
+    if (!voiceActive.current) {
+      // 原生还没确认开始（start 请求在路上）：把结论记下来，等它回来立刻收尾
+      if (voicePending.current) {
+        voiceRelease.current = {
+          cancelled: cancelled || tooShort,
+          reason: tooShort ? "too_short" : reason,
+        };
+      }
+      return;
+    }
+    voiceActive.current = false;
+    stopNativeVoice(cancelled || tooShort, tooShort ? "too_short" : reason);
+  };
+
+  const beginVoice = async (event) => {
+    if (voicePending.current || voiceActive.current || voiceHandlers.current) return;
+    event.preventDefault?.();
+    // touch 事件里纵坐标在 touches / changedTouches 上
+    const pointY = (pointEvent) =>
+      pointEvent.clientY ??
+      pointEvent.touches?.[0]?.clientY ??
+      pointEvent.changedTouches?.[0]?.clientY ??
+      0;
+    voicePressedAt.current = Date.now();
+    voiceStartY.current = pointY(event);
+    voiceArmed.current = false;
+    voiceRelease.current = null;
+    voicePending.current = true;
+    setVoiceRecording({ elapsed: 0, armed: false });
+
+    // 松手可能发生在 start 返回之前，所以监听器在按下时就挂到 window 上，
+    // 而不是等 state 更新后再挂。
+    const move = (moveEvent) => {
+      const armed = pointY(moveEvent) <= voiceStartY.current - VOICE_CANCEL_DISTANCE;
+      if (armed === voiceArmed.current) return;
+      voiceArmed.current = armed;
+      setVoiceRecording((current) => (current ? { ...current, armed } : current));
+    };
+    const up = () => stopVoice(false, "release");
+    const cancel = () => stopVoice(true, "pointer_cancel");
+    voiceHandlers.current = { move, up, cancel };
+    addEventListener(VOICE_EVENT_NAMES[0], move);
+    addEventListener(VOICE_EVENT_NAMES[1], up);
+    addEventListener(VOICE_EVENT_NAMES[2], cancel);
+
+    // workspace.dispatch 返回的是 { ok, data }，data 才是 action 自己的返回值
+    const dispatched = await workspace.dispatch({ type: "voice.start" });
+    voicePending.current = false;
+    if (!dispatched?.ok || dispatched.data?.ok === false) {
+      voiceRelease.current = null;
+      clearVoiceTimer();
+      detachVoiceHandlers();
+      setVoiceRecording(null);
+      return;
+    }
+    const pending = voiceRelease.current;
+    voiceRelease.current = null;
+    if (pending) {
+      // 手指在原生确认之前就抬起了：直接结束（cancelled/reason 已经算好）
+      detachVoiceHandlers();
+      setVoiceRecording(null);
+      voiceArmed.current = false;
+      stopNativeVoice(pending.cancelled, pending.reason);
+      return;
+    }
+    voiceActive.current = true;
+    clearVoiceTimer();
+    voiceTimer.current = setInterval(() => {
+      const elapsed = Date.now() - voicePressedAt.current;
+      if (elapsed >= VOICE_MAX_MS) {
+        stopVoice(false, "max_duration");
+        return;
+      }
+      setVoiceRecording({
+        elapsed: Math.floor(elapsed / 1000),
+        armed: voiceArmed.current,
+      });
+    }, 200);
+  };
+
+  // 会话切换 / 组件卸载时别把录音留在后台
+  useEffect(() => {
+    const recordingConversationId = conversation.id;
+    return () => {
+      clearVoiceTimer();
+      detachVoiceHandlers();
+      if (voiceActive.current) {
+        voiceActive.current = false;
+        workspace.dispatch({
+          type: "voice.stop",
+          conversationId: recordingConversationId,
+          cancelled: true,
+          reason: "unmount",
+        });
+      }
+      voicePending.current = false;
+      voiceRelease.current = null;
     };
   }, [conversation.id, workspace]);
 
@@ -2107,12 +2475,38 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
   };
 
   const attach = () => {
-    if (state.capabilities.nativeFilePicker) {
+    if (state.capabilities.nativeCamera) {
+      attachmentConversation.current = conversation.id;
+      workspace.dispatch({ type: "draft.pickNative", mimeType: "*/*" });
+    } else if (state.capabilities.nativeFilePicker) {
       workspace.dispatch({ type: "draft.pickFiles" });
     } else {
       input.current?.click();
     }
   };
+
+  const capturePhoto = () => {
+    cameraConversation.current = conversation.id;
+    if (state.capabilities.nativeCamera) workspace.dispatch({ type: "camera.capture" });
+    else cameraInput.current?.click();
+  };
+  const attachBrowserFiles = (event) => {
+    const files = [...event.target.files];
+    if (files.length) workspace.dispatch({ type: "draft.addFiles", conversationId: conversation.id, files });
+    event.target.value = "";
+  };
+
+  useEffect(() => {
+    if (!attachmentOpen) return;
+    const close = (event) => {
+      if (event.type === "keydown" && event.key !== "Escape") return;
+      event.preventDefault();
+      setAttachmentOpen(false);
+    };
+    addEventListener("keydown", close);
+    addEventListener("xchat:back", close);
+    return () => { removeEventListener("keydown", close); removeEventListener("xchat:back", close); };
+  }, [attachmentOpen]);
 
   const insertEmoji = (emoji) => {
     const element = textarea.current;
@@ -2345,6 +2739,22 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
             </button>
           </div>
         )}
+        {voiceRecording && (
+          <div
+            className={`voice-recording ${voiceRecording.armed ? "cancel-armed" : ""}`}
+            role="status"
+            aria-live="polite"
+          >
+            <span className="voice-recording-dot" aria-hidden="true" />
+            <b>{labels.voiceRecording}</b>
+            <small className="voice-recording-time">
+              {formatVoiceDuration(voiceRecording.elapsed)}
+            </small>
+            <small className="voice-recording-hint">
+              {voiceRecording.armed ? labels.voiceReleaseToCancel : labels.voiceSlideUpToCancel}
+            </small>
+          </div>
+        )}
         <div className="compose-toolbar">
           <div className="compose-tools">
             <button
@@ -2360,7 +2770,7 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
               title={labels.emoji}
               aria-expanded={emojiOpen}
             >
-              <Icon name="emoji" />
+              <span className="desktop-compose-icon"><Icon name="emoji" /></span><span className="mobile-compose-icon"><MobileIcon name="emoji" /></span>
             </button>
             {/* 没有抓屏能力就不渲染这个按钮（Android 恒为 false）。
                 以前是渲染出来再 disabled，用户看到的是个永远灰着的按钮，
@@ -2375,14 +2785,48 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
                 <Icon name="capture" />
               </button>
             )}
+            {/* 只在这两个能力真正可用时渲染（Android）：桌面端和网页端
+                根本不会出现这两个按钮。 */}
+            {state.capabilities.nativeCamera && (
+              <button
+                className="icon-button composer-tool desktop-camera-tool"
+                type="button"
+                onClick={capturePhoto}
+                aria-label={labels.camera}
+                title={labels.camera}
+              >
+                <Icon name="camera" />
+              </button>
+            )}
             <button
               className="icon-button composer-tool"
-              onClick={attach}
+              onClick={() => {
+                if (globalThis.matchMedia("(max-width: 859px)").matches) {
+                  textarea.current?.blur();
+                  setEmojiOpen(false);
+                  setAttachmentOpen(true);
+                } else attach();
+              }}
               aria-label={labels.sendFile}
               title={labels.sendFile}
             >
-              <Icon name="attach" />
+              <span className="desktop-compose-icon"><Icon name="attach" /></span><span className="mobile-compose-icon"><MobileIcon name="plus-circle" /></span>
             </button>
+            {state.capabilities.nativeVoiceRecorder && (
+              <button
+                className={`icon-button composer-tool voice-button ${voiceRecording ? "recording" : ""}`}
+                type="button"
+                onPointerDown={beginVoice}
+                onTouchStart={(event) => {
+                  if (!globalThis.PointerEvent) beginVoice(event);
+                }}
+                onContextMenu={(event) => event.preventDefault()}
+                aria-label={labels.voice}
+                title={labels.voice}
+              >
+                <Icon name="mic" />
+              </button>
+            )}
             <input
               ref={input}
               type="file"
@@ -2400,6 +2844,8 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
                 event.target.value = "";
               }}
             />
+            <input ref={albumInput} type="file" accept="image/*" multiple hidden onChange={attachBrowserFiles}/>
+            <input ref={cameraInput} type="file" accept="image/*" capture="environment" hidden onChange={attachBrowserFiles}/>
           </div>
           <button
             className="primary-button send-button"
@@ -2436,6 +2882,23 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
           </div>
         )}
       </div>
+      {attachmentOpen && <div className="attachment-sheet-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setAttachmentOpen(false); }}>
+        <section className="attachment-sheet" role="dialog" aria-modal="true" aria-label={labels.locale === "en" ? "Add attachment" : "添加附件"}>
+          <h3>{labels.locale === "en" ? "Add attachment" : "添加附件"}</h3>
+          <div className="attachment-sheet-options">
+            <button onClick={() => {
+              setAttachmentOpen(false);
+              if (state.capabilities.nativeCamera) {
+                attachmentConversation.current = conversation.id;
+                workspace.dispatch({ type: "draft.pickNative", mimeType: "image/*" });
+              } else albumInput.current?.click();
+            }}><MobileIcon name="image"/><span>{labels.locale === "en" ? "Photos" : "相册"}</span></button>
+            <button onClick={() => { setAttachmentOpen(false); capturePhoto(); }}><MobileIcon name="camera"/><span>{labels.camera}</span></button>
+            <button onClick={() => { setAttachmentOpen(false); attach(); }}><MobileIcon name="file"/><span>{labels.locale === "en" ? "Files" : "文件"}</span></button>
+          </div>
+          <button className="attachment-sheet-cancel" onClick={() => setAttachmentOpen(false)}>{labels.cancel}</button>
+        </section>
+      </div>}
     </footer>
   );
 }
@@ -2446,7 +2909,7 @@ function messageSummary(message, labels) {
   return message.content || labels.message;
 }
 
-function ForwardModal({ message, state, workspace, labels, onClose }) {
+function ForwardModal({ message, messages = [message], state, workspace, labels, onClose }) {
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("all");
   const [selected, setSelected] = useState([]);
@@ -2466,19 +2929,22 @@ function ForwardModal({ message, state, workspace, labels, onClose }) {
     if (!selected.length || sending) return;
     setSending(true);
     try {
-      const result = await workspace.dispatch({
-        type: "message.forward",
-        messageId: message.message_id ?? message.id,
-        conversationIds: selected,
-        note,
-      });
-      if (result.ok) onClose();
+      for (const [index, item] of messages.entries()) {
+        const result = await workspace.dispatch({
+          type: "message.forward",
+          messageId: item.message_id ?? item.id,
+          conversationIds: selected,
+          note: index === 0 ? note : "",
+        });
+        if (!result.ok) return;
+      }
+      onClose();
     } finally {
       setSending(false);
     }
   };
   return (
-    <Modal title={labels.locale === "en" ? "Forward message" : "转发消息"} closeLabel={labels.close} onClose={onClose} wide>
+    <Modal title={(labels.locale === "en" ? "Forward message" : "转发消息") + (messages.length > 1 ? ` (${messages.length})` : "")} closeLabel={labels.close} onClose={onClose} wide>
       <div className="forward-shell">
         <section className="forward-main">
           <div className="forward-search-head">
@@ -2572,18 +3038,32 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
   const messages = state.messagesByConversation[state.activeConversationId] || [];
   const scroll = useRef(null);
   const [menu, setMenu] = useState(null);
+  const contextMenu = useRef(null);
+  const [selection, setSelection] = useState(null);
+  const toggleSelected = (id) => setSelection((current) => current?.includes(id) ? current.filter((item) => item !== id) : [...(current || []), id]);
 
   // 触摸屏没有右键，消息菜单改由长按呼出，复用同一套 setMenu。
   // fired 用来吃掉长按松手后紧跟的那次 click，
   // 否则长按图片会连图片预览一起打开。
   const press = useRef({ timer: null, x: 0, y: 0, el: null, fired: false });
-  const openMessageMenu = (message, x, y) => {
+  const openMessageMenu = (message, x, y, anchor) => {
+    if (selection) return;
     setMenu({
-      x: Math.min(x, globalThis.innerWidth - 202),
-      y: Math.min(y, globalThis.innerHeight - 250),
+      x: Math.max(8, Math.min(x, globalThis.innerWidth - 212)),
+      y: Math.max(8, Math.min(y, globalThis.innerHeight - 250)),
       message,
+      mobile: globalThis.matchMedia("(max-width: 859px)").matches,
+      anchor,
     });
   };
+  useEffect(() => {
+    const element = contextMenu.current;
+    if (!menu || menu.mobile || !element) return;
+    const bounds = element.getBoundingClientRect();
+    element.style.left = `${Math.max(8, Math.min(menu.x, globalThis.innerWidth - bounds.width - 8))}px`;
+    element.style.top = `${Math.max(8, Math.min(menu.y, globalThis.innerHeight - bounds.height - 8))}px`;
+    element.querySelector("button:not(:disabled)")?.focus();
+  }, [menu]);
   const cancelPress = () => {
     clearTimeout(press.current.timer);
     press.current.timer = null;
@@ -2592,7 +3072,7 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
   };
   const startPress = (event, message) => {
     // 鼠标走右键菜单就够了，长按只服务于触摸和手写笔
-    if (event.pointerType === "mouse") return;
+    if (event.pointerType === "mouse" || !event.isPrimary || selection) return;
     cancelPress();
     const el = event.currentTarget;
     el.classList.add("pressing");
@@ -2607,8 +3087,8 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
         el.classList.remove("pressing");
         press.current.el = null;
         globalThis.navigator?.vibrate?.(12);
-        openMessageMenu(message, event.clientX, event.clientY);
-      }, 420),
+        openMessageMenu(message, event.clientX, event.clientY, el);
+      }, 500),
     };
   };
   // 长按落在图片、引用块、撤回/重试这些子按钮上时，事件冒泡到 article
@@ -2624,8 +3104,7 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
     // 超过容差就当成滚动，别把滑动手势误判成长按
     if (!press.current.timer) return;
     if (
-      Math.abs(event.clientX - press.current.x) > 10 ||
-      Math.abs(event.clientY - press.current.y) > 10
+      Math.hypot(event.clientX - press.current.x, event.clientY - press.current.y) > 8
     ) {
       cancelPress();
     }
@@ -2646,7 +3125,20 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
     setQuote(null);
     setMenu(null);
     setReactionPicker(null);
+    setSelection(null);
   }, [conversation?.id]);
+
+  useEffect(() => {
+    const close = (event) => {
+      if (!menu && !reactionPicker && !selection) return;
+      if (event.type === "keydown" && event.key !== "Escape") return;
+      event.preventDefault();
+      setMenu(null); setReactionPicker(null); setSelection(null);
+    };
+    addEventListener("xchat:back", close);
+    addEventListener("keydown", close);
+    return () => { removeEventListener("xchat:back", close); removeEventListener("keydown", close); };
+  }, [menu, reactionPicker, selection]);
 
   useEffect(() => {
     const close = () => {
@@ -2764,6 +3256,8 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
     );
   }
   const peer = conversation.peer;
+  const connectionStatus = peerConnectionStatus(peer, state.peerRefreshes?.[peer?.id]);
+  const menuFileActions = fileMessageActions(menu?.message, state.capabilities);
   const announcement = [...messages].reverse().find((message) => message.msg_type === "announcement");
   const announcementKey = announcement && `${conversation.id}:${announcement.client_message_id || announcement.id}`;
   const announcementHidden = !announcement || dismissedAnnouncement === announcementKey || globalThis.localStorage?.getItem(`xchat:announcement:${announcementKey}`) === "dismissed";
@@ -2780,7 +3274,7 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
     conversation.kind === "group"
       ? labels.memberCount(conversation.members?.length || 0)
       : `${peer?.addr || labels.unknownAddress} · ${
-          peer?.is_offline ? labels.offline : labels.online
+          labels.connectionStates[connectionStatus] || labels.connectionStates.stale
         }`;
 
   return (
@@ -2803,6 +3297,7 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
           <span>{subtitle}</span>
         </div>
         <div className="head-actions">
+          {conversation.kind !== "group" && <PeerRefreshButton device={peer} state={state} workspace={workspace} labels={labels} />}
           <button
             className={`icon-button info-toggle ${infoOpen ? "active" : ""}`}
             onClick={onToggleInfo}
@@ -2820,6 +3315,13 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
           <span className="announcement-arrow">›</span>
         </button>
       )}
+      {conversation.kind !== "group" && connectionStatus !== "ready" && (
+        <div className="peer-connection-banner desktop-network-control" data-state={connectionStatus} role="status" aria-live="polite">
+          <span className="connection-mark" aria-hidden="true">{connectionStatus === "updated" ? "✓" : "!"}</span>
+          <span><b>{labels.connectionStates[connectionStatus] || labels.connectionStates.stale}</b>
+            <small>{connectionStatus === "updated" && peer?.connection?.previous_address && <>{peer.connection.previous_address} → {peer.addr} · </>}{labels.connectionHints[connectionStatus] || labels.connectionHints.stale}</small></span>
+        </div>
+      )}
       {conversation.kind !== "group" && peer?.is_offline && (
         <div className="peer-offline-safety-banner" role="status" aria-live="polite">
           <span className="peer-offline-safety-mark" aria-hidden="true">!</span>
@@ -2832,6 +3334,7 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
       <div
         className={`message-scroll ${!messages.length ? "has-empty-state" : ""}`}
         ref={scroll}
+        onScroll={() => { cancelPress(); setMenu(null); setReactionPicker(null); }}
       >
         {messages.length > 0 && (
           <button
@@ -2852,24 +3355,35 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
               </div>
             )}
             <article
-            className={`message ${message.own ? "sent" : "received"}`}
+            className={`message ${message.own ? "sent" : "received"} ${menu?.mobile && (menu.message.client_message_id || menu.message.id) === (message.client_message_id || message.id) ? "menu-selected" : ""} ${selection ? "selectable-message" : ""} ${selection?.includes(message.id) ? "selected-message" : ""}`}
             data-od-id={`message-${message.client_message_id || message.id}`}
             data-message-key={
               message.client_message_id || message.message_id || message.id
             }
             data-message-id={message.message_id ?? message.id}
             data-client-message-id={message.client_message_id || undefined}
+            tabIndex={message.msg_type === "file" ? 0 : undefined}
+            onKeyDown={(event) => {
+              if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+              event.preventDefault();
+              const bounds = event.currentTarget.getBoundingClientRect();
+              openMessageMenu(message, bounds.left + 30, bounds.top + 20, event.currentTarget);
+            }}
             onContextMenu={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              openMessageMenu(message, event.clientX, event.clientY);
+              openMessageMenu(message, event.clientX, event.clientY, event.currentTarget);
             }}
             onPointerDown={(event) => startPress(event, message)}
             onPointerMove={movePress}
             onPointerUp={cancelPress}
             onPointerCancel={cancelPress}
-            onClickCapture={suppressClickAfterLongPress}
+            onClickCapture={(event) => {
+              if (selection) { event.preventDefault(); event.stopPropagation(); toggleSelected(message.id); }
+              else suppressClickAfterLongPress(event);
+            }}
           >
+            {selection && <button className="message-select-check" aria-label={labels.locale === "en" ? "Select message" : "选择消息"} aria-pressed={selection.includes(message.id)}>{selection.includes(message.id) ? "✓" : ""}</button>}
             <Avatar
               entity={
                 message.own
@@ -2943,20 +3457,18 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
                       event.stopPropagation();
                       const rect = event.currentTarget.getBoundingClientRect();
                       setReactionPicker(null);
-                      setMenu({
-                        x: Math.max(10, Math.min(rect.right - 188, globalThis.innerWidth - 198)),
-                        y: Math.max(10, Math.min(rect.bottom + 7, globalThis.innerHeight - 250)),
-                        message,
-                      });
+                      openMessageMenu(message, rect.right - 188, rect.bottom + 7, event.currentTarget);
                     }}
                   ><Icon name="more" size={16} /></button>
                 </div>
               </div>
               {statusLabel(message, conversation.kind === "group", labels, peer?.is_offline) && (
-                <span className={`message-meta ${message.status === "failed" ? "danger-text" : ""}`}>
+                <span className={`message-meta ${message.status === "failed" ? "danger-text" : ""} ${messageDeliveryStatus(message) === "unconfirmed" ? "status-unconfirmed" : ""}`}>
                   <i>{statusLabel(message, conversation.kind === "group", labels, peer?.is_offline)}</i>
+                  {canRetryMessage(message) && <button className="retry-message-btn" type="button" onClick={() => workspace.dispatch({ type: "message.retry", conversationId: conversation.id, clientMessageId: message.client_message_id })}>{labels.retryMessage}</button>}
                 </span>
               )}
+              {message.own && messageDeliveryStatus(message) === "unconfirmed" && <small className="delivery-note">{labels.deliveryUnconfirmedHint}</small>}
             </div>
             </article>
             {groupedReactions(message.reactions).length > 0 && (
@@ -2978,14 +3490,19 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
           </Fragment>
         ))}
       </div>
-      <Composer
+      {selection ? <footer className="message-selection-toolbar">
+        <button onClick={() => setSelection(null)}>{labels.cancel}</button>
+        <span>{labels.locale === "en" ? "Selected" : "已选"} {selection.length}</span>
+        <button disabled={!selection.length} onClick={() => { setForward(visibleMessages.filter((item) => selection.includes(item.id))); setSelection(null); }}><Icon name="forward"/>{labels.locale === "en" ? "Forward" : "转发"}</button>
+        <button disabled={!selection.length} onClick={() => onConfirm({ title: labels.deleteMessageTitle, detail: labels.deleteMessageDetail, action: labels.deleteMessageAction, run: async () => { const result = await workspace.dispatch({ type: "message.deleteLocal", ids: selection }); if (result.ok) setSelection(null); } })}><Icon name="trash"/>{labels.locale === "en" ? "Delete" : "删除"}</button>
+      </footer> : <Composer
         state={state}
         conversation={conversation}
         workspace={workspace}
         labels={labels}
         quote={quote}
         onClearQuote={() => setQuote(null)}
-      />
+      />}
       {reactionPicker && (
         <div
           className="message-reaction-picker"
@@ -3020,15 +3537,47 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
           </div>
         </div>
       )}
-      {menu && (
+      {menu?.mobile && <MobileMessageMenu anchor={menu.anchor} onClose={() => setMenu(null)} actions={[
+        ...(menu.message.msg_type === "file" ? [{ icon: "folder", label: labels.locale === "en" ? "View" : "查看", disabled: !localFileAvailable(menu.message) || !state.capabilities.revealFile, title: labels.revealFile, run: () => { workspace.dispatch({ type: "file.reveal", file: menu.message }); setMenu(null); } }] : []),
+        { icon: "forward", label: labels.locale === "en" ? "Forward" : "转发", run: () => { setForward(menu.message); setMenu(null); } },
+        { icon: "quote", label: labels.locale === "en" ? "Quote" : "引用", run: () => { setQuote(menu.message); setMenu(null); } },
+        ...(isCopyableMessage(menu.message) ? [{ icon: "copy", label: labels.locale === "en" ? "Copy" : "复制", run: async () => {
+          if (["text", "quote"].includes(menu.message.msg_type)) await navigator.clipboard?.writeText(messageSummary(menu.message, labels));
+          else await workspace.dispatch({ type: "message.copyFile", file: menu.message });
+          setMenu(null);
+        } }] : []),
+        { icon: "trash", label: labels.locale === "en" ? "Delete" : "删除", disabled: menu.message.id === undefined, run: () => { const id = menu.message.id; setMenu(null); onConfirm({ title: labels.deleteMessageTitle, detail: labels.deleteMessageDetail, action: labels.deleteMessageAction, run: () => workspace.dispatch({ type: "message.deleteLocal", ids: [id] }) }); } },
+        { icon: "select", label: labels.locale === "en" ? "Select" : "多选", run: () => { setSelection([menu.message.id]); setMenu(null); } },
+        ...(menu.message.own && menu.message.client_message_id ? [
+          { icon: "bell", label: labels.locale === "en" ? "Remind" : "提醒", run: () => { workspace.dispatch({ type: "message.strongReminder", conversationId: conversation.id, clientMessageId: menu.message.client_message_id }); setMenu(null); } },
+          { icon: "recall", label: labels.locale === "en" ? "Recall" : "撤回", run: () => { workspace.dispatch({ type: "message.recall", clientMessageId: menu.message.client_message_id }); setMenu(null); } },
+        ] : []),
+        { icon: "emoji", label: labels.locale === "en" ? "React" : "表情回应", disabled: !menu.message.client_message_id, run: () => { setReactionPicker({ message: menu.message, x: Math.max(12, (innerWidth - 304) / 2), y: Math.max(12, Math.min(menu.y, innerHeight - 360)) }); setMenu(null); } },
+      ]}/>}
+      {menu && !menu.mobile && (
         <div
           className="message-context-menu"
+          ref={contextMenu}
           style={{ left: menu.x, top: menu.y }}
           role="menu"
           onPointerDown={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault(); event.stopPropagation();
+              menu.anchor?.focus(); setMenu(null); return;
+            }
+            if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+            event.preventDefault();
+            const buttons = [...event.currentTarget.querySelectorAll("button:not(:disabled)")];
+            const current = buttons.indexOf(document.activeElement);
+            const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 :
+              (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
+            buttons[next]?.focus();
+          }}
         >
+          {menu.message.msg_type === "file" && <div className="file-menu-title" title={menu.message.file_name}>{menu.message.file_name || menu.message.content}</div>}
           {menu.message.own && menu.message.client_message_id && (
-            <button onClick={() => {
+            <button role="menuitem" onClick={() => {
               workspace.dispatch({
                 type: "message.strongReminder",
                 conversationId: conversation.id,
@@ -3040,7 +3589,7 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
             </button>
           )}
           {isCopyableMessage(menu.message) && (
-            <button onClick={async () => {
+            <button role="menuitem" onClick={async () => {
               if (!["text", "quote"].includes(menu.message.msg_type)) {
                 await workspace.dispatch({ type: "message.copyFile", file: menu.message });
               } else {
@@ -3051,32 +3600,38 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
               <Icon name="copy" size={16} />{labels.locale === "en" ? "Copy" : "复制"}
             </button>
           )}
-          <button onClick={() => { setForward(menu.message); setMenu(null); }}>
+          <button role="menuitem" onClick={() => { setForward(menu.message); setMenu(null); }}>
             <Icon name="forward" size={16} />{labels.locale === "en" ? "Forward" : "转发"}
           </button>
-          <button onClick={() => { setQuote(menu.message); setMenu(null); }}>
+          <button role="menuitem" onClick={() => { setQuote(menu.message); setMenu(null); }}>
             <Icon name="quote" size={16} />{labels.locale === "en" ? "Quote" : "引用"}
           </button>
-          {menu.message.msg_type === "file" && localFileAvailable(menu.message) && (
-            <button onClick={() => { workspace.dispatch({ type: "file.saveAs", file: menu.message }); setMenu(null); }}>
+          {menu.message.msg_type === "file" && <>
+            <button role="menuitem" disabled={!menuFileActions.open} onClick={() => { workspace.dispatch({ type: "file.open", file: menu.message }); setMenu(null); }}>
+              <Icon name="file" size={16} />{labels.openFile}
+            </button>
+            <button role="menuitem" disabled={!menuFileActions.reveal} onClick={() => { workspace.dispatch({ type: "file.reveal", file: menu.message }); setMenu(null); }}>
+              <Icon name="folder" size={16} />{labels.locale === "en" ? "Open directory" : "打开目录"}
+            </button>
+            <button role="menuitem" disabled={!menuFileActions.saveAs} onClick={() => { workspace.dispatch({ type: "file.saveAs", file: menu.message }); setMenu(null); }}>
               <Icon name="download" size={16} />{labels.locale === "en" ? "Save As…" : "另存为"}
             </button>
-          )}
+          </>}
           <i className="context-separator" />
           {menu.message.own && menu.message.client_message_id && (
-            <button onClick={() => { workspace.dispatch({ type: "message.recall", clientMessageId: menu.message.client_message_id }); setMenu(null); }}>
+            <button role="menuitem" onClick={() => { workspace.dispatch({ type: "message.recall", clientMessageId: menu.message.client_message_id }); setMenu(null); }}>
               <Icon name="recall" size={16} />{labels.locale === "en" ? "Recall" : "撤回"}
             </button>
           )}
           {menu.message.id !== undefined && (
-            <button className="danger-text" onClick={() => { const messageId = menu.message.id; setMenu(null); onConfirm({ title: labels.deleteMessageTitle, detail: labels.deleteMessageDetail, action: labels.deleteMessageAction, run: () => workspace.dispatch({ type: "message.deleteLocal", ids: [messageId] }) }); }}>
+            <button role="menuitem" className="danger-text" onClick={() => { const messageId = menu.message.id; setMenu(null); onConfirm({ title: labels.deleteMessageTitle, detail: labels.deleteMessageDetail, action: labels.deleteMessageAction, run: () => workspace.dispatch({ type: "message.deleteLocal", ids: [messageId] }) }); }}>
               <Icon name="trash" size={16} />{labels.locale === "en" ? "Delete locally" : "删除"}
             </button>
           )}
         </div>
       )}
       {forward && (
-        <ForwardModal message={forward} state={state} workspace={workspace} labels={labels} onClose={() => setForward(null)} />
+        <ForwardModal message={Array.isArray(forward) ? forward[0] : forward} messages={Array.isArray(forward) ? forward : undefined} state={state} workspace={workspace} labels={labels} onClose={() => setForward(null)} />
       )}
       {historyOpen && <HistoryModal conversation={conversation} messages={visibleMessages} state={state} workspace={workspace} labels={labels} onJump={jumpToMessage} onClose={() => setHistoryOpen(false)} />}
       {announcementOpen && announcement && (
@@ -3136,7 +3691,7 @@ function HostWorkspace({
         <div className="workspace-heading">
           <b>{displayName(device, labels)}</b>
           <span>
-            {device.is_offline ? labels.offline : labels.online} ·{" "}
+            {labels.connectionStates[peerConnectionStatus(device)] || labels.connectionStates.stale} ·{" "}
             {sourceText(device.discovery_source, labels) || labels.unknownDiscovery}
           </span>
         </div>
@@ -3147,8 +3702,8 @@ function HostWorkspace({
           <div>
             <h1>{displayName(device, labels)}</h1>
             <p>{device.hostname || device.name || labels.unknownHostname}</p>
-            <span className={device.is_offline ? "presence-label offline" : "presence-label"}>
-              {device.is_offline ? labels.offline : labels.online}
+            <span className={["ready", "updated"].includes(peerConnectionStatus(device)) ? "presence-label" : "presence-label offline"}>
+              {labels.connectionStates[peerConnectionStatus(device)] || labels.connectionStates.stale}
             </span>
           </div>
           <div className="host-actions">
@@ -3164,6 +3719,7 @@ function HostWorkspace({
             </button>
           </div>
         </section>
+        <PeerConnectionCard device={device} state={state} workspace={workspace} labels={labels} />
         <section className="detail-section">
           <h2>{labels.deviceIdentity}</h2>
           <dl className="detail-grid">
@@ -3183,9 +3739,7 @@ function HostWorkspace({
             <div>
               <dt>{labels.identityVerification}</dt>
               <dd>
-                {device.is_offline
-                  ? labels.identityOfflineStopped
-                  : labels.identityVerifiedCurrentAddress}
+                {labels.connectionStates[peerConnectionStatus(device)] || labels.connectionStates.stale}
               </dd>
             </div>
             <div>
@@ -4152,9 +4706,7 @@ function LegacyInfoPanel({ state, conversation, workspace, labels, onRemark, onC
         <span>
           {group
             ? labels.groupChat
-            : peer?.is_offline
-              ? labels.offline
-              : labels.online}
+            : labels.connectionStates[peerConnectionStatus(peer)] || labels.connectionStates.stale}
         </span>
       </div>
       {group ? (
@@ -4220,9 +4772,7 @@ function LegacyInfoPanel({ state, conversation, workspace, labels, onRemark, onC
             <div>
               <dt>{labels.identityVerification}</dt>
               <dd>
-                {peer?.is_offline
-                  ? labels.identityOfflineStopped
-                  : labels.identityVerifiedCurrentAddress}
+                {labels.connectionStates[peerConnectionStatus(peer)] || labels.connectionStates.stale}
               </dd>
             </div>
             <div>
@@ -4230,6 +4780,7 @@ function LegacyInfoPanel({ state, conversation, workspace, labels, onRemark, onC
               <dd>{sourceText(peer?.discovery_source, labels)}</dd>
             </div>
           </dl>
+          <PeerConnectionCard device={peer} state={state} workspace={workspace} labels={labels} />
           <div className="drawer-section-label">{labels.conversationManagement}</div>
           <div className="info-actions direct-info-actions drawer-setting-list">
             <button onClick={onRemark} disabled={!state.capabilities.deviceMetadata}>
@@ -4887,6 +5438,7 @@ export default function App({ workspace }) {
         setConfirm(null);
         return true;
       }
+      if (!dispatchEvent(new Event("xchat:back", { cancelable: true }))) return true;
       // 只有窄屏才有「压栈页」这个概念。桌面端返回 false，交回系统。
       if (
         !mobileList &&
@@ -4947,6 +5499,7 @@ export default function App({ workspace }) {
       <Rail state={state} labels={labels} onOpen={openSection} />
       <ListPane
         state={state}
+        workspace={workspace}
         labels={labels}
         query={query}
         setQuery={setQuery}

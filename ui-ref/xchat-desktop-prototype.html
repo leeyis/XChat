@@ -759,5 +759,452 @@ function resumeQueuedMessages(entity){const queued=[...messages.querySelectorAll
 $("retryConnection").onclick=()=>{const entity=current();if(entity.group||entity.online)return;const reconnectingId=entity.id,attempt=++reconnectAttemptToken;clearTimeout(reconnectTimer);renderConnectionState("checking");reconnectTimer=setTimeout(()=>{if(attempt!==reconnectAttemptToken)return;entity.online=true;entity.lastSeen="刚刚";if(selectedId!==reconnectingId){renderList();return}selectDevice(reconnectingId);const queuedCount=resumeQueuedMessages(entity);renderConnectionState("restored",queuedCount);if(committedSettings.presencePolicy==="all")toast(`${displayName(entity)} 已上线`);connectionBannerTimer=setTimeout(()=>{if(selectedId===reconnectingId)renderConnectionState()},1800)},850)};
 applyPrototypeTheme(committedSettings.theme);renderConnectionState();
 </script>
+<!-- Mobile bug-fix review: open with #mobile-review. Existing desktop prototype is preserved. -->
+<style>
+#mobile-review{position:fixed;inset:0;z-index:9999;background:#edece8;overflow:auto;padding:24px;color:#282622;font-family:inherit}#mobile-review[hidden]{display:none}.mr-layout{display:flex;justify-content:center;gap:32px;align-items:flex-start}.mr-notes{max-width:300px;padding-top:32px;line-height:1.8}.mr-phone{width:390px;max-width:100%;height:800px;max-height:calc(100dvh - 48px);background:#f8f7f5;border:1px solid #d9d5cf;border-radius:26px;overflow:hidden;display:flex;flex-direction:column;position:relative;box-shadow:0 15px 50px #29241b16}.mr-status{height:40px;flex-shrink:0;background:white;display:flex;align-items:center;justify-content:space-between;padding:0 22px;font-size:12px;font-weight:bold}.mr-notch{width:110px;height:23px;background:#242424;border-radius:0 0 15px 15px;align-self:flex-start}.mr-header{height:64px;flex-shrink:0;display:flex;align-items:center;gap:16px;padding:0 16px;background:white;border-bottom:1px solid #e5e1dd}.mr-header small{display:block;color:#8a8782;font-size:11px;margin-top:3px}.mr-phone button{border:0;cursor:pointer;font:inherit;background:transparent;color:inherit;min-height:44px;padding:8px 12px;border-radius:10px}.mr-messages{flex:1;padding:20px 16px;overflow:auto}.mr-time{text-align:center;color:#928b83;font-size:12px;margin:8px 0 24px}.mr-message{display:flex;gap:10px;margin-bottom:24px;align-items:flex-start}.mr-avatar{background:#b66d9e;color:white;border-radius:8px;padding:9px;font-weight:bold}.mr-bubble{background:white;padding:14px;border:1px solid #e7e2dd;border-radius:13px;max-width:280px;touch-action:pan-y;user-select:none}.mr-file{display:flex;gap:12px;align-items:center}.mr-file small{display:block;color:#928b83;margin-top:4px;font-size:12px}.mr-composer{padding:10px 12px;background:white;border-top:1px solid #e4dfd9}.mr-input{border:1px solid #b7d9c9;border-radius:12px;padding:12px;color:#918b83;min-height:94px}.mr-tools{display:flex;align-items:center;justify-content:space-between;margin-top:8px}.mr-send{background:#3eab83!important;color:white!important}.mr-nav{height:25px;background:white;display:grid;place-items:center;flex-shrink:0}.mr-nav:after{content:'';width:115px;height:4px;background:#555;border-radius:4px}.mr-shade{position:absolute;inset:40px 0 25px;background:#0004;display:flex;align-items:flex-end;z-index:2}.mr-shade[hidden]{display:none}.mr-sheet{background:#fff;width:100%;padding:20px 16px 12px;border-radius:20px 20px 0 0}.mr-sheet h3{font-size:15px;margin:0 0 14px}.mr-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.mr-grid button{background:#f5f3f0;min-height:68px}.mr-cancel{width:100%;margin-top:12px}.mr-preview{display:none;padding:10px;background:#eaf5ef;border-radius:8px;color:#397859;margin-bottom:8px;font-size:13px}@media(max-width:740px){#mobile-review{padding:0}.mr-layout{display:block}.mr-phone{border:0;border-radius:0;width:100%;height:100dvh;max-height:none}.mr-notes{display:none}}
+</style>
+<section id="mobile-review" hidden>
+ <div class="mr-layout">
+  <div class="mr-phone">
+   <div class="mr-status"><span>12:09</span><span class="mr-notch"></span><span>▥ Wi-Fi ▰</span></div>
+   <header class="mr-header"><button aria-label="返回">‹</button><div><strong>MBP-Intel</strong><small>192.168.20.133:8888 · 在线</small></div></header>
+   <div class="mr-messages"><div class="mr-time">12:06</div><div class="mr-message mr-outgoing"><div class="mr-bubble" tabindex="0" aria-label="长按打开消息菜单">新版本准备好了，可以发我测试。</div><span class="mr-avatar">我</span></div><div class="mr-message"><span class="mr-avatar">el</span><div class="mr-bubble" tabindex="0" aria-label="长按打开消息菜单"><div class="mr-file"><span data-mr-icon="file"></span><div><b>Xagent-android.apk</b><small>34.6 MB · 已接收</small></div></div></div></div><div class="mr-message"><span class="mr-avatar">el</span><div class="mr-bubble" tabindex="0" aria-label="长按打开消息菜单">安装包发你了，试试这个版本。</div></div></div>
+   <div class="mr-composer"><div class="mr-preview" id="mr-preview">▧ 拍摄的照片.jpg · 待发送 <button id="mr-remove" aria-label="移除照片">×</button></div><div class="mr-input">输入消息…<div class="mr-tools"><div class="mr-tool-group"><button class="mr-tool-btn" aria-label="表情"><span data-mr-icon="smile"></span></button><button class="mr-tool-btn" id="mr-attach" aria-label="添加附件"><span data-mr-icon="plus-circle"></span></button></div><button class="mr-send" id="mr-send">发送</button></div></div></div><div class="mr-nav"></div>
+   <div class="mr-shade" id="mr-attachment" hidden><div class="mr-sheet"><h3>添加附件</h3><div class="mr-grid"><button data-mr-pick="照片"><span data-mr-icon="image"></span><span>相册</span></button><button data-mr-pick="拍照"><span data-mr-icon="camera"></span><span>拍照</span></button><button data-mr-pick="文件"><span data-mr-icon="file"></span><span>文件</span></button></div><button class="mr-cancel">取消</button></div></div>
+   <div id="mr-menu-layer" hidden>
+    <div id="mr-menu" role="menu" aria-label="消息操作">
+     <button role="menuitem" data-mr-action="查看" data-mr-file-only hidden title="在文件管理器中查看所在目录"><span data-mr-icon="folder"></span><span>查看</span></button>
+     <button role="menuitem" data-mr-action="转发"><span data-mr-icon="forward"></span><span>转发</span></button>
+     <button role="menuitem" data-mr-action="引用"><span data-mr-icon="quote"></span><span>引用</span></button>
+     <button role="menuitem" data-mr-action="复制"><span data-mr-icon="copy"></span><span>复制</span></button>
+     <button role="menuitem" data-mr-action="删除"><span data-mr-icon="trash"></span><span>删除</span></button>
+     <button role="menuitem" data-mr-action="多选"><span data-mr-icon="select"></span><span>多选</span></button>
+     <button role="menuitem" data-mr-action="提醒" data-mr-own-only hidden><span data-mr-icon="bell"></span><span>提醒</span></button>
+     <button role="menuitem" data-mr-action="撤回" data-mr-own-only hidden><span data-mr-icon="recall"></span><span>撤回</span></button>
+     <button role="menuitem" data-mr-action="表情回应"><span data-mr-icon="smile"></span><span>表情回应</span></button>
+    </div>
+   </div>
+   <div id="mr-feedback" role="status" hidden></div>
+   <section id="mr-folder-preview" aria-label="文件管理器定位预览" hidden>
+    <header class="mr-folder-head"><button id="mr-folder-back" aria-label="返回聊天"><span data-mr-icon="back"></span></button><strong>文件管理器</strong><small>原型演示</small></header>
+    <div class="mr-folder-path"><span data-mr-icon="folder"></span><span>XChat / 接收的文件</span></div>
+    <p class="mr-folder-caption">已打开文件所在目录</p>
+    <div class="mr-folder-file"><span data-mr-icon="file"></span><div><b id="mr-located-name">Xagent-android.apk</b><small>34.6 MB</small></div></div>
+    <p class="mr-folder-note">此处演示跳转结果，实际界面由手机的默认文件管理器提供。</p>
+   </section>
+  </div>
+  <aside class="mr-notes"><h2>移动端修复预览</h2><p>顶部为系统状态栏和刘海预留空间，标题及返回按钮位于安全区内；底部避开手势条。</p><p>长按消息后，深灰菜单浮在气泡附近，小三角指向选中的消息。每行最多 5 项，图标在上、文字在下，换行处有细分隔线。点击空白处收起。</p><p>长按自己已发送的消息，第二行包含「提醒」「撤回」「表情回应」。提醒用于提醒对方查看该消息；收到的消息不显示提醒和撤回，与现有操作权限一致。</p><p>消息旁不显示常驻操作按钮。滚动时取消长按；上方空间不足时菜单显示在消息下方。</p><p>表情与附件入口均为 24 px 线性图标，线宽 1.75，外圈尺寸一致，点击区域为 44 × 44 px。圆圈加号打开相册、拍照和文件。</p><button type="button" id="mr-demo-own-menu">查看我的消息菜单</button> <button type="button" id="mr-demo-menu">查看收到的消息菜单</button><p>交互演示：长按气泡；点击圆圈加号 → 拍照查看待发送草稿。此页面仅演示，不调用相机。</p><a href="#" onclick="location.reload()">返回桌面原型</a></aside>
+ </div>
+</section>
+<script>
+(() => {
+  const root = document.getElementById('mobile-review');
+  const phone = root.querySelector('.mr-phone');
+  const messages = root.querySelector('.mr-messages');
+  const attachment = document.getElementById('mr-attachment');
+  const layer = document.getElementById('mr-menu-layer');
+  const menu = document.getElementById('mr-menu');
+  const preview = document.getElementById('mr-preview');
+  const feedback = document.getElementById('mr-feedback');
+  const folderPreview = document.getElementById('mr-folder-preview');
+  const viewFile = menu.querySelector('[data-mr-file-only]');
+  let folderOrigin = null;
+  const icons = {
+    smile: '<circle cx="12" cy="12" r="9"/><path d="M8 14.5c1.8 2 6.2 2 8 0M8.5 9h.01M15.5 9h.01"/>',
+    'plus-circle': '<circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/>',
+    forward: '<path d="m14 4 6 6-6 6v-4c-5 0-8 2-10 6 0-7 3-10 10-10Z"/>',
+    quote: '<path d="M5 6h5v6H5V6Zm9 0h5v6h-5V6ZM10 12c0 4-2 6-5 6m14-6c0 4-2 6-5 6"/>',
+    copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/>',
+    trash: '<path d="M4 6h16M9 6V3h6v3M6 6l1 14h10l1-14M10 10v6m4-6v6"/>',
+    select: '<path d="M9 5h11M9 11h11M9 17h5M4 5h.01M4 11h.01M4 17h.01m12 1 2 2 4-5"/>',
+    bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4M12 2V1"/>',
+    recall: '<path d="m8 4-5 5 5 5M3 9h10a7 7 0 0 1 7 7v4"/>',
+    image: '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-6 5 7"/>',
+    camera: '<path d="m8 5 1-2h6l1 2h4a1 1 0 0 1 1 1v13H3V6a1 1 0 0 1 1-1h4Z"/><circle cx="12" cy="12" r="4"/>',
+    file: '<path d="M14 3H5v18h14V8l-5-5Zm0 0v5h5M8 12h8m-8 4h5"/>',
+    folder: '<path d="M3 7V5a2 2 0 0 1 2-2h4l3 3h7a2 2 0 0 1 2 2v2M3 7v13h16l3-10H7L3 20"/>',
+    back: '<path d="m10 5-7 7 7 7M3 12h18"/>',
+  };
+  root.querySelectorAll('[data-mr-icon]').forEach(element => {
+    element.innerHTML = `<svg class="mr-icon" viewBox="0 0 24 24" aria-hidden="true">${icons[element.dataset.mrIcon]}</svg>`;
+  });
+
+  let selected = null, timer, feedbackTimer, openedAt = 0, origin;
+  const cancelHold = () => clearTimeout(timer);
+  function closeMenu(restoreFocus = false) {
+    cancelHold();
+    layer.hidden = true;
+    selected?.classList.remove('mr-selected');
+    selected?.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) selected?.focus({ preventScroll: true });
+    selected = null;
+  }
+  function positionMenu() {
+    if (!selected) return;
+    const shell = phone.getBoundingClientRect();
+    const target = selected.getBoundingClientRect();
+    const topLimit = root.querySelector('.mr-header').getBoundingClientRect().bottom - shell.top + 8;
+    const bottomLimit = root.querySelector('.mr-composer').getBoundingClientRect().top - shell.top - 8;
+    const width = menu.offsetWidth, height = menu.offsetHeight;
+    const above = target.top - shell.top - height - 12;
+    const below = above < topLimit;
+    const top = Math.max(topLimit, Math.min(below ? target.bottom - shell.top + 12 : above, bottomLimit - height));
+    const center = target.left - shell.left + target.width / 2;
+    const left = Math.max(12, Math.min(center - width / 2, phone.clientWidth - width - 12));
+    menu.style.top = `${top}px`;
+    menu.style.left = `${left}px`;
+    menu.style.setProperty('--mr-arrow-x', `${Math.max(18, Math.min(center - left, width - 18))}px`);
+    menu.classList.toggle('mr-below', below);
+  }
+  function openMenu(bubble, keyboard = false) {
+    closeMenu();
+    attachment.hidden = true;
+    selected = bubble;
+    selected.classList.add('mr-selected');
+    selected.setAttribute('aria-expanded', 'true');
+    const own = Boolean(selected.closest('.mr-outgoing'));
+    menu.querySelectorAll('[data-mr-own-only]').forEach(button => button.hidden = !own);
+    const file = selected.querySelector('.mr-file');
+    viewFile.hidden = !file;
+    viewFile.disabled = Boolean(file && file.dataset.localAvailable === 'false');
+    viewFile.title = viewFile.disabled ? '请先接收文件，或重新接收本地已删除的文件' : '在文件管理器中查看所在目录';
+    layer.hidden = false;
+    openedAt = performance.now();
+    positionMenu();
+    if (keyboard) menu.querySelector('button:not([hidden]):not(:disabled)').focus();
+  }
+  function closeFolder() {
+    folderPreview.hidden = true;
+    folderOrigin?.focus({ preventScroll: true });
+    folderOrigin = null;
+  }
+  function show() { root.hidden = location.hash !== '#mobile-review'; closeMenu(); closeFolder(); }
+  show();
+  addEventListener('hashchange', show);
+  addEventListener('resize', positionMenu);
+  messages.addEventListener('scroll', () => closeMenu(), { passive: true });
+  messages.addEventListener('pointerdown', event => {
+    const bubble = event.target.closest('.mr-bubble');
+    if (!bubble || !event.isPrimary || event.button !== 0) return;
+    cancelHold();
+    origin = { x: event.clientX, y: event.clientY };
+    timer = setTimeout(() => openMenu(bubble), 500);
+  });
+  messages.addEventListener('pointermove', event => {
+    if (origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 8) cancelHold();
+  });
+  ['pointerup', 'pointercancel'].forEach(type => root.addEventListener(type, cancelHold));
+  messages.addEventListener('contextmenu', event => {
+    const bubble = event.target.closest('.mr-bubble');
+    if (bubble) { event.preventDefault(); openMenu(bubble); }
+  });
+  messages.addEventListener('keydown', event => {
+    if ((event.key === 'Enter' || event.key === ' ') && event.target.closest('.mr-bubble')) {
+      event.preventDefault(); openMenu(event.target.closest('.mr-bubble'), true);
+    }
+  });
+  layer.addEventListener('pointerdown', event => { if (event.target === layer) closeMenu(); });
+  root.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { closeMenu(true); attachment.hidden = true; closeFolder(); }
+  });
+  menu.addEventListener('keydown', event => {
+    const buttons = [...menu.querySelectorAll('button')].filter(button => !button.hidden && !button.disabled);
+    const index = buttons.indexOf(document.activeElement);
+    const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: 5, ArrowUp: -5 }[event.key];
+    if (step !== undefined) { event.preventDefault(); buttons[(index + step + buttons.length) % buttons.length].focus(); }
+  });
+  menu.addEventListener('click', event => {
+    const action = event.target.closest('[data-mr-action]');
+    if (!action || action.hidden || action.disabled || performance.now() - openedAt < 220) return;
+    if (action.dataset.mrAction === '查看') {
+      folderOrigin = selected;
+      document.getElementById('mr-located-name').textContent = selected.querySelector('.mr-file b').textContent;
+      closeMenu();
+      feedback.hidden = true;
+      folderPreview.hidden = false;
+      document.getElementById('mr-folder-back').focus();
+      return;
+    }
+    closeMenu(true);
+    feedback.textContent = `原型演示：${action.dataset.mrAction}`;
+    feedback.hidden = false;
+    clearTimeout(feedbackTimer);
+    feedbackTimer = setTimeout(() => feedback.hidden = true, 1600);
+  });
+  document.getElementById('mr-demo-menu').onclick = () => openMenu(messages.querySelector('.mr-message:last-child .mr-bubble'), true);
+  document.getElementById('mr-demo-own-menu').onclick = () => openMenu(messages.querySelector('.mr-outgoing .mr-bubble'), true);
+  document.getElementById('mr-folder-back').onclick = closeFolder;
+  const fileDemo = document.createElement('button');
+  fileDemo.id = 'mr-demo-file-menu';
+  fileDemo.type = 'button';
+  fileDemo.textContent = '查看文件消息菜单';
+  fileDemo.onclick = () => openMenu(messages.querySelector('.mr-file').closest('.mr-bubble'), true);
+  document.getElementById('mr-demo-menu').after(fileDemo);
+  const fileNote = document.createElement('p');
+  fileNote.textContent = '文件消息增加「查看」：点击后打开默认文件管理器，定位到文件所在目录。未接收或本地已删除的文件需先接收，文本消息不显示此项。';
+  fileDemo.after(fileNote);
+  document.getElementById('mr-attach').onclick = () => { closeMenu(); attachment.hidden = false; };
+  attachment.onclick = event => { if (event.target === attachment || event.target.closest('.mr-cancel')) attachment.hidden = true; };
+  root.querySelectorAll('[data-mr-pick]').forEach(button => button.onclick = () => {
+    attachment.hidden = true;
+    preview.style.display = 'block';
+    preview.firstChild.textContent = button.dataset.mrPick === '文件' ? '▤ 示例文件.pdf · 待发送 ' : '▧ 拍摄的照片.jpg · 待发送 ';
+  });
+  document.getElementById('mr-remove').onclick = () => preview.style.display = 'none';
+  document.getElementById('mr-send').onclick = () => {
+    if (preview.style.display !== 'block') return;
+    preview.style.display = 'none';
+    const row = document.createElement('div');
+    row.className = 'mr-message mr-outgoing';
+    row.innerHTML = '<div class="mr-bubble" tabindex="0" aria-label="长按打开消息菜单">▧ 照片已发送（原型演示）</div>';
+    messages.append(row);
+    messages.scrollTop = messages.scrollHeight;
+  };
+})();
+</script>
+<style>
+#mobile-review .mr-icon{display:block;width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+#mobile-review [data-mr-icon]{display:inline-flex;flex:0 0 auto}
+.mr-phone .mr-tool-group{display:flex;gap:4px}
+.mr-phone .mr-tool-btn{display:grid;place-items:center;width:44px;height:44px;padding:10px;border-radius:50%;color:#817c75}
+.mr-phone .mr-tool-btn:hover{background:#efede9}
+.mr-phone .mr-grid button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px}
+.mr-bubble{-webkit-touch-callout:none;transition:background .12s}
+.mr-bubble.mr-selected{background:#d9d7d3;border-color:#d9d7d3}
+.mr-outgoing{justify-content:flex-end}.mr-outgoing .mr-bubble{background:#e1f0e7}.mr-outgoing .mr-bubble.mr-selected{background:#c4d7cc}
+#mr-menu-layer{position:absolute;inset:0;z-index:4;background:transparent}
+#mr-menu-layer[hidden],#mr-feedback[hidden]{display:none}
+#mr-menu{position:absolute;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));width:min(350px,calc(100% - 24px));padding:6px 8px;background:#4b4b4b;color:#fff;border-radius:6px;box-shadow:0 6px 20px #0002;isolation:isolate}
+#mr-menu:after{content:'';position:absolute;left:var(--mr-arrow-x,50%);bottom:-6px;width:12px;height:12px;background:#4b4b4b;transform:translateX(-50%) rotate(45deg);z-index:-1}
+#mr-menu.mr-below:after{bottom:auto;top:-6px}
+#mr-menu:before{content:'';position:absolute;left:12px;right:12px;top:80px;height:1px;background:#ffffff12}
+.mr-phone #mr-menu button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-width:0;min-height:74px;padding:12px 2px;border-radius:4px;font-size:12px;line-height:18px;white-space:nowrap;color:#fff}
+#mr-menu button[hidden]{display:none}
+.mr-phone #mr-menu button:hover,.mr-phone #mr-menu button:focus-visible{background:#ffffff18;outline:0}
+.mr-phone #mr-menu button:active{background:#ffffff25}
+.mr-phone #mr-menu button:disabled{opacity:.4;cursor:default;background:transparent}
+#mr-feedback{position:absolute;left:50%;bottom:180px;transform:translateX(-50%);padding:10px 16px;background:#333e;color:#fff;border-radius:8px;white-space:nowrap;font-size:13px;z-index:5}
+#mr-demo-menu,#mr-demo-own-menu,#mr-demo-file-menu{border:1px solid #c9c4be;border-radius:8px;background:white;padding:10px 16px;margin:0 4px 8px 0;color:#35312c;font:inherit;cursor:pointer}
+#mr-folder-preview{position:absolute;inset:40px 0 25px;z-index:3;background:#fff;overflow:auto}
+#mr-folder-preview[hidden]{display:none}
+.mr-folder-head{display:flex;align-items:center;gap:8px;min-height:64px;padding:0 12px;border-bottom:1px solid #e5e1dd}
+.mr-folder-head button{display:grid;place-items:center;width:44px;height:44px;padding:10px}
+.mr-folder-head small{margin-left:auto;font-size:11px;color:#938b81}
+.mr-folder-path{display:flex;align-items:center;gap:10px;margin:24px 20px 16px;color:#817a72;font-size:13px}
+.mr-folder-caption{margin:0 20px 16px;color:#938b81;font-size:12px}
+.mr-folder-file{display:flex;align-items:center;gap:14px;margin:0 16px;padding:18px 14px;border:1px solid #c4ddcf;border-radius:10px;background:#eef6f1}
+.mr-folder-file div{min-width:0}.mr-folder-file b{display:block;overflow-wrap:anywhere}.mr-folder-file small{display:block;margin-top:5px;color:#817a72;font-size:12px}
+.mr-folder-note{margin:20px;color:#938b81;font-size:12px;line-height:1.7}
+@media(prefers-reduced-motion:reduce){.mr-bubble{transition:none}}
+</style>
+<!-- Desktop review 2026-09-18: simulated discovery and delivery, no network or file-system calls. -->
+<style>
+  .list-pane{display:flex;flex-direction:column}.list-head{flex:0 0 56px}.list-scroll{height:auto;min-height:0;flex:1}
+  .desktop-review-tools{flex:0 0 auto;padding:12px;border-top:1px solid var(--border);background:var(--surface)}
+  .desktop-review-tools small{display:block;margin-bottom:8px;color:var(--muted);font-size:10px;letter-spacing:.04em}
+  .desktop-review-tools select{width:100%;height:30px;padding:0 7px;border:1px solid var(--border);border-radius:6px;background:var(--bg);font-size:11px}
+  .desktop-review-links{display:flex;gap:8px;margin-top:7px}.desktop-review-links button{flex:1;padding:5px 0;border:0;background:none;color:var(--accent);font-size:11px;text-align:left}
+  .peer-refresh-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:30px;padding:0 10px;white-space:nowrap;border:1px solid var(--border);border-radius:7px;background:var(--surface);font-size:12px;color:var(--fg)}
+  .peer-refresh-btn:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}.peer-refresh-btn:disabled{opacity:.6;cursor:wait}
+  .peer-refresh-btn svg{width:15px;height:15px}.peer-refresh-btn[aria-busy=true] svg{animation:peer-refresh-spin 1s linear infinite}
+  @keyframes peer-refresh-spin{to{transform:rotate(360deg)}}
+  .device-discovery-tools{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:10px 12px;border-bottom:1px solid var(--border)}
+  .device-discovery-tools small{color:var(--muted);font-size:10px}.device-discovery-tools button{padding:0 7px;font-size:11px}
+  .peer-route-card{margin-top:10px;padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+  .peer-route-card b{display:block;font-size:12px}.peer-route-card p{margin:6px 0 10px;font-size:11px;color:var(--muted);line-height:1.65;overflow-wrap:anywhere}
+  .peer-route-card .num{display:block;margin:5px 0}.peer-route-card .peer-refresh-btn{width:100%}.route-status-dot{display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;background:var(--accent)}
+  .peer-route-card[data-state=stale] .route-status-dot,.peer-route-card[data-state=missing] .route-status-dot{background:var(--warning)}
+  .peer-route-card[data-state=mismatch] .route-status-dot{background:var(--danger)}
+  .chat-head>div:first-child{min-width:0}.chat-sub{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.chat-actions{align-items:center;flex:0 0 auto}
+  .connection-banner.route-warning .connection-mark{background:var(--warning)}.connection-banner.route-error .connection-mark{background:var(--danger)}
+  .connection-copy small{white-space:normal;line-height:1.5}.connection-banner{min-height:58px}
+  .file-card.local-ready{width:300px;max-width:100%;box-shadow:0 1px 2px color-mix(in srgb,var(--fg) 5%,transparent)}
+  .file-card.local-ready .file-top{grid-template-columns:40px minmax(0,1fr)}.file-card.local-ready .file-name{font-size:13px}.file-card.local-ready .file-status{font:11px/1.5 var(--font)}
+  .message-body-content:has(.file-card.local-ready){width:300px}.file-card:focus-visible,.peer-refresh-btn:focus-visible,.desktop-review-tools button:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+  .file-menu-title{max-width:242px;padding:7px 10px;color:var(--muted);font-size:11px;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
+  .context.message-menu{min-width:202px}.context.message-menu button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  .receipt.status-unconfirmed{color:color-mix(in srgb,var(--warning) 60%,var(--fg))}.retry-message-btn{border:0;background:none;color:var(--accent);padding:0 2px;font:11px var(--font);cursor:pointer}
+  .delivery-note{max-width:300px;font-size:10px;line-height:1.5;color:var(--muted);margin-top:5px;text-align:right}
+  @media(max-width:1100px){.app.info-open{grid-template-columns:56px 250px minmax(360px,1fr) 230px}.chat{min-width:360px}.chat-head{padding:0 12px}.chat-sub{max-width:220px}.chat-actions{gap:2px}.peer-refresh-btn{padding:0 7px}.msg-stack{max-width:85%}}
+  @media(prefers-reduced-motion:reduce){.peer-refresh-btn[aria-busy=true] svg{animation:none}}
+</style>
+<script>
+// All state below is in-memory review data; production behavior is specified in the companion plan.
+(() => {
+  const refreshIcon='<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 17.9 17"/></svg>';
+  const routeStates=new Map();
+  const inFlight=new Map();
+  let scenario='changed',generation=0,discoveryBusy=false;
+  const review=document.createElement('aside');
+  review.className='desktop-review-tools';
+  review.innerHTML='<small>桌面原型 · 09.18 · 以下为模拟场景</small><select id="desktopReviewScenario" aria-label="选择原型演示场景"><option value="changed">地址变化 · 刷新后恢复</option><option value="missing">未找到设备 · 保留历史地址</option><option value="mismatch">身份不匹配 · 停止连接</option><option value="ack-timeout">回执超时 · 未确认送达</option></select><div class="desktop-review-links"><button id="desktopReviewFiles" type="button">查看文件右键菜单</button><button id="desktopReviewReset" type="button">重置演示</button></div>';
+  document.querySelector('.list-pane').append(review);
+  const toolbar=document.createElement('div');
+  toolbar.className='device-discovery-tools';toolbar.hidden=true;
+  toolbar.innerHTML=`<small id="peerDiscoverySummary" role="status">自动发现已开启</small><button class="peer-refresh-btn" id="rediscoverDevices" type="button">${refreshIcon}<span>重新发现</span></button>`;
+  list.before(toolbar);
+  const refreshButton=document.createElement('button');
+  refreshButton.className='peer-refresh-btn';refreshButton.id='refreshPeerAddress';refreshButton.type='button';
+  refreshButton.title='重新发现并验证对方的最新地址';refreshButton.innerHTML=refreshIcon+'<span>刷新地址</span>';
+  document.querySelector('.chat-actions').prepend(refreshButton);
+  function stateFor(peer){return routeStates.get(peer.id)||{state:peer.online?'ready':'missing',verified:peer.online?'刚刚':'尚未确认'};}
+  function stateLabel(peer){const s=stateFor(peer);return {stale:'已发现 · 连接待验证',discovering:'正在查找最新地址',verifying:'正在验证新地址',ready:'在线 · 连接已验证',updated:'在线 · 地址已更新',missing:'暂时无法连接',mismatch:'设备身份不匹配'}[s.state];}
+  function refreshMarkup(peer){const s=stateFor(peer),busy=inFlight.has(peer.id);return `<section class="peer-route-card" data-state="${s.state}" aria-label="连接状态"><b><i class="route-status-dot"></i>${stateLabel(peer)}</b><p>${s.previous?`上次地址<span class="num">${uxEsc(s.previous)}</span>`:''}${s.candidate?`发现地址<span class="num">${uxEsc(s.candidate)}</span>`:''}${s.state==='updated'?'已核对设备 ID，聊天记录和备注继续保留。':s.state==='missing'?'本次未找到可验证的地址，历史地址已保留。':s.state==='mismatch'?'发现地址对应其他设备，已停止连接。':'收到上线广播后，还需确认消息服务可连接。'}<br>上次连接验证：${uxEsc(s.verified||'尚未确认')}</p><button class="peer-refresh-btn" type="button" data-refresh-peer="${peer.id}" ${busy?'disabled':''} aria-busy="${busy}">${refreshIcon}${busy?'正在刷新…':'刷新设备地址'}</button></section>`;}
+  const originalFacts=drawerFacts;
+  drawerFacts=function(peer){return originalFacts(peer).replace(peer.online?'当前地址已确认':'离线，未向旧地址发送',stateLabel(peer))+refreshMarkup(peer);};
+  function paintRoute(){
+    const peer=current(),s=stateFor(peer),busy=inFlight.has(peer.id);
+    refreshButton.hidden=!!peer.group||!!peer.ai;
+    refreshButton.disabled=busy;refreshButton.setAttribute('aria-busy',String(busy));refreshButton.querySelector('span').textContent=busy?'正在刷新…':'刷新地址';
+    if(peer.group||peer.ai){$('connectionBanner').hidden=true;return;}
+    $('chatSub').textContent=`${peer.address} · ${stateLabel(peer)}`;
+    $('infoAddress').textContent=peer.address;$('infoVerification').textContent=stateLabel(peer);
+    const banner=$('connectionBanner');banner.classList.remove('checking','restored','route-warning','route-error');
+    const copy={
+      stale:['设备已被发现，连接仍需验证','点击刷新地址，重新查找并核对这台设备的最新地址。'],
+      discovering:['正在查找对方的最新地址…','正在已启用的网络中重新发现设备。'],
+      verifying:['已发现候选地址，正在验证…',`${s.candidate||peer.address} · 核对设备 ID 与消息连接。`],
+      updated:['地址已更新，连接已恢复',`${s.previous} → ${peer.address} · 已确认是同一台设备。`],
+      missing:['暂未找到可连接的设备','已保留历史地址和聊天记录。确认对方已打开 XChat 且网络可达后重试。'],
+      mismatch:['发现的地址属于其他设备','设备 ID 不匹配，已停止连接；原设备和聊天记录保持不变。']
+    }[s.state];
+    banner.hidden=!copy;
+    if(copy){$('connectionTitle').textContent=copy[0];$('connectionText').textContent=copy[1];banner.classList.toggle('checking',busy);banner.classList.toggle('restored',s.state==='updated');banner.classList.toggle('route-error',s.state==='mismatch');}
+    const retry=$('retryConnection');retry.hidden=busy||s.state==='updated';retry.disabled=busy;retry.textContent=s.state==='stale'?'刷新地址':'重新发现';
+    drawerRender();
+  }
+  const originalSelect=selectDevice;
+  selectDevice=function(id){originalSelect(id);paintRoute();};
+  const originalTab=setTab;
+  setTab=function(tab){originalTab(tab);toolbar.hidden=tab!=='devices';review.hidden=tab==='settings'||tab==='files';};
+  const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  async function refreshPeer(peer){
+    if(inFlight.has(peer.id))return inFlight.get(peer.id);
+    const epoch=generation,mode=scenario,previous=peer.address;
+    const task=(async()=>{
+      routeStates.set(peer.id,{state:'discovering',verified:stateFor(peer).verified});
+      await pause(650);if(epoch!==generation)return false;
+      const failed=peer.id==='zhang-3'&&(mode==='missing'||mode==='mismatch');
+      const candidate=peer.id==='zhang-3'&&mode!=='ack-timeout'?'192.168.1.86:8888':peer.address;
+      routeStates.set(peer.id,{state:'verifying',candidate,verified:'正在验证'});if(selectedId===peer.id)paintRoute();
+      await pause(750);if(epoch!==generation)return false;
+      if(failed){peer.online=false;routeStates.set(peer.id,{state:mode,verified:'本次未通过',candidate:mode==='mismatch'?candidate:null});}
+      else if(!peer.online&&peer.id!=='zhang-3'){routeStates.set(peer.id,{state:'missing',verified:'本次未找到'});}
+      else{peer.address=candidate;peer.online=true;peer.lastSeen='刚刚';routeStates.set(peer.id,{state:previous===candidate?'ready':'updated',previous:previous===candidate?null:previous,verified:'刚刚'});}
+      renderList();return peer.online;
+    })();
+    inFlight.set(peer.id,task);if(selectedId===peer.id)paintRoute();
+    try{return await task;}finally{if(inFlight.get(peer.id)===task){inFlight.delete(peer.id);if(selectedId===peer.id)paintRoute();}}
+  }
+  refreshButton.onclick=()=>refreshPeer(current());
+  $('retryConnection').onclick=()=>refreshPeer(current());
+  drawerPrototypeRoot.addEventListener('click',event=>{if(event.target.closest('[data-refresh-peer]'))refreshPeer(current());});
+  $('rediscoverDevices').onclick=async()=>{
+    if(discoveryBusy)return;discoveryBusy=true;const epoch=generation,button=$('rediscoverDevices');button.disabled=true;button.setAttribute('aria-busy','true');
+    $('peerDiscoverySummary').textContent='正在发现并验证…';
+    try{await Promise.all(devices.filter(peer=>!peer.ai).map(refreshPeer));if(epoch!==generation)return;const verified=devices.filter(peer=>!peer.ai&&['ready','updated'].includes(stateFor(peer).state)).length;$('peerDiscoverySummary').textContent=`已验证 ${verified} 台 · 其余暂不可达`;}
+    finally{discoveryBusy=false;button.disabled=false;button.setAttribute('aria-busy','false');}
+  };
+
+  // File actions share one menu definition for right-click and the existing More button.
+  function localFile(row){return row.querySelector('.file-card')?.dataset.localAvailable==='true'||/已接收/.test(row.querySelector('.file-status')?.textContent||'');}
+  function fileItems(row,attribute){if(uxMessageType(row)!=='file')return '';const available=localFile(row),disabled=available?'':'disabled title="文件尚未接收或本地文件已不可用"';return `<div class="context-sep"></div><button ${attribute}="open-file" ${disabled}>${fileIcon}打开文件</button><button ${attribute}="open-directory" ${disabled}>${folderIcon}打开目录</button><button ${attribute}="save" ${disabled}>${uxSvg.save}另存为</button>`;}
+  const originalAction=uxHandleMessageAction;
+  uxHandleMessageAction=function(action,row){
+    if(['open-file','open-directory','save'].includes(action)&&uxMessageType(row)==='file'){
+      if(!localFile(row)){toast('文件尚未接收或本地文件已不可用');return;}
+      const name=row.querySelector('.file-name').textContent;
+      toast(action==='open-file'?`原型演示：用默认应用打开「${name}」`:action==='open-directory'?`原型演示：打开目录并选中「${name}」`:`原型演示：选择「${name}」的另存位置`);return;
+    }
+    originalAction(action,row);
+  };
+  const originalMenu=uxShowMessageMenu;
+  uxShowMessageMenu=function(event,row){
+    originalMenu(event,row);const menu=$('context');
+    if(uxMessageType(row)==='file'){
+      const save=menu.querySelector('[data-message-action="save"]');if(save){save.previousElementSibling?.remove();save.remove();}
+      const recall=menu.querySelector('[data-message-action="recall"]');recall.previousElementSibling.insertAdjacentHTML('beforebegin',fileItems(row,'data-message-action'));
+      menu.insertAdjacentHTML('afterbegin',`<div class="file-menu-title">${uxEsc(row.querySelector('.file-name').textContent)}</div>`);
+      menu.querySelectorAll('[data-message-action]').forEach(button=>button.onclick=()=>{if(!button.disabled){uxHandleMessageAction(button.dataset.messageAction,row);uxCloseMessageMenu();}});
+    }
+    menu.style.left=`${Math.max(8,Math.min(event.clientX,innerWidth-menu.offsetWidth-8))}px`;menu.style.top=`${Math.max(8,Math.min(event.clientY,innerHeight-menu.offsetHeight-8))}px`;
+    menu.setAttribute('role','menu');menu.querySelectorAll('button').forEach(button=>button.setAttribute('role','menuitem'));
+    menu.querySelector('button:not(:disabled)')?.focus();
+  };
+  const originalCompact=openCompactMessageMenu;
+  openCompactMessageMenu=function(button,row){
+    originalCompact(button,row);if(uxMessageType(row)!=='file')return;
+    const menu=$('context'),recall=menu.querySelector('[data-compact-action="recall"]');recall.previousElementSibling.insertAdjacentHTML('beforebegin',fileItems(row,'data-compact-action'));
+    menu.querySelectorAll('[data-compact-action="open-file"],[data-compact-action="open-directory"],[data-compact-action="save"]').forEach(item=>item.onclick=()=>{if(!item.disabled){uxHandleMessageAction(item.dataset.compactAction,row);uxCloseMessageMenu();row.classList.remove('actions-open');}});
+    menu.style.top=`${Math.max(8,Math.min(button.getBoundingClientRect().bottom+7,innerHeight-menu.offsetHeight-8))}px`;
+  };
+  $('context').addEventListener('keydown',event=>{
+    if(event.key==='Escape'){uxCloseMessageMenu();uxContextMessage?.querySelector('.file-card')?.focus();return;}
+    if(!['ArrowDown','ArrowUp','Home','End'].includes(event.key))return;event.preventDefault();
+    const buttons=[...$('context').querySelectorAll('button:not(:disabled)')],index=buttons.indexOf(document.activeElement);
+    buttons[event.key==='Home'?0:event.key==='End'?buttons.length-1:(index+(event.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length]?.focus();
+  });
+  const originalBind=bindMessageActions;
+  bindMessageActions=function(){originalBind();messages.querySelectorAll('.file-card').forEach(card=>{
+    card.tabIndex=0;card.setAttribute('aria-label',`${card.querySelector('.file-name')?.textContent}，右键查看文件操作`);
+    card.onkeydown=event=>{if(event.key==='ContextMenu'||event.shiftKey&&event.key==='F10'){event.preventDefault();const rect=card.getBoundingClientRect();uxShowMessageMenu({preventDefault(){},stopPropagation(){},clientX:rect.left+35,clientY:rect.top+25},card.closest('.msg'));}};
+    if(localFile(card.closest('.msg'))){card.dataset.localAvailable='true';card.classList.add('local-ready');card.querySelectorAll('.file-action').forEach(button=>button.remove());}
+  });};
+  // The download demo also finishes without an inline Open button.
+  const originalDownload=download;
+  download=function(button){const card=button.closest('.file-card');originalDownload(button);const observer=new MutationObserver(()=>{if(/已接收/.test(card.querySelector('.file-status').textContent)){observer.disconnect();card.dataset.localAvailable='true';card.classList.add('local-ready');button.remove();}});observer.observe(card,{subtree:true,childList:true,characterData:true});};
+
+  const originalHumanChat=humanChat;
+  humanChat=function(peer){
+    if(peer.id!=='zhang-3')return originalHumanChat(peer);
+    const files=[['导入样例0907_v1.xlsx','20.2 KB'],['导入样例0907.xlsx','17.9 KB'],['Xagent-2.1.7-arm64.dmg','450.7 MB']];
+    return `<div class="day">今天</div><div class="msg">${avatar(peer)}<div class="msg-stack"><div class="bubble">三个文件发你了，收到后帮我看一下。</div><span class="msg-time">14:30</span></div></div>${files.map(([name,size],i)=>`<div class="msg" data-message-id="review-file-${i}" data-message-type="file">${avatar(peer)}<div class="msg-stack"><div class="file-card local-ready" data-local-available="true"><div class="file-top"><span class="file-icon">${fileIcon}</span><div><div class="file-name" title="${name}">${name}</div><div class="file-status">已接收 · ${size}</div></div></div></div><span class="msg-time">14:3${i+1}</span></div></div>`).join('')}<div class="msg sent" data-message-id="review-pending" data-review-pending="true">${avatar({id:'self',name:'我'})}<div class="msg-stack"><div class="bubble">文件收到了，我来检查。</div><span class="msg-time">14:35 <span class="receipt status-unconfirmed" title="尚未收到对方的送达回执">未确认送达</span><button class="retry-message-btn" type="button" data-review-retry>重新发送</button></span><small class="delivery-note">对方可能已收到，重试将沿用同一条消息。</small></div></div>`;
+  };
+  receiptStateHelp.unconfirmed='在等待时间内没有收到送达回执；对方可能已收到，重试会沿用原消息 ID。';
+  const originalProgress=progressDeliveryReceipt;
+  progressDeliveryReceipt=function(row,peer,resend=false){
+    if(peer.group)return originalProgress(row,peer,resend);
+    const receipt=row.querySelector('.receipt');if(!receipt)return;
+    const token=`${Date.now()}-${Math.random()}`,timeout=scenario==='ack-timeout',epoch=generation;row.dataset.deliveryToken=token;
+    row.querySelector('[data-review-retry]')?.remove();row.querySelector('.delivery-note')?.remove();
+    setReceiptState(receipt,'sending',resend?'正在重试':'发送中');
+    setTimeout(()=>{if(epoch===generation&&row.dataset.deliveryToken===token)setReceiptState(receipt,'sent','已发出 · 等待回执');},250);
+    setTimeout(()=>{
+      if(epoch!==generation||row.dataset.deliveryToken!==token)return;
+      setReceiptState(receipt,timeout?'unconfirmed':'delivered',timeout?'未确认送达':'已送达');
+      if(timeout){const visible=row.dataset.prototypeOutgoingId?messages.querySelector(`[data-prototype-outgoing-id="${row.dataset.prototypeOutgoingId}"]`):null,target=visible||row;target.querySelector('.receipt').parentElement.insertAdjacentHTML('beforeend','<button class="retry-message-btn" type="button" data-review-retry>重新发送</button>');target.querySelector('.msg-stack').insertAdjacentHTML('beforeend','<small class="delivery-note">对方可能已收到，重试将沿用同一条消息。</small>');rememberPrototypeOutgoing(target);}
+    },timeout?2300:1200);
+  };
+  const originalAddReceipt=addReceipt;
+  addReceipt=async function(row,peer=current()){
+    if(peer.group||peer.ai)return originalAddReceipt(row,peer);
+    const receipt=row.querySelector('.receipt');if(!receipt)return;
+    row.dataset.prototypeConversationId=peer.id;row.dataset.prototypeOutgoingId=row.dataset.prototypeOutgoingId||`prototype-outgoing-${Date.now()}-${++prototypeOutgoingSequence}`;
+    if(!['ready','updated'].includes(stateFor(peer).state)){
+      const epoch=generation;setReceiptState(receipt,'sending','正在确认连接');const connected=await refreshPeer(peer);if(epoch!==generation)return;
+      if(!connected){setReceiptState(receipt,'queued','等待连接恢复');return;}
+    }
+    progressDeliveryReceipt(row,peer);
+  };
+  messages.addEventListener('click',async event=>{
+    const button=event.target.closest('[data-review-retry]');if(!button)return;event.stopPropagation();const row=button.closest('.msg'),peer=current(),epoch=generation;
+    button.disabled=true;button.textContent='正在重试…';
+    if(!['ready','updated'].includes(stateFor(peer).state)){if(!await refreshPeer(peer)){if(button.isConnected){button.disabled=false;button.textContent='重新发送';}return;}}
+    if(epoch!==generation||!row.isConnected)return;progressDeliveryReceipt(row,peer,true);
+  });
+  function resetReview(){
+    generation++;inFlight.clear();routeStates.clear();
+    const peer=devices.find(item=>item.id==='zhang-3');peer.address='192.168.1.42:8888';peer.online=true;
+    routeStates.set(peer.id,{state:scenario==='ack-timeout'?'ready':'stale',verified:scenario==='ack-timeout'?'刚刚':'上次会话'});
+    prototypeOutgoingByConversation.delete(peer.id);
+    setTab('sessions');selectDevice(peer.id);$('dock').hidden=true;uxCloseMessageMenu();
+    $('peerDiscoverySummary').textContent='自动发现已开启';scroll.scrollTop=0;
+  }
+  $('desktopReviewScenario').onchange=event=>{scenario=event.target.value;resetReview();};
+  $('desktopReviewReset').onclick=resetReview;
+  $('desktopReviewFiles').onclick=event=>{event.stopPropagation();setTab('sessions');if(selectedId!=='zhang-3')selectDevice('zhang-3');const row=messages.querySelector('[data-message-id="review-file-0"]');row.scrollIntoView({block:'center'});const rect=row.querySelector('.file-card').getBoundingClientRect();uxShowMessageMenu({preventDefault(){},stopPropagation(){},clientX:rect.right+8,clientY:rect.top},row);};
+  resetReview();
+})();
+</script>
 </body>
 </html>

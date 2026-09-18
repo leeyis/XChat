@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub use crate::network::peer_connection::PeerConnectionStatus;
+
 // 发现稳态间隔为 24–36 秒。至少容忍两个最慢发现周期，再留 3 秒给
 // 调度抖动，避免设备在两轮合法公告之间被反复标离线。
 pub(crate) const PEER_OFFLINE_TIMEOUT_SECS: u64 = 75;
@@ -35,6 +37,7 @@ pub struct Peer {
 #[derive(Clone)]
 pub struct PeerManager {
     peers: Arc<RwLock<HashMap<String, Peer>>>, // key 是 UUID
+    pub(crate) connections: Arc<crate::network::peer_connection::ConnectionRegistry>,
 }
 
 fn reconcile_verified_peer_endpoints(
@@ -43,7 +46,10 @@ fn reconcile_verified_peer_endpoints(
 ) {
     for (device_id, endpoint) in verified_endpoints {
         if let Some(peer) = peers.get_mut(device_id) {
-            peer.addr = endpoint.clone();
+            // A stored fixed endpoint is a candidate, not proof that DHCP has not changed.
+            if peer.addr.is_empty() {
+                peer.addr = endpoint.clone();
+            }
         }
     }
 }
@@ -52,10 +58,12 @@ impl PeerManager {
     pub fn new() -> Self {
         Self {
             peers: Arc::new(RwLock::new(HashMap::new())),
+            connections: Arc::new(crate::network::peer_connection::ConnectionRegistry::default()),
         }
     }
 
     pub fn remove_peer(&self, id: &str) {
+        self.connections.remove(id);
         let mut peers = self.peers.write().unwrap();
         if peers.remove(id).is_some() {
             println!("[PeerManager] 已从内存中彻底移除用户: {}", id);
@@ -90,6 +98,9 @@ impl PeerManager {
             peers.insert(user.id, peer);
         }
         reconcile_verified_peer_endpoints(&mut peers, &verified_endpoints);
+        for peer in peers.values() {
+            self.connections.observe(&peer.id, &peer.addr);
+        }
 
         println!("[PeerManager] 已加载 {} 个历史用户", peers.len());
         Ok(())
@@ -142,13 +153,16 @@ impl PeerManager {
             .unwrap()
             .as_secs();
 
+        // Broadcasts supply candidates. Only a verified connection replaces an active address.
+        let addr = self.connections.observe(&id, &addr);
+
         let mut peers = self.peers.write().unwrap();
 
         if let Some(peer) = peers.get_mut(&id) {
             // 已存在,更新信息
             let was_offline = peer.is_offline;
             peer.name = name;
-            peer.addr = addr;
+            // Existing active addresses are committed only by the serialized connection verifier.
             peer.last_seen = now;
             peer.is_offline = false;
             if authoritative && peer.available_memory_mb == 0 && available_memory_mb > 0 {
@@ -266,9 +280,7 @@ impl PeerManager {
 
     // 获取所有用户（包括离线的）
     pub fn get_all_peers(&self) -> Vec<Peer> {
-        // 先标记离线用户；通知由离线看门狗负责，这里只要状态最新
-        let _ = self.mark_stale_as_offline();
-
+        // The watchdog owns offline transitions so snapshot reads cannot consume notifications.
         let peers = self.peers.read().unwrap();
         peers.values().cloned().collect()
     }
@@ -277,6 +289,19 @@ impl PeerManager {
     pub fn get_active_peers(&self) -> Vec<Peer> {
         let peers = self.peers.read().unwrap();
         peers.values().filter(|p| !p.is_offline).cloned().collect()
+    }
+
+    pub fn connection_snapshot(&self, id: &str) -> Option<PeerConnectionStatus> {
+        self.connections.snapshot(id)
+    }
+
+    pub(crate) fn set_verified_address(&self, id: &str, address: &str) -> bool {
+        let mut peers = self.peers.write().unwrap();
+        let Some(peer) = peers.get_mut(id) else { return false };
+        peer.addr = address.to_string();
+        peer.last_seen = chrono::Utc::now().timestamp().max(0) as u64;
+        peer.is_offline = false;
+        true
     }
 }
 
@@ -291,7 +316,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn verified_endpoint_reconciles_historical_address_without_changing_presence() {
+    fn fixed_endpoint_does_not_overwrite_the_last_active_address_at_startup() {
         let mut peers = HashMap::from([(
             "peer-20".to_string(),
             Peer {
@@ -316,7 +341,7 @@ mod tests {
 
         reconcile_verified_peer_endpoints(&mut peers, &verified_endpoints);
 
-        assert_eq!(peers["peer-20"].addr, "192.168.20.105:8888");
+        assert_eq!(peers["peer-20"].addr, "192.168.10.120:8888");
         assert!(peers["peer-20"].is_offline);
     }
 

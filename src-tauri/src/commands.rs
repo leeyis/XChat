@@ -24,6 +24,25 @@ pub struct PeerState {
     pub manager: Arc<PeerManager>,
 }
 
+#[cfg(feature = "desktop")]
+#[tauri::command]
+pub async fn refresh_peer_connection(
+    state: State<'_, DbState>,
+    peers: State<'_, PeerState>,
+    peer_id: String,
+) -> Result<crate::peers::PeerConnectionStatus, String> {
+    crate::network::peer_connection::refresh_peer_connection(&state.pool, &peers.manager, &peer_id).await
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+pub async fn rediscover_peers(
+    state: State<'_, DbState>,
+    peers: State<'_, PeerState>,
+) -> Result<Vec<crate::peers::PeerConnectionStatus>, String> {
+    crate::network::peer_connection::rediscover_peers(&state.pool, &peers.manager).await
+}
+
 /// 托盘闪烁状态（仅桌面端）
 pub struct TrayFlashState {
     pub generation: Arc<AtomicU64>,
@@ -997,12 +1016,12 @@ pub async fn get_current_theme(state: State<'_, DbState>) -> Result<String, Stri
 
 #[tauri::command]
 pub async fn get_default_download_path() -> Result<String, String> {
-    if cfg!(target_os = "android") {
-        // Android 的公共下载目录
-        let download_path = "/storage/emulated/0/Download/Xchat";
-        println!("[Command] Android 默认下载路径: {}", download_path);
-        Ok(download_path.to_string())
-    } else {
+    #[cfg(target_os = "android")]
+    {
+        crate::db::default_android_download_path()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
         // 桌面端和 Web 端返回用户下载目录
         let home_dir = dirs::home_dir().ok_or("无法获取用户主目录")?;
         let download_path = home_dir.join("Downloads").join("Xchat");
@@ -1212,10 +1231,56 @@ impl AndroidShareState {
 }
 
 #[tauri::command]
-pub async fn open_saf_picker() -> Result<(), String> {
+pub async fn open_saf_picker(mime_type: Option<String>) -> Result<(), String> {
     #[cfg(target_os = "android")]
     {
-        crate::android_fd::AndroidFile::trigger_saf_picker_jni()
+        crate::android_fd::AndroidFile::trigger_saf_picker_jni(mime_type.as_deref().unwrap_or("*/*"))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = mime_type;
+        Err("该功能仅在 Android 端可用".to_string())
+    }
+}
+
+/// Android 输入区：拍照。结果（成功/取消/无权限/无相机）由 Kotlin 侧
+/// 通过 injectDataIntoWebView 空投回前端，所以这里只负责把意图送到系统相机。
+#[tauri::command]
+pub async fn open_camera_capture() -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        crate::android_fd::AndroidFile::launch_camera_jni()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Err("该功能仅在 Android 端可用".to_string())
+    }
+}
+
+/// Android 输入区：按住说话 —— 开始录音。
+/// 返回 { status: "recording" | "permission_denied" | "failed", message? }
+#[tauri::command]
+pub async fn start_voice_recording() -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "android")]
+    {
+        let raw = crate::android_fd::AndroidFile::start_voice_recording_jni()?;
+        serde_json::from_str(&raw).map_err(|e| format!("录音状态解析失败: {} (原始值: {})", e, raw))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Err("该功能仅在 Android 端可用".to_string())
+    }
+}
+
+/// Android 输入区：松手结束录音。cancelled=true 表示上滑取消/时长过短，
+/// 原生侧会删掉文件。返回 { status: "ok" | "cancelled", path?, name?, size?, duration_ms?, mime_type? }
+#[tauri::command]
+#[allow(unused_variables)]
+pub async fn stop_voice_recording(cancelled: bool) -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "android")]
+    {
+        let raw = crate::android_fd::AndroidFile::stop_voice_recording_jni(cancelled)?;
+        serde_json::from_str(&raw).map_err(|e| format!("录音状态解析失败: {} (原始值: {})", e, raw))
     }
     #[cfg(not(target_os = "android"))]
     {
@@ -2899,7 +2964,37 @@ pub async fn reveal_workspace_file(
     message_id: i64,
 ) -> Result<(), String> {
     let path = crate::workspace::trusted_file_path(&state.pool, message_id).await?;
-    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        tokio::task::spawn_blocking(move || {
+            use jni::objects::{JObject, JString, JValue};
+            let context = ndk_context::android_context();
+            let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast()) }
+                .map_err(|error| error.to_string())?;
+            let mut env = vm.attach_current_thread().map_err(|error| error.to_string())?;
+            let activity = unsafe { JObject::from_raw(context.context().cast()) };
+            let argument = env.new_string(path.to_string_lossy()).map_err(|error| error.to_string())?;
+            let argument = env.auto_local(argument);
+            let result = env.call_method(
+                &activity,
+                "revealFileDirectory",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                &[JValue::Object(argument.as_ref())],
+            );
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_clear();
+                return Err("打开文件目录失败".to_string());
+            }
+            let result = result.and_then(|value| value.l()).map_err(|error| error.to_string())?;
+            let result = env.auto_local(JString::from(result));
+            let error: String = env.get_string(result.as_ref()).map_err(|error| error.to_string())?.into();
+            if error.is_empty() { Ok(()) } else { Err(error) }
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+    #[cfg(target_os = "ios")]
     {
         let _ = app;
         let _ = path;

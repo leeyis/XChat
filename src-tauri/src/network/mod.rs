@@ -3,5 +3,6 @@ pub mod discovery;
 pub mod discovery_policy;
 pub mod messaging;
 pub mod peer_identity;
+pub mod peer_connection;
 pub mod protocol;
 pub mod transfer;

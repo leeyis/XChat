@@ -86,6 +86,11 @@ const MAX_BROWSER_UPLOAD_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 /// 就会永远停在「已发出」。回执顺着入站连接送回，这条链路才完整。
 type InboundReplySenders = Mutex<HashMap<String, (u64, tokio::sync::mpsc::Sender<String>)>>;
 
+tokio::task_local! {
+    // A delivery ACK belongs to the socket that carried this message, even with concurrent sends.
+    static CURRENT_PEER_REPLY: tokio::sync::mpsc::Sender<String>;
+}
+
 fn inbound_reply_senders() -> &'static InboundReplySenders {
     static SENDERS: std::sync::OnceLock<InboundReplySenders> = std::sync::OnceLock::new();
     SENDERS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -143,6 +148,45 @@ fn reply_dispatcher() -> &'static std::sync::RwLock<Option<Arc<AppState>>> {
 pub fn register_reply_dispatcher(state: &Arc<AppState>) {
     if let Ok(mut dispatcher) = reply_dispatcher().write() {
         *dispatcher = Some(state.clone());
+    }
+}
+
+pub fn publish_peer_connection_changed(connection: &crate::peers::PeerConnectionStatus) {
+    let state = reply_dispatcher().read().ok().and_then(|state| state.clone());
+    if let Some(state) = state {
+        let value = serde_json::json!({
+            "type": "peer-connection-changed", "msg_type": "peer_connection_changed",
+            "peer_id": connection.peer_id, "connection": connection,
+        });
+        let _ = state.ws_broadcast.send(value.to_string());
+        #[cfg(feature = "desktop")]
+        if let Some(app) = &state.app_handle {
+            use tauri::Emitter;
+            let _ = app.emit("peer-connection-changed", value);
+        }
+    }
+}
+
+pub fn refresh_connections_after_network_change() {
+    let state = reply_dispatcher().read().ok().and_then(|state| state.clone());
+    if let Some(state) = state {
+        crate::network::peer_connection::network_changed(&state.pool, &state.peer_manager);
+    }
+}
+
+pub fn notify_message_delivery_changed(conversation_id: &str, client_message_id: &str) {
+    let state = reply_dispatcher().read().ok().and_then(|state| state.clone());
+    if let Some(state) = state {
+        let value = serde_json::json!({
+            "type": "message.changed", "msg_type": "message.changed",
+            "conversation_id": conversation_id, "client_message_id": client_message_id,
+        });
+        let _ = state.ws_broadcast.send(value.to_string());
+        #[cfg(feature = "desktop")]
+        if let Some(app) = &state.app_handle {
+            use tauri::Emitter;
+            let _ = app.emit("message-changed", value);
+        }
     }
 }
 
@@ -431,6 +475,8 @@ pub async fn start_server(
         .route("/api/transfers", get(get_transfers_http))
         .route("/api/transfers/:id/cancel", post(cancel_transfer_http))
         .route("/api/devices/:id", post(update_device_http))
+        .route("/api/peers/:peer_id/refresh", post(refresh_peer_connection_http))
+        .route("/api/peers/rediscover", post(rediscover_peers_http))
         .route("/api/files/:id/delete", post(delete_local_file_http))
         .route(
             "/api/uploads/:client_message_id/cancel",
@@ -514,6 +560,23 @@ async fn get_workspace_http(State(state): State<Arc<AppState>>) -> ApiResponse {
             snapshot.capabilities.native_file_picker = false;
             Json(snapshot).into_response()
         }
+        Err(error) => backend_error(error),
+    }
+}
+
+async fn refresh_peer_connection_http(
+    State(state): State<Arc<AppState>>,
+    Path(peer_id): Path<String>,
+) -> ApiResponse {
+    match crate::network::peer_connection::refresh_peer_connection(&state.pool, &state.peer_manager, &peer_id).await {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => backend_error(error),
+    }
+}
+
+async fn rediscover_peers_http(State(state): State<Arc<AppState>>) -> ApiResponse {
+    match crate::network::peer_connection::rediscover_peers(&state.pool, &state.peer_manager).await {
+        Ok(result) => Json(result).into_response(),
         Err(error) => backend_error(error),
     }
 }
@@ -2006,7 +2069,7 @@ async fn send_delivery_ack(
     // 先借对端主动建立的入站连接回送：发送方正好在这条连接上等回执。
     // 这条路径刻意不标记已发送 —— 发送方可能是旧版，不会读这条连接，
     // 那样标记会让回执永久丢失；反向补发路径继续兜底。
-    if let Some(reply_tx) = inbound_reply_sender(author_id) {
+    if let Some(reply_tx) = CURRENT_PEER_REPLY.try_with(Clone::clone).ok().or_else(|| inbound_reply_sender(author_id)) {
         match serde_json::to_string(&ack) {
             Ok(json) => {
                 let _ = reply_tx.send(json).await;
@@ -2660,7 +2723,7 @@ async fn handle_websocket(
                     eprintln!("[WebSocket] 未核验设备身份的连接试图发送数据，已关闭");
                     break;
                 }
-                println!("[WebSocket] 收到文本消息: {}", text);
+                println!("[WebSocket] 收到消息帧: {} bytes", text.len());
 
                 match serde_json::from_str::<serde_json::Value>(&text) {
                     Ok(val) => {
@@ -2675,7 +2738,7 @@ async fn handle_websocket(
                         match crate::network::protocol::parse_protocol_value(val.clone()) {
                             Ok(Some(message)) => {
                                 if let Err(error) =
-                                    handle_protocol_message(state.as_ref(), message).await
+                                    CURRENT_PEER_REPLY.scope(reply_tx.clone(), handle_protocol_message(state.as_ref(), message)).await
                                 {
                                     eprintln!("[WebSocket] 新协议消息处理失败: {}", error);
                                 }
@@ -2707,8 +2770,7 @@ async fn handle_websocket(
                                 val.clone(),
                             ) {
                                 Ok(message) => {
-                                    match handle_stable_direct_message(state.as_ref(), message)
-                                        .await
+                                    match CURRENT_PEER_REPLY.scope(reply_tx.clone(), handle_stable_direct_message(state.as_ref(), message)).await
                                     {
                                         Ok(true) => {}
                                         Ok(false) => {
@@ -3414,7 +3476,7 @@ async fn finalize_received_file(
             format!("{stem}({index}){extension}")
         };
         let final_path = download_root.join(&name);
-        match tokio::fs::hard_link(partial_path, &final_path).await {
+        match publish_received_file(partial_path, &final_path).await {
             Ok(()) => {
                 let _ = tokio::fs::remove_file(partial_path).await;
                 return Ok((name, final_path));
@@ -3424,6 +3486,47 @@ async fn finalize_received_file(
         }
     }
     Err("同名文件过多，无法安全保存接收文件".to_string())
+}
+
+#[cfg(not(target_os = "android"))]
+async fn publish_received_file(
+    partial_path: &std::path::Path,
+    final_path: &std::path::Path,
+) -> std::io::Result<()> {
+    tokio::fs::hard_link(partial_path, final_path).await
+}
+
+#[cfg(target_os = "android")]
+async fn publish_received_file(
+    partial_path: &std::path::Path,
+    final_path: &std::path::Path,
+) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let source = std::ffi::CString::new(partial_path.as_os_str().as_bytes())?;
+    let destination = std::ffi::CString::new(final_path.as_os_str().as_bytes())?;
+    // Android SELinux denies app hard links, including inside private storage.
+    // renameat2(RENAME_NOREPLACE) publishes atomically without overwriting another
+    // transfer's file. Plain rename would lose that collision protection.
+    tokio::task::spawn_blocking(move || {
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                libc::AT_FDCWD,
+                source.as_ptr(),
+                libc::AT_FDCWD,
+                destination.as_ptr(),
+                1u32, // RENAME_NOREPLACE
+            )
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }
 
 async fn fail_received_transfer(

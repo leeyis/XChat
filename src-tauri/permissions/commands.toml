@@ -19,6 +19,16 @@ description = "Allows getting the list of online peers"
 commands.allow = ["get_peers"]
 
 [[permission]]
+identifier = "allow-refresh-peer-connection"
+description = "Discover and verify the current address of a known peer"
+commands.allow = ["refresh_peer_connection"]
+
+[[permission]]
+identifier = "allow-rediscover-peers"
+description = "Rediscover devices using the configured discovery networks"
+commands.allow = ["rediscover_peers"]
+
+[[permission]]
 identifier = "allow-send-message"
 description = "Allows sending text messages"
 commands.allow = ["send_message"]
@@ -174,6 +184,21 @@ commands.allow = ["stop_tray_flash"]
 identifier = "allow-open-saf-picker"
 description = "Allows opening the SAF file picker on Android"
 commands.allow = ["open_saf_picker"]
+
+[[permission]]
+identifier = "allow-open-camera-capture"
+description = "Allows launching the system camera and attaching the photo on Android"
+commands.allow = ["open_camera_capture"]
+
+[[permission]]
+identifier = "allow-start-voice-recording"
+description = "Allows starting a voice recording on Android"
+commands.allow = ["start_voice_recording"]
+
+[[permission]]
+identifier = "allow-stop-voice-recording"
+description = "Allows stopping or cancelling a voice recording on Android"
+commands.allow = ["stop_voice_recording"]
 
 [[permission]]
 identifier = "allow-get-language"

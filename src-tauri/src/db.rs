@@ -62,6 +62,19 @@ pub struct MessageRecord {
 
 pub type FileMessageRecord = MessageRecord;
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct MessageDeliveryAttempt {
+    pub message_client_id: String,
+    pub reader_id: String,
+    pub attempt_count: i64,
+    pub next_retry_at: i64,
+    pub lease_token: Option<String>,
+    pub lease_until: i64,
+    pub last_written_at: Option<i64>,
+    pub state: String,
+    pub last_error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::FromRow)]
 pub struct MessageReceiptRecord {
     pub message_client_id: String,
@@ -233,19 +246,61 @@ pub async fn get_download_path(pool: &sqlx::Pool<sqlx::Sqlite>) -> Result<String
             .fetch_one(pool)
             .await;
 
+    #[cfg(target_os = "android")]
+    if res
+        .as_ref()
+        .map(|(path,)| path.trim_end_matches('/') == "/storage/emulated/0/Download/Xchat")
+        .unwrap_or(true)
+    {
+        return default_android_download_path();
+    }
+
     match res {
         Ok((path,)) => Ok(path),
         Err(_) => {
             // 如果没有设置，返回默认路径
-            if cfg!(target_os = "android") {
-                Ok("/storage/emulated/0/Download/Xchat".to_string())
-            } else {
-                let home_dir = dirs::home_dir().ok_or("cannot get home directory")?;
-                let default_path = home_dir.join("Downloads").join("Xchat");
-                Ok(default_path.to_string_lossy().to_string())
-            }
+            let home_dir = dirs::home_dir().ok_or("cannot get home directory")?;
+            let default_path = home_dir.join("Downloads").join("Xchat");
+            Ok(default_path.to_string_lossy().to_string())
         }
     }
+}
+
+/// Ordinary attachments need an app-owned directory under scoped storage.
+/// Resolve the legacy default at read time; existing message paths remain intact.
+#[cfg(target_os = "android")]
+pub(crate) fn default_android_download_path() -> Result<String, String> {
+    use jni::objects::{JObject, JString};
+    let context = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast()) }
+        .map_err(|error| error.to_string())?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
+    let activity = unsafe { JObject::from_raw(context.context().cast()) };
+    let result = (|| -> jni::errors::Result<String> {
+        let file = env
+            .call_method(&activity, "getFilesDir", "()Ljava/io/File;", &[])?
+            .l()?;
+        let file = env.auto_local(file);
+        let path = env
+            .call_method(file.as_ref(), "getAbsolutePath", "()Ljava/lang/String;", &[])?
+            .l()?;
+        let path = env.auto_local(path);
+        let value: String = env.get_string(<&JString>::from(path.as_ref()))?.into();
+        Ok(value)
+    })();
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    result
+        .map(|path| {
+            PathBuf::from(path)
+                .join("Downloads")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .map_err(|error| format!("Cannot resolve Android download directory: {error}"))
 }
 
 // 更新下载路径
@@ -488,6 +543,33 @@ async fn init_db_with_path_and_machine_name(
     .execute(&pool)
     .await?;
 
+    // Additive outbox metadata: messages and message_receipts remain the source of truth.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS message_delivery_attempts (
+            message_client_id TEXT NOT NULL,
+            reader_id TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_retry_at INTEGER NOT NULL DEFAULT 0,
+            lease_token TEXT,
+            lease_until INTEGER NOT NULL DEFAULT 0,
+            last_written_at INTEGER,
+            state TEXT NOT NULL DEFAULT 'waiting_connection',
+            last_error TEXT,
+            PRIMARY KEY (message_client_id, reader_id)
+        )",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS cleanup_message_delivery_attempts
+         AFTER DELETE ON messages BEGIN
+            DELETE FROM message_delivery_attempts
+            WHERE message_client_id = OLD.client_message_id;
+         END",
+    )
+    .execute(&pool)
+    .await?;
+
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS message_reactions (
             message_client_id TEXT NOT NULL,
@@ -585,10 +667,12 @@ async fn init_db_with_path_and_machine_name(
             .execute(&pool)
             .await?;
 
-        // 初始保存路径 - 统一使用 ~/Downloads/Xchat
-        let download_dir = if cfg!(target_os = "android") {
-            "/storage/emulated/0/Download/Xchat".to_string()
-        } else {
+        // Android must also stay inside FileProvider's files-path for opening/sharing.
+        #[cfg(target_os = "android")]
+        let download_dir = default_android_download_path()
+            .map_err(|error| sqlx::Error::Io(std::io::Error::other(error)))?;
+        #[cfg(not(target_os = "android"))]
+        let download_dir = {
             let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
             home_dir
                 .join("Downloads")
@@ -2603,6 +2687,164 @@ pub async fn search_messages(
     Ok(messages)
 }
 
+/// Atomically lease a due recipient. A manual retry bypasses backoff, never an active lease.
+pub async fn claim_message_delivery(
+    pool: &Pool<Sqlite>,
+    client_message_id: &str,
+    reader_id: &str,
+    force: bool,
+) -> Result<Option<MessageDeliveryAttempt>, String> {
+    let timestamp = unix_timestamp();
+    let token = uuid::Uuid::new_v4().to_string();
+    sqlx::query_as::<_, MessageDeliveryAttempt>(
+        "INSERT INTO message_delivery_attempts
+            (message_client_id, reader_id, attempt_count, next_retry_at,
+             lease_token, lease_until, state)
+         SELECT ?, ?, 1, 0, ?, ?, 'sending'
+         WHERE EXISTS (
+             SELECT 1 FROM message_receipts r
+             JOIN messages m ON m.client_message_id = r.message_client_id
+             WHERE r.message_client_id = ? AND r.reader_id = ?
+               AND r.delivered_at IS NULL AND r.read_at IS NULL
+               AND COALESCE(m.status, '') NOT IN ('recalled', 'delivered', 'read')
+               AND m.msg_type IN ('text', 'quote', 'announcement')
+         )
+         ON CONFLICT(message_client_id, reader_id) DO UPDATE SET
+             attempt_count = message_delivery_attempts.attempt_count + 1,
+             lease_token = excluded.lease_token,
+             lease_until = excluded.lease_until,
+             state = 'sending', last_error = NULL
+         WHERE message_delivery_attempts.lease_until <= ?
+           AND (? OR message_delivery_attempts.next_retry_at <= ?)
+         RETURNING *",
+    )
+    .bind(client_message_id)
+    .bind(reader_id)
+    .bind(token)
+    .bind(timestamp + 60)
+    .bind(client_message_id)
+    .bind(reader_id)
+    .bind(timestamp)
+    .bind(force)
+    .bind(timestamp)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| format!("领取待发送消息失败: {error}"))
+}
+
+pub async fn mark_delivery_written(
+    pool: &Pool<Sqlite>,
+    attempt: &MessageDeliveryAttempt,
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE message_delivery_attempts
+         SET last_written_at = ?, state = 'awaiting_ack'
+         WHERE message_client_id = ? AND reader_id = ? AND lease_token = ?",
+    )
+    .bind(unix_timestamp())
+    .bind(&attempt.message_client_id)
+    .bind(&attempt.reader_id)
+    .bind(&attempt.lease_token)
+    .execute(pool)
+    .await
+    .map_err(|error| format!("记录消息已写出失败: {error}"))?;
+    mark_message_status_by_client_id(pool, &attempt.message_client_id, "sent").await?;
+    Ok(())
+}
+
+fn delivery_retry_delay(attempt: &MessageDeliveryAttempt) -> i64 {
+    let base = match attempt.attempt_count {
+        0 | 1 => 2,
+        2 => 5,
+        3 => 10,
+        4 => 30,
+        _ => 60,
+    };
+    let seed = attempt
+        .message_client_id
+        .bytes()
+        .chain(attempt.reader_id.bytes())
+        .fold(attempt.attempt_count as u64, |hash, byte| {
+            hash.wrapping_mul(31).wrapping_add(byte as u64)
+        });
+    base + (seed % (base as u64 / 5 + 1)) as i64
+}
+
+pub async fn finish_message_delivery(
+    pool: &Pool<Sqlite>,
+    attempt: &MessageDeliveryAttempt,
+    error: Option<&str>,
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE message_delivery_attempts
+         SET state = CASE WHEN last_written_at IS NULL THEN 'waiting_connection' ELSE 'unconfirmed' END,
+             last_error = ?, next_retry_at = ?, lease_until = 0, lease_token = NULL
+         WHERE message_client_id = ? AND reader_id = ? AND lease_token = ?
+           AND EXISTS (SELECT 1 FROM message_receipts r
+                       WHERE r.message_client_id = message_delivery_attempts.message_client_id
+                         AND r.reader_id = message_delivery_attempts.reader_id
+                         AND r.delivered_at IS NULL AND r.read_at IS NULL)",
+    )
+    .bind(error)
+    .bind(unix_timestamp() + delivery_retry_delay(attempt))
+    .bind(&attempt.message_client_id)
+    .bind(&attempt.reader_id)
+    .bind(&attempt.lease_token)
+    .execute(pool)
+    .await
+    .map_err(|error| format!("保存消息重试时间失败: {error}"))?;
+    Ok(())
+}
+
+pub async fn get_message_delivery_attempts(
+    pool: &Pool<Sqlite>,
+    client_message_id: &str,
+) -> Result<Vec<MessageDeliveryAttempt>, String> {
+    sqlx::query_as::<_, MessageDeliveryAttempt>(
+        "SELECT * FROM message_delivery_attempts WHERE message_client_id = ?",
+    )
+    .bind(client_message_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| format!("读取消息投递状态失败: {error}"))
+}
+
+/// Connection recovery can advance backoff; an in-flight delivery keeps its lease.
+pub async fn wake_delivery_for_peer(pool: &Pool<Sqlite>, peer_id: &str) -> Result<(), String> {
+    sqlx::query("UPDATE message_delivery_attempts SET next_retry_at = 0 WHERE reader_id = ?")
+        .bind(peer_id)
+        .execute(pool)
+        .await
+        .map_err(|error| format!("唤醒待发送消息失败: {error}"))?;
+    Ok(())
+}
+
+pub async fn get_due_messages_for_peer(
+    pool: &Pool<Sqlite>,
+    peer_id: &str,
+) -> Result<Vec<MessageRecord>, String> {
+    sqlx::query_as::<_, MessageRecord>(
+        "SELECT m.id, m.sender_id, m.receiver_id, m.content, m.msg_type, m.timestamp,
+                m.file_path, m.file_status, m.file_size, m.sender_msg_id, m.status,
+                m.conversation_id, m.client_message_id
+         FROM messages m
+         JOIN message_receipts r ON r.message_client_id = m.client_message_id
+         LEFT JOIN message_delivery_attempts a
+           ON a.message_client_id = r.message_client_id AND a.reader_id = r.reader_id
+         WHERE r.reader_id = ? AND r.delivered_at IS NULL AND r.read_at IS NULL
+           AND COALESCE(m.status, '') NOT IN ('recalled', 'delivered', 'read')
+           AND m.msg_type IN ('text', 'quote', 'announcement')
+           AND COALESCE(a.next_retry_at, 0) <= ? AND COALESCE(a.lease_until, 0) <= ?
+         ORDER BY COALESCE(a.next_retry_at, 0), m.timestamp, m.id LIMIT 4",
+    )
+    .bind(peer_id)
+    .bind(unix_timestamp())
+    .bind(unix_timestamp())
+    .fetch_all(pool)
+    .await
+    .map_err(|error| format!("读取待发送消息失败: {error}"))
+}
+
 pub async fn ensure_message_recipients(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     client_message_id: &str,
@@ -2728,6 +2970,19 @@ pub async fn save_message_receipt(
     .execute(pool)
     .await
     .map_err(|e| format!("保存消息回执失败: {}", e))?;
+
+    // A late timeout or an older sender task must never replace a persisted ACK.
+    sqlx::query(
+        "UPDATE message_delivery_attempts
+         SET state = 'delivered', last_error = NULL, lease_token = NULL,
+             lease_until = 0, next_retry_at = 0
+         WHERE message_client_id = ? AND reader_id = ?",
+    )
+    .bind(message_client_id)
+    .bind(reader_id)
+    .execute(pool)
+    .await
+    .map_err(|error| format!("确认消息投递失败: {error}"))?;
 
     sqlx::query_as::<_, MessageReceiptRecord>(
         "SELECT message_client_id, reader_id, mentioned, delivered_at, read_at, updated_at,
@@ -3532,6 +3787,150 @@ pub async fn set_setting(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn delivery_outbox_survives_restart_deduplicates_leases_and_preserves_late_ack() {
+        let app_dir = std::env::temp_dir().join(format!("xchat-outbox-{}", uuid::Uuid::new_v4()));
+        let pool = init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        let self_id = get_user_id(&pool).await.unwrap();
+        let conversation = ensure_direct_conversation(&pool, "recipient")
+            .await
+            .unwrap();
+        for (id, kind) in [
+            ("text-id", "text"),
+            ("quote-id", "quote"),
+            ("notice-id", "announcement"),
+        ] {
+            save_conversation_message(
+                &pool,
+                &conversation.id,
+                &self_id,
+                Some("recipient"),
+                "content",
+                kind,
+                1,
+                "pending",
+                id,
+            )
+            .await
+            .unwrap();
+            ensure_message_recipients(&pool, id, &["recipient".to_string()])
+                .await
+                .unwrap();
+        }
+        let kinds = get_due_messages_for_peer(&pool, "recipient")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|message| message.msg_type)
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, ["text", "quote", "announcement"]);
+
+        let (first, second) = tokio::join!(
+            claim_message_delivery(&pool, "quote-id", "recipient", false),
+            claim_message_delivery(&pool, "quote-id", "recipient", true),
+        );
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_ne!(
+            first.is_some(),
+            second.is_some(),
+            "manual and automatic sends must share one lease"
+        );
+        let attempt = first.or(second).unwrap();
+        mark_delivery_written(&pool, &attempt).await.unwrap();
+        finish_message_delivery(&pool, &attempt, Some("ack timeout"))
+            .await
+            .unwrap();
+        let message = get_message_by_client_id(&pool, "quote-id")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(message.status.as_deref(), Some("sent"));
+        assert!(get_message_receipts(&pool, "quote-id").await.unwrap()[0]
+            .delivered_at
+            .is_none());
+        pool.close().await;
+
+        let pool = init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        assert!(
+            claim_message_delivery(&pool, "quote-id", "recipient", false)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let pending = get_message_delivery_attempts(&pool, "quote-id")
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(pending.state, "unconfirmed");
+        assert_eq!(pending.last_error.as_deref(), Some("ack timeout"));
+        assert!(pending.next_retry_at > unix_timestamp());
+        let retry = claim_message_delivery(&pool, "quote-id", "recipient", true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry.attempt_count, 2);
+        assert!(claim_message_delivery(&pool, "quote-id", "recipient", true)
+            .await
+            .unwrap()
+            .is_none());
+        // Simulate process death, then make sure an old completion cannot release the new lease.
+        sqlx::query("UPDATE message_delivery_attempts SET lease_until = 0 WHERE message_client_id = 'quote-id'")
+            .execute(&pool).await.unwrap();
+        let resumed = claim_message_delivery(&pool, "quote-id", "recipient", true)
+            .await
+            .unwrap()
+            .unwrap();
+        finish_message_delivery(&pool, &retry, Some("old timeout"))
+            .await
+            .unwrap();
+        assert_eq!(
+            get_message_delivery_attempts(&pool, "quote-id")
+                .await
+                .unwrap()[0]
+                .lease_token,
+            resumed.lease_token
+        );
+        save_message_receipt(&pool, "quote-id", "recipient", Some(42), Some(43))
+            .await
+            .unwrap();
+        mark_message_status_by_client_id(&pool, "quote-id", "read")
+            .await
+            .unwrap();
+        finish_message_delivery(&pool, &resumed, Some("late timeout"))
+            .await
+            .unwrap();
+        mark_delivery_written(&pool, &resumed).await.unwrap();
+        assert!(claim_message_delivery(&pool, "quote-id", "recipient", true)
+            .await
+            .unwrap()
+            .is_none());
+        let confirmed = get_message_delivery_attempts(&pool, "quote-id")
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(confirmed.state, "delivered");
+        assert!(confirmed.last_error.is_none());
+        assert_eq!(
+            get_message_by_client_id(&pool, "quote-id")
+                .await
+                .unwrap()
+                .unwrap()
+                .status
+                .as_deref(),
+            Some("read")
+        );
+        delete_message_by_client_id(&pool, "quote-id")
+            .await
+            .unwrap();
+        assert!(get_message_delivery_attempts(&pool, "quote-id")
+            .await
+            .unwrap()
+            .is_empty());
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
 
     #[tokio::test]
     async fn custom_peer_records_activate_only_after_identity_verification() {

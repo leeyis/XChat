@@ -28,6 +28,8 @@
     "allow-get-my-id",
     "allow-update-my-name",
     "allow-get-peers",
+    "allow-refresh-peer-connection",
+    "allow-rediscover-peers",
     "allow-send-message",
     "allow-get-chat-history",
     "allow-get-chat-history-with-offset",

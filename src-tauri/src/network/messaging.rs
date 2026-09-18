@@ -31,8 +31,8 @@ pub struct HandshakeMessage {
 
 #[cfg(test)]
 mod message_tests {
-    use super::{send_json_via_ws, TextMessage};
-    use futures_util::StreamExt;
+    use super::{send_json_via_ws, write_delivery_message, TextMessage};
+    use futures_util::{SinkExt, StreamExt};
 
     async fn spawn_identity_websocket(
         response_device_id: Option<&str>,
@@ -104,6 +104,95 @@ mod message_tests {
             .unwrap_err();
         assert!(error.contains("缺少设备身份"));
         assert_eq!(received.await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn delivery_requires_a_correlated_ack_on_the_outgoing_connection() {
+        use crate::network::protocol::ProtocolMessage;
+        use tokio_tungstenite::tungstenite::Message;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_hdr_async(stream, |
+                _: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                mut response: tokio_tungstenite::tungstenite::handshake::server::Response,
+            | {
+                response.headers_mut().insert("x-xchat-device-id", "peer".parse().unwrap());
+                Ok(response)
+            }).await.unwrap();
+            // A group prerequisite must be consumed before its message on this socket.
+            assert_eq!(
+                socket.next().await.unwrap().unwrap().into_text().unwrap(),
+                "sync"
+            );
+            assert_eq!(
+                socket.next().await.unwrap().unwrap().into_text().unwrap(),
+                "payload"
+            );
+            for (conversation, sender, message) in [
+                ("wrong-group", "peer", "message"),
+                ("group", "wrong-peer", "message"),
+                ("group", "peer", "wrong-message"),
+            ] {
+                let ack = ProtocolMessage::DeliveryAck {
+                    conversation_id: conversation.into(),
+                    from_id: sender.into(),
+                    message_ids: vec![message.into()],
+                    timestamp: 1,
+                };
+                socket
+                    .send(Message::Text(serde_json::to_string(&ack).unwrap().into()))
+                    .await
+                    .unwrap();
+            }
+            // Exceeds the old 1.2-second fire-and-forget drain window.
+            tokio::time::sleep(std::time::Duration::from_millis(1300)).await;
+            let ack = ProtocolMessage::ReadAck {
+                conversation_id: "group".into(),
+                from_id: "peer".into(),
+                message_ids: vec!["message".into()],
+                timestamp: 42,
+            };
+            socket
+                .send(Message::Text(serde_json::to_string(&ack).unwrap().into()))
+                .await
+                .unwrap();
+            let _ = socket.next().await;
+        });
+        let connection = write_delivery_message(&address, "peer", Some("sync"), "payload")
+            .await
+            .unwrap();
+        let ack = connection.wait_for_ack("group", "message").await.unwrap();
+        assert!(ack.read);
+        assert_eq!(ack.timestamp, 42);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn writing_a_message_without_an_ack_is_unconfirmed() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_hdr_async(stream, |
+                _: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                mut response: tokio_tungstenite::tungstenite::handshake::server::Response,
+            | {
+                response.headers_mut().insert("x-xchat-device-id", "peer".parse().unwrap());
+                Ok(response)
+            }).await.unwrap();
+            assert!(socket.next().await.unwrap().unwrap().is_text());
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        });
+        let connection = write_delivery_message(&address, "peer", None, "payload")
+            .await
+            .unwrap();
+        let outcome = connection
+            .wait_for_ack_with_timeout("group", "message", std::time::Duration::from_millis(50))
+            .await;
+        assert!(outcome.err().unwrap().contains("回执超时"));
+        server.await.unwrap();
     }
 }
 
@@ -202,7 +291,7 @@ pub async fn send_direct_message_expecting_reply(
     send_json_via_ws_expecting_reply(peer_addr, expected_peer_id, &json, DIRECT_ACK_GRACE).await
 }
 
-fn direct_message_json(
+pub(crate) fn direct_message_json(
     from_id: String,
     from_name: String,
     conversation_id: String,
@@ -265,6 +354,113 @@ const PEER_WEBSOCKET_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// 单聊发送后等待同连接送达回执的上界。
 /// 对端落库后立刻回执，正常只需几十毫秒；旧版对端不回执，等满即结束。
 const DIRECT_ACK_GRACE: std::time::Duration = std::time::Duration::from_millis(1200);
+
+const DELIVERY_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+pub async fn verify_peer_connection(peer_addr: &str, expected_peer_id: &str) -> Result<(), String> {
+    let mut stream = open_verified_ws(peer_addr, expected_peer_id).await?;
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(200), stream.close(None)).await;
+    Ok(())
+}
+
+/// A written frame is not an acknowledgement. Keep ownership of its socket until the
+/// recipient confirms the same conversation and message, even if reverse dialing fails.
+pub(crate) struct DeliveryConnection {
+    stream: tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    peer_id: String,
+}
+
+pub(crate) struct DeliveryAcknowledgement {
+    pub timestamp: i64,
+    pub read: bool,
+    pub raw: String,
+}
+
+pub(crate) async fn write_delivery_message(
+    peer_addr: &str,
+    expected_peer_id: &str,
+    prerequisite: Option<&str>,
+    json: &str,
+) -> Result<DeliveryConnection, String> {
+    let mut stream = open_verified_ws(peer_addr, expected_peer_id).await?;
+    // Group membership and its message use one ordered connection.
+    if let Some(sync) = prerequisite {
+        write_ws_frame(&mut stream, sync).await?;
+    }
+    write_ws_frame(&mut stream, json).await?;
+    Ok(DeliveryConnection {
+        stream,
+        peer_id: expected_peer_id.to_string(),
+    })
+}
+
+impl DeliveryConnection {
+    pub(crate) async fn wait_for_ack(
+        self,
+        conversation_id: &str,
+        client_message_id: &str,
+    ) -> Result<DeliveryAcknowledgement, String> {
+        self.wait_for_ack_with_timeout(conversation_id, client_message_id, DELIVERY_ACK_TIMEOUT)
+            .await
+    }
+
+    async fn wait_for_ack_with_timeout(
+        mut self,
+        conversation_id: &str,
+        client_message_id: &str,
+        timeout: std::time::Duration,
+    ) -> Result<DeliveryAcknowledgement, String> {
+        use crate::network::protocol::ProtocolMessage;
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::Message;
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let frame = tokio::time::timeout_at(deadline, self.stream.next()).await;
+            let raw = match frame {
+                Ok(Some(Ok(Message::Text(raw)))) => raw,
+                Ok(Some(Ok(Message::Close(_)))) | Ok(None) => {
+                    return Err("连接已关闭，未确认送达；对方可能已收到".to_string());
+                }
+                Ok(Some(Ok(_))) => continue,
+                Ok(Some(Err(error))) => return Err(format!("回执连接中断，未确认送达: {error}")),
+                Err(_) => return Err("回执超时，未确认送达；对方可能已收到".to_string()),
+            };
+            let message = crate::network::protocol::parse_protocol_message(&raw);
+            let (ack_conversation, from_id, message_ids, timestamp, read) = match message {
+                Ok(Some(ProtocolMessage::DeliveryAck {
+                    conversation_id,
+                    from_id,
+                    message_ids,
+                    timestamp,
+                })) => (conversation_id, from_id, message_ids, timestamp, false),
+                Ok(Some(ProtocolMessage::ReadAck {
+                    conversation_id,
+                    from_id,
+                    message_ids,
+                    timestamp,
+                })) => (conversation_id, from_id, message_ids, timestamp, true),
+                _ => continue,
+            };
+            if ack_conversation == conversation_id
+                && from_id == self.peer_id
+                && message_ids.iter().any(|id| id == client_message_id)
+            {
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_millis(200),
+                    self.stream.close(None),
+                )
+                .await;
+                return Ok(DeliveryAcknowledgement {
+                    timestamp: timestamp.min(i64::MAX as u64) as i64,
+                    read,
+                    raw: raw.to_string(),
+                });
+            }
+        }
+    }
+}
 
 /// 在写入正文前核对远端设备 UUID，避免动态 IP 被其他设备复用时错投。
 pub async fn send_json_via_ws(
