@@ -1206,5 +1206,91 @@ applyPrototypeTheme(committedSettings.theme);renderConnectionState();
   resetReview();
 })();
 </script>
+<style>
+  /* Transfer stability review: enabled only by the scenario below. */
+  .transfer-stability-review .chat{display:flex;flex-direction:column}
+  .transfer-stability-review .chat-head{height:56px;flex:0 0 56px}
+  .transfer-stability-review .connection-banner,.transfer-stability-review .announcement-banner,.transfer-stability-review .composer{flex:0 0 auto}
+  .transfer-stability-review .messages{flex:1;min-height:0;scroll-behavior:auto;overflow-anchor:none}
+  .transfer-stability-review .messages .loader{display:none}
+  .transfer-stability-review #refreshPeerAddress{width:114px}
+  .transfer-stability-review .file-card.stable-transfer{width:300px;max-width:100%}
+  .stable-transfer .file-top{grid-template-columns:40px minmax(0,1fr)}
+  .stable-transfer .file-name,.stable-transfer .file-status{height:18px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .stable-transfer .transfer-meta{height:14px;line-height:14px;gap:8px;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .stable-transfer .transfer-meta span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .stable-transfer .transfer-meta span:last-child{flex:0 0 68px;text-align:right}
+  .stability-review-controls p{margin:8px 0;color:var(--muted);font-size:11px;line-height:1.6}
+  .stability-review-buttons{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .stability-review-buttons button{min-height:29px;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-size:11px}
+  .stability-review-buttons button:hover{border-color:var(--accent);color:var(--accent)}
+  .stability-review-metrics{display:block;min-height:48px;margin-top:8px;color:var(--muted);font:10px/1.6 var(--mono);font-variant-numeric:tabular-nums;white-space:pre-line}
+</style>
+<script>
+// In-memory simulation for review; timers and controls are not production UI.
+(() => {
+  const scenarioSelect=$('desktopReviewScenario'),review=document.querySelector('.desktop-review-tools');
+  scenarioSelect.add(new Option('接收文件稳定性 · 后台验证不抖动','transfer-stability'));
+  const controls=document.createElement('div');controls.className='stability-review-controls';controls.hidden=true;
+  controls.innerHTML='<p>原型演示：持续接收文件，每 4 秒模拟一次后台验证。可查看历史后等待进度更新，或模拟新消息。</p><div class="stability-review-buttons"><button type="button" data-stability="history">查看历史消息</button><button type="button" data-stability="latest">回到最新消息</button><button type="button" data-stability="message">模拟新消息</button><button type="button" data-stability="failure">模拟连接失败</button><button type="button" data-stability="reset">重新开始演示</button><button type="button" data-stability="background">立即后台验证</button></div><output class="stability-review-metrics" id="stabilityReviewMetrics"></output>';
+  review.append(controls);
+  let active=false,failed=false,manualBusy=false,timer=null,manualTimer=null,checkTimer=null,received=28,checks=0,ticks=0,newMessages=0,sequence=0,epoch=0,retainedNodes=null,retainedPosition=0;
+  const peer=devices.find(item=>item.id==='zhang-3'),refresh=$('refreshPeerAddress'),retry=$('retryConnection');
+  const oldRefresh=refresh.onclick,oldRetry=retry.onclick,oldScroll=scroll.onscroll;
+  const nearBottom=()=>scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<48;
+  function keepPosition(change){const following=nearBottom(),position=scroll.scrollTop;change();scroll.scrollTop=following?scroll.scrollHeight:position;}
+  function metrics(){
+    $('stabilityReviewMetrics').textContent=`后台验证 ${checks} 次 · 已载入 ${messages.querySelectorAll('.msg').length} 条\n${nearBottom()?'正在跟随最新消息':'正在阅读历史 · 保持当前位置'}${newMessages?' · 新消息 '+newMessages+' 条':''}`;
+    $('bottomBtn').classList.toggle('show',!nearBottom());$('bottomBtn').querySelector('.unread').textContent=String(newMessages);
+    $('bottomBtn').querySelector('.unread').hidden=!newMessages;
+  }
+  function paintConnection(){
+    $('chatSub').textContent=`${peer.address} · ${manualBusy?'正在刷新地址…':failed?'暂时无法连接':'在线 · 连接已验证'}`;
+    refresh.hidden=false;refresh.disabled=manualBusy;refresh.setAttribute('aria-busy',String(manualBusy));refresh.querySelector('span').textContent=manualBusy?'正在验证…':'刷新地址';
+    const banner=$('connectionBanner');banner.hidden=!failed;banner.classList.remove('checking','restored','route-error');banner.classList.toggle('route-warning',failed);
+    if(failed){$('connectionTitle').textContent='暂时无法连接对方';$('connectionText').textContent='本次连接验证未通过，文件传输已暂停。聊天记录保留，请确认对方已打开 XChat 后重试。';retry.hidden=false;retry.disabled=manualBusy;retry.textContent=manualBusy?'正在验证…':'重新连接';}
+  }
+  function paintProgress(){
+    const card=$('stableReceivingFile');if(!card)return;
+    card.querySelector('.file-status').textContent=failed?'接收暂停 · 等待恢复连接':received>=450.7?'已接收 · 450.7 MB':'正在接收';
+    card.querySelector('.progress span').style.setProperty('--p',Math.min(received/450.7*100,100).toFixed(1)+'%');
+    card.querySelector('[data-transfer-bytes]').textContent=received.toFixed(1)+' / 450.7 MB';
+    card.querySelector('[data-transfer-speed]').textContent=failed||received>=450.7?'—':(4.8+(ticks%5)*.4).toFixed(1)+' MB/s';
+  }
+  function backgroundCheck(){
+    if(!active||failed)return;const run=epoch;
+    clearTimeout(checkTimer);checkTimer=setTimeout(()=>{if(active&&run===epoch&&!failed){checks++;metrics();}},650);
+    // Last confirmed connection stays visible while routine validation runs.
+  }
+  function manualCheck(){
+    if(manualBusy)return;manualBusy=true;const run=epoch;paintConnection();
+    clearTimeout(manualTimer);manualTimer=setTimeout(()=>{if(!active||run!==epoch)return;manualBusy=false;failed=false;peer.online=true;checks++;keepPosition(()=>{paintConnection();paintProgress();});metrics();},1300);
+  }
+  function message(text,index,sent=false){return `<div class="msg${sent?' sent':''}" data-message-id="stability-message-${index}">${avatar(sent?{id:'self',name:'我'}:peer)}<div class="msg-stack"><div class="bubble">${uxEsc(text)}</div><span class="msg-time">${index<56?'昨天 16:'+String(index%60).padStart(2,'0'):'今天 14:35'}</span></div></div>`;}
+  function reset(){
+    epoch++;clearInterval(timer);clearTimeout(manualTimer);clearTimeout(checkTimer);failed=false;manualBusy=false;received=28;checks=0;ticks=0;newMessages=0;sequence=0;retainedNodes=null;peer.online=true;
+    setTab('sessions');selectDevice(peer.id);$('dock').hidden=true;uxCloseMessageMenu();
+    const history=['上周的配置清单我已经整理好了。','收到，我核对一下设备信息。','会议室电脑已经可以连接了。','文件按原来的目录放就行。','传完后我会检查文件大小。','旧版本保留在备份目录里。','今天下午再一起检查一次。','好的，这些聊天记录后面还要查阅。'];
+    messages.innerHTML='<div class="day">昨天 · 已载入的历史记录</div>'+Array.from({length:56},(_,i)=>message(history[i%history.length],i,i%3===1)).join('')+'<div class="day">今天</div>'+message('我把安装包发给你，现在正在传输。',56)+`<div class="msg" data-message-id="stability-file" data-message-type="file">${avatar(peer)}<div class="msg-stack"><div class="file-card stable-transfer" id="stableReceivingFile"><div class="file-top"><span class="file-icon">${fileIcon}</span><div><div class="file-name" title="Xagent-2.1.7-arm64.dmg">Xagent-2.1.7-arm64.dmg</div><div class="file-status">正在接收</div></div></div><div class="progress"><span style="--p:6.2%"></span></div><div class="transfer-meta"><span data-transfer-bytes>28.0 / 450.7 MB</span><span data-transfer-speed>4.8 MB/s</span></div></div><span class="msg-time">14:35</span></div></div>`+message('收到，我继续查看前面的消息。',58,true);
+    paintConnection();paintProgress();scroll.scrollTop=scroll.scrollHeight;metrics();
+    timer=setInterval(()=>{if(!active||selectedId!==peer.id)return;ticks++;if(!failed&&received<450.7){received=Math.min(450.7,received+2.1);keepPosition(paintProgress);}if(ticks%10===0)backgroundCheck();metrics();},400);
+  }
+  function enable(){active=true;app.classList.add('transfer-stability-review');controls.hidden=false;review.querySelector('.desktop-review-links').hidden=true;reset();}
+  function disable(){active=false;epoch++;clearInterval(timer);clearTimeout(manualTimer);clearTimeout(checkTimer);controls.hidden=true;app.classList.remove('transfer-stability-review');review.querySelector('.desktop-review-links').hidden=false;}
+  scenarioSelect.addEventListener('change',event=>{if(scenarioSelect.value==='transfer-stability'){event.stopImmediatePropagation();enable();}else disable();},true);
+  refresh.onclick=event=>active?manualCheck():oldRefresh?.(event);retry.onclick=event=>active?manualCheck():oldRetry?.(event);
+  scroll.onscroll=event=>{if(active)metrics();else oldScroll?.(event);};
+  const oldSelect=selectDevice;selectDevice=function(id){if(active&&selectedId===peer.id&&$('stableReceivingFile')){retainedNodes=Array.from(messages.childNodes);retainedPosition=scroll.scrollTop;}oldSelect(id);if(active&&id===peer.id){if(retainedNodes){messages.replaceChildren(...retainedNodes);scroll.scrollTop=retainedPosition;}paintConnection();}};
+  controls.onclick=event=>{
+    const action=event.target.closest('[data-stability]')?.dataset.stability;if(!action)return;
+    if(action==='history'){scroll.scrollTop=messages.querySelector('[data-message-id="stability-message-18"]').offsetTop-scroll.offsetTop;metrics();}
+    else if(action==='latest'){scroll.scrollTop=scroll.scrollHeight;newMessages=0;metrics();}
+    else if(action==='message'){const following=nearBottom();keepPosition(()=>messages.insertAdjacentHTML('beforeend',message('进度还在更新，我再补充一条消息。',59+sequence++)));if(!following)newMessages++;metrics();}
+    else if(action==='failure'){clearTimeout(checkTimer);failed=true;peer.online=false;keepPosition(()=>{paintConnection();paintProgress();});metrics();}
+    else if(action==='reset')reset();else if(action==='background')backgroundCheck();
+  };
+  if(new URLSearchParams(location.search).get('review')==='transfer-stability'){scenarioSelect.value='transfer-stability';enable();}
+})();
+</script>
 </body>
 </html>

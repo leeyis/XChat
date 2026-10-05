@@ -25,6 +25,13 @@ impl PeerConnectionStatus {
     pub fn is_connected(&self) -> bool {
         matches!(self.status.as_str(), "ready" | "updated")
     }
+
+    fn is_fresh_at(&self, timestamp: u64) -> bool {
+        self.is_connected()
+            && self
+                .verified_at
+                .is_some_and(|verified| timestamp.saturating_sub(verified) <= VERIFIED_TTL)
+    }
 }
 
 struct ConnectionEntry {
@@ -102,15 +109,20 @@ impl ConnectionRegistry {
 
     pub(crate) fn snapshot(&self, id: &str) -> Option<PeerConnectionStatus> {
         let entries = self.entries.lock().unwrap();
-        let mut status = entries.get(id)?.status.clone();
-        if status.is_connected()
-            && status
-                .verified_at
-                .is_none_or(|verified| now().saturating_sub(verified) > VERIFIED_TTL)
-        {
-            status.status = "stale".into();
+        // Expiry schedules a fresh probe; it is not evidence that a working peer disconnected.
+        Some(entries.get(id)?.status.clone())
+    }
+
+    fn begin_verification(&self, id: &str) -> Option<PeerConnectionStatus> {
+        let mut entries = self.entries.lock().unwrap();
+        let entry = entries.get_mut(id)?;
+        // Renew established connections quietly; initial/manual/recovery checks expose verification.
+        if entry.status.is_connected() {
+            return None;
         }
-        Some(status)
+        entry.status.status = "verifying".into();
+        entry.status.error = None;
+        Some(entry.status.clone())
     }
 
     fn update(&self, id: &str, phase: &str, error: Option<String>) -> Option<PeerConnectionStatus> {
@@ -340,7 +352,7 @@ pub async fn resolve_peer_connection(
         .connection_snapshot(peer_id)
         .ok_or_else(|| "设备不存在".to_string())?
         .address;
-    if let Some(status) = manager.connections.update(peer_id, "verifying", None) {
+    if let Some(status) = manager.connections.begin_verification(peer_id) {
         publish(&status);
     }
     let deadline = Instant::now() + Duration::from_secs(7);
@@ -483,7 +495,8 @@ pub async fn ensure_peer_connection(
     peer_id: &str,
 ) -> Result<String, String> {
     if let Some(status) = manager.connection_snapshot(peer_id) {
-        if status.is_connected() {
+        // Public status stays stable during renewal, but expired proof cannot authorize a send.
+        if status.is_fresh_at(now()) {
             return Ok(status.address);
         }
     }
@@ -570,12 +583,7 @@ pub fn schedule_validation(pool: &Pool<Sqlite>, manager: &PeerManager, peer_id: 
         {
             return;
         }
-        if entry.status.is_connected()
-            && entry
-                .status
-                .verified_at
-                .is_some_and(|verified| now().saturating_sub(verified) < VERIFIED_TTL)
-        {
+        if entry.status.is_fresh_at(now()) {
             return;
         }
         entry.scheduled = true;
@@ -720,6 +728,125 @@ mod tests {
             }
         });
         (address, task)
+    }
+
+    #[tokio::test]
+    async fn routine_renewal_keeps_public_status_stable_and_requires_fresh_identity() {
+        for (phase, identity) in [
+            ("ready", "expected"),
+            ("updated", "expected"),
+            ("ready", "reassigned-device"),
+        ] {
+            let pool = test_pool().await;
+            let manager = PeerManager::new();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap().to_string();
+            let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+            let (continue_tx, continue_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                accepted_tx.send(()).unwrap();
+                continue_rx.await.unwrap();
+                let mut socket = tokio_tungstenite::accept_hdr_async(
+                    stream,
+                    move |_: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                          mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                        response
+                            .headers_mut()
+                            .insert("x-xchat-device-id", identity.parse().unwrap());
+                        Ok(response)
+                    },
+                )
+                .await
+                .unwrap();
+                while let Some(Ok(message)) = socket.next().await {
+                    assert!(!message.is_text(), "renewal must not send message contents");
+                    if message.is_close() {
+                        break;
+                    }
+                }
+            });
+            manager.add_or_update("expected".into(), "Peer".into(), address.clone());
+            sqlx::query("INSERT INTO users VALUES ('expected', ?, 0, 1)")
+                .bind(&address)
+                .execute(&pool)
+                .await
+                .unwrap();
+            save_fixed(&pool, &address, 1).await;
+            {
+                let mut entries = manager.connections.entries.lock().unwrap();
+                let entry = entries.get_mut("expected").unwrap();
+                entry.status.status = phase.into();
+                entry.status.verified_at = Some(now().saturating_sub(VERIFIED_TTL + 1));
+            }
+            let expired = manager.connection_snapshot("expected").unwrap();
+            assert_eq!(expired.status, phase);
+            assert!(!expired.is_fresh_at(now()));
+
+            let validation_pool = pool.clone();
+            let validation_manager = manager.clone();
+            let mut validation = tokio::spawn(async move {
+                ensure_peer_connection(&validation_pool, &validation_manager, "expected").await
+            });
+            tokio::time::timeout(Duration::from_secs(2), accepted_rx)
+                .await
+                .expect("expired proof must open a fresh messaging connection")
+                .unwrap();
+            assert_eq!(
+                manager.connection_snapshot("expected").unwrap().status,
+                phase
+            );
+            assert!(tokio::time::timeout(Duration::from_millis(20), &mut validation)
+                .await
+                .is_err());
+            continue_tx.send(()).unwrap();
+            let result = validation.await.unwrap();
+            let current = manager.connection_snapshot("expected").unwrap();
+            if identity == "expected" {
+                assert_eq!(result.unwrap(), address);
+                assert_eq!(current.status, "ready");
+                assert!(current.is_fresh_at(now()));
+            } else {
+                assert!(result.is_err());
+                assert_eq!(current.status, "mismatch");
+                assert!(!current.is_fresh_at(now()));
+            }
+            server.await.unwrap();
+        }
+
+        let pool = test_pool().await;
+        let manager = PeerManager::new();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        manager.add_or_update("expected".into(), "Peer".into(), address.clone());
+        save_fixed(&pool, &address, 1).await;
+        {
+            let mut entries = manager.connections.entries.lock().unwrap();
+            let entry = entries.get_mut("expected").unwrap();
+            entry.status.status = "ready".into();
+            entry.status.verified_at = Some(now().saturating_sub(VERIFIED_TTL + 1));
+        }
+        assert!(ensure_peer_connection(&pool, &manager, "expected")
+            .await
+            .is_err());
+        let disconnected = manager.connection_snapshot("expected").unwrap();
+        assert_eq!(disconnected.status, "missing");
+        assert_eq!(disconnected.address, address);
+        assert!(!disconnected.is_fresh_at(now()));
+
+        let registry = ConnectionRegistry::default();
+        registry.observe("expected", "127.0.0.1:8888");
+        assert_eq!(
+            registry.begin_verification("expected").unwrap().status,
+            "verifying"
+        );
+        for phase in ["discovering", "missing", "stale", "mismatch"] {
+            registry.update("expected", phase, Some("previous error".into()));
+            let checking = registry.begin_verification("expected").unwrap();
+            assert_eq!(checking.status, "verifying");
+            assert_eq!(checking.error, None);
+        }
     }
 
     #[tokio::test]

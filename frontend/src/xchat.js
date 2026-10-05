@@ -2337,6 +2337,7 @@ function makeInitialSnapshot(runtime) {
     activeSection: "chat",
     activeConversationId: null,
     focusedMessageId: null,
+    focusedMessageSequence: 0,
     conversations: [],
     messagesByConversation: {},
     devices: [],
@@ -2370,6 +2371,7 @@ export function createXChatModule() {
   let pollTimer;
   let refreshTimer;
   let refreshSequence = 0;
+  const firstPageSequences = new Map();
   const pendingReadMessages = new Map();
   const listeners = new Set();
   const alertedMessages = new Set();
@@ -2498,7 +2500,7 @@ export function createXChatModule() {
       const active = snapshot.conversations.find(
         (conversation) => conversation.id === snapshot.activeConversationId,
       );
-      if (active) loadMessages(active, 40, 0, true).catch(() => {});
+      if (active) loadMessages(active, 40, 0, true, { preserveLoadedSpan: true }).catch(() => {});
     }, 100);
   };
 
@@ -2577,6 +2579,7 @@ export function createXChatModule() {
           activeConversationId: conversation.id,
           activeSection: "chat",
           focusedMessageId: payload?.client_message_id ?? null,
+          focusedMessageSequence: snapshot.focusedMessageSequence + (payload?.client_message_id != null ? 1 : 0),
           strongReminder: null,
         });
         loadMessages(conversation, 80, 0, true).catch(() => {});
@@ -2698,15 +2701,47 @@ export function createXChatModule() {
     scheduleRefresh();
   };
 
-  const loadMessages = async (conversation, limit = 40, offset = 0, quiet = false) => {
+  const loadMessages = async (
+    conversation, limit = 40, offset = 0, quiet = false,
+    { preserveLoadedSpan = false, retriedOverlap = false } = {},
+  ) => {
+    const sequence = offset ? null : (firstPageSequences.get(conversation.id) ?? 0) + 1;
+    if (!offset) firstPageSequences.set(conversation.id, sequence);
+    const requestedLimit = preserveLoadedSpan
+      ? Math.max(limit, snapshot.messagesByConversation[conversation.id]?.length ?? 0)
+      : limit;
     try {
-      const response = await adapter.getMessages(conversation, limit, offset);
-      const rows = response?.messages ?? response ?? [];
+      const rows = [];
+      do {
+        // The shared backend caps each page at 200 rows. Refresh the entire
+        // loaded span before applying its authoritative deletions and updates.
+        const pageLimit = preserveLoadedSpan ? Math.min(200, requestedLimit - rows.length) : requestedLimit;
+        const response = await adapter.getMessages(conversation, pageLimit, offset + rows.length);
+        const page = response?.messages ?? response ?? [];
+        rows.push(...page);
+        if (!preserveLoadedSpan || page.length < pageLimit || firstPageSequences.get(conversation.id) !== sequence) break;
+      } while (rows.length < requestedLimit);
       const messages = rows.map((item) =>
         normalizeMessage(item, snapshot.self.id, conversation.id),
       );
+      if (!offset && firstPageSequences.get(conversation.id) !== sequence) return messages;
       const current = snapshot.messagesByConversation[conversation.id] ?? [];
+      // Older history or an incoming message can extend the cache while this
+      // refresh is pending. Reload the larger span before replacing any rows.
+      if (preserveLoadedSpan && current.length > requestedLimit) {
+        return loadMessages(conversation, current.length, 0, quiet, { preserveLoadedSpan: true, retriedOverlap });
+      }
       const fetchedKeys = new Set(messages.map(messageKey));
+      const overlap = messages.length - fetchedKeys.size;
+      if (preserveLoadedSpan && overlap) {
+        // Inserts can shift OFFSET pages and repeat their boundary rows. One
+        // enlarged retry preserves the older boundary; if pages still overlap,
+        // leave the cache intact until a later background refresh.
+        if (retriedOverlap) return messages;
+        return loadMessages(conversation, requestedLimit + overlap, 0, quiet, {
+          preserveLoadedSpan: true, retriedOverlap: true,
+        });
+      }
       const existing = offset ? current : [
         ...retainInFlightMessages(current, messages),
         ...current.filter((message) => fetchedKeys.has(messageKey(message))),
@@ -2806,6 +2841,7 @@ export function createXChatModule() {
           activeConversationId: action.id,
           activeSection: "chat",
           focusedMessageId: target,
+          focusedMessageSequence: snapshot.focusedMessageSequence + (target != null ? 1 : 0),
         });
         let pageSize = 40;
         let page = await loadMessages(conversation, pageSize);
@@ -3288,6 +3324,7 @@ export function createXChatModule() {
           activeConversationId: conversation.id,
           activeSection: "chat",
           focusedMessageId: action.clientMessageId ?? null,
+          focusedMessageSequence: snapshot.focusedMessageSequence + (action.clientMessageId != null ? 1 : 0),
         });
         return loadMessages(conversation, 80, 0, true);
       }

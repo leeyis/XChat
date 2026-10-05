@@ -1,6 +1,7 @@
 import {
   Fragment,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -45,6 +46,7 @@ import {
   withDiscoveryInterfaceSelection,
 } from "./xchat.js";
 import CaptureEditor from "./CaptureEditor.jsx";
+import { createChatScrollController } from "./chat-scroll.js";
 
 const FILE_KINDS = ["all", "image", "document", "audio", "video", "other"];
 const RECENT_EMOJI_KEY = "xchat.recentEmoji";
@@ -1886,6 +1888,8 @@ function MessageFile({ message, state, workspace, labels }) {
   const bytesTotal = Number(activeTransfer?.bytes_total || message.file_size || 0);
   const bytesTransferred = Number(activeTransfer?.bytes_transferred || 0);
   const percent = activeTransfer?.progress_percent || 0;
+  const progressBytes = `${formatProgressSize(bytesTransferred)} / ${formatProgressSize(bytesTotal)}`;
+  const progressRate = formatRate(activeTransfer?.speed_bps || 0);
   if (image && media.url) {
     return (
       <button
@@ -1923,10 +1927,8 @@ function MessageFile({ message, state, workspace, labels }) {
         {activeTransfer && (
           <>
             <span className="message-transfer-meta">
-              {percent}% · {formatProgressSize(bytesTransferred)} /{" "}
-              {formatProgressSize(bytesTotal)}
-              {" · "}
-              {formatRate(activeTransfer.speed_bps)}
+              <span title={progressBytes}>{progressBytes}</span>
+              <span title={progressRate}>{progressRate}</span>
             </span>
             <span className="progress-track" aria-label={labels.progress(percent)}>
               <i style={{ width: `${percent}%` }} />
@@ -3037,6 +3039,11 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
   );
   const messages = state.messagesByConversation[state.activeConversationId] || [];
   const scroll = useRef(null);
+  const scrollController = useRef(null);
+  if (!scrollController.current) scrollController.current = createChatScrollController();
+  const rowObserver = useRef(null);
+  const handledFocus = useRef(null);
+  const focusHighlight = useRef(null);
   const [menu, setMenu] = useState(null);
   const contextMenu = useRef(null);
   const [selection, setSelection] = useState(null);
@@ -3159,49 +3166,82 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
     return () => removeEventListener("xchat:open-history", openHistory);
   }, []);
 
+  const clearFocusHighlight = () => {
+    const highlight = focusHighlight.current;
+    if (!highlight) return;
+    clearTimeout(highlight.timer);
+    highlight.element.style.boxShadow = highlight.previousShadow;
+    focusHighlight.current = null;
+  };
+  useEffect(() => () => clearFocusHighlight(), []);
+
+  useLayoutEffect(() => {
+    const viewport = scroll.current;
+    if (!viewport) return;
+    const request = state.focusedMessageId == null
+      ? null : `${conversation?.id}:${state.focusedMessageId}:${state.focusedMessageSequence || 0}`;
+    const pendingFocus = request != null && handledFocus.current !== request;
+    if (handledFocus.current !== request) clearFocusHighlight();
+    if (request == null) handledFocus.current = null;
+    scrollController.current.reconcile(viewport, conversation?.id, { hold: pendingFocus });
+    if (pendingFocus) {
+      const target = String(state.focusedMessageId);
+      const element = [...viewport.querySelectorAll("[data-message-key]")].find((item) =>
+        item.dataset.messageKey === target || item.dataset.messageId === target ||
+        item.dataset.clientMessageId === target);
+      if (element) {
+        // An explicit history jump happens once, even while progress events refresh the rows.
+        element.scrollIntoView({ behavior: "auto", block: "center" });
+        scrollController.current.capture(viewport);
+        scrollController.current.reconcile(viewport, conversation?.id);
+        handledFocus.current = request;
+        const previousShadow = element.style.boxShadow;
+        element.style.boxShadow = "0 0 0 3px var(--accent)";
+        focusHighlight.current = { element, previousShadow, timer: setTimeout(() => {
+          element.style.boxShadow = previousShadow;
+          focusHighlight.current = null;
+        }, 1600) };
+      }
+    }
+    rowObserver.current?.sync();
+  });
+
   useEffect(() => {
     const viewport = scroll.current;
-    if (!viewport || state.focusedMessageId != null) return undefined;
+    if (!viewport) return undefined;
     let animationFrame = 0;
-    const scheduleBottomScroll = () => {
+    const schedulePositionUpdate = () => {
       cancelAnimationFrame(animationFrame);
       animationFrame = requestAnimationFrame(() => {
-        viewport.scrollTop = viewport.scrollHeight;
+        scrollController.current.resize(viewport);
       });
     };
     const handleResourceLoad = (event) => {
-      if (event.target instanceof HTMLImageElement) scheduleBottomScroll();
+      if (event.target instanceof HTMLImageElement) schedulePositionUpdate();
     };
-
-    scheduleBottomScroll();
+    const observer = typeof ResizeObserver === "undefined" ? null
+      : new ResizeObserver(schedulePositionUpdate);
+    const observed = new Set();
+    const tracking = { sync() {
+      if (!observer) return;
+      const current = new Set([viewport, ...viewport.querySelectorAll("[data-message-key]")]);
+      for (const element of observed) {
+        if (!current.has(element)) { observer.unobserve(element); observed.delete(element); }
+      }
+      for (const element of current) {
+        if (!observed.has(element)) { observer.observe(element); observed.add(element); }
+      }
+    } };
+    rowObserver.current = tracking;
+    tracking.sync();
     viewport.addEventListener("load", handleResourceLoad, true);
     return () => {
       cancelAnimationFrame(animationFrame);
+      observer?.disconnect();
+      if (rowObserver.current === tracking) rowObserver.current = null;
       viewport.removeEventListener("load", handleResourceLoad, true);
     };
-  }, [conversation?.id, messages.length, state.focusedMessageId]);
-
-  useEffect(() => {
-    if (state.focusedMessageId == null) return;
-    const target = String(state.focusedMessageId);
-    const element = [...(scroll.current?.querySelectorAll("[data-message-key]") || [])].find(
-      (item) =>
-        item.dataset.messageKey === target ||
-        item.dataset.messageId === target ||
-        item.dataset.clientMessageId === target,
-    );
-    if (!element) return;
-    element.scrollIntoView({ behavior: "smooth", block: "center" });
-    const previousShadow = element.style.boxShadow;
-    element.style.boxShadow = "0 0 0 3px var(--accent)";
-    const timer = setTimeout(() => {
-      element.style.boxShadow = previousShadow;
-    }, 1600);
-    return () => {
-      clearTimeout(timer);
-      element.style.boxShadow = previousShadow;
-    };
-  }, [conversation?.id, messages.length, state.focusedMessageId]);
+  }, [conversation?.id]);
 
   useEffect(() => {
     if (
@@ -3315,11 +3355,11 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
           <span className="announcement-arrow">›</span>
         </button>
       )}
-      {conversation.kind !== "group" && connectionStatus !== "ready" && (
+      {conversation.kind !== "group" && !["ready", "updated", "discovering", "verifying"].includes(connectionStatus) && (
         <div className="peer-connection-banner desktop-network-control" data-state={connectionStatus} role="status" aria-live="polite">
-          <span className="connection-mark" aria-hidden="true">{connectionStatus === "updated" ? "✓" : "!"}</span>
+          <span className="connection-mark" aria-hidden="true">!</span>
           <span><b>{labels.connectionStates[connectionStatus] || labels.connectionStates.stale}</b>
-            <small>{connectionStatus === "updated" && peer?.connection?.previous_address && <>{peer.connection.previous_address} → {peer.addr} · </>}{labels.connectionHints[connectionStatus] || labels.connectionHints.stale}</small></span>
+            <small>{labels.connectionHints[connectionStatus] || labels.connectionHints.stale}</small></span>
         </div>
       )}
       {conversation.kind !== "group" && peer?.is_offline && (
@@ -3334,7 +3374,7 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
       <div
         className={`message-scroll ${!messages.length ? "has-empty-state" : ""}`}
         ref={scroll}
-        onScroll={() => { cancelPress(); setMenu(null); setReactionPicker(null); }}
+        onScroll={(event) => { scrollController.current.capture(event.currentTarget); cancelPress(); setMenu(null); setReactionPicker(null); }}
       >
         {messages.length > 0 && (
           <button
