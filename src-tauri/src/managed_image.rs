@@ -135,6 +135,79 @@ pub(crate) fn data_url(mime_type: &str, bytes: &[u8]) -> String {
     format!("data:{mime_type};base64,{}", encode_base64(bytes))
 }
 
+fn image_from_data_url(value: &str) -> Result<(Vec<u8>, &'static str, &'static str), String> {
+    let (header, payload) = value
+        .split_once(',')
+        .ok_or_else(|| "图片数据无效".to_string())?;
+    let declared = header
+        .strip_prefix("data:")
+        .and_then(|header| header.strip_suffix(";base64"))
+        .ok_or_else(|| "图片数据无效".to_string())?;
+    let bytes = decode_base64(payload)?;
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err("图片不能超过 64 MiB".to_string());
+    }
+    let (mime, extension) = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        png_dimensions(&bytes)?;
+        (PNG_MIME, "png")
+    } else if bytes.len() >= 10 && (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) {
+        let width = u16::from_le_bytes([bytes[6], bytes[7]]);
+        let height = u16::from_le_bytes([bytes[8], bytes[9]]);
+        if width == 0 || height == 0 || width > 32_768 || height > 32_768 {
+            return Err("GIF 图片尺寸无效".to_string());
+        }
+        ("image/gif", "gif")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        ("image/webp", "webp")
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        ("image/jpeg", "jpg")
+    } else if bytes.len() >= 26 && bytes.starts_with(b"BM") {
+        ("image/bmp", "bmp")
+    } else if bytes.len() >= 16
+        && &bytes[4..8] == b"ftyp"
+        && bytes[8..bytes.len().min(64)]
+            .chunks_exact(4)
+            .any(|brand| brand == b"avif" || brand == b"avis")
+    {
+        ("image/avif", "avif")
+    } else {
+        return Err("不支持此图片格式".to_string());
+    };
+    let declaration_matches = declared == mime
+        || declared.is_empty()
+        || declared == "application/octet-stream"
+        || (mime == PNG_MIME && declared == "image/apng")
+        || (mime == "image/jpeg" && declared == "image/jpg")
+        || (mime == "image/bmp" && declared == "image/x-ms-bmp");
+    if !declaration_matches {
+        return Err("图片类型与内容不匹配".to_string());
+    }
+    Ok((bytes, mime, extension))
+}
+
+fn attachment_name(requested: Option<&str>, extension: &str, fallback: &str) -> String {
+    let name = requested
+        .and_then(|name| name.rsplit(['/', '\\']).next())
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && *name != "." && *name != "..");
+    let Some(name) = name else {
+        return fallback.to_string();
+    };
+    let (stem, suffix) = name.rsplit_once('.').unwrap_or((name, ""));
+    let suffix = suffix.to_ascii_lowercase();
+    if suffix == extension
+        || (extension == "jpg" && suffix == "jpeg")
+        || (extension == "png" && suffix == "apng")
+    {
+        return name.to_string();
+    }
+    format!(
+        "{}.{}",
+        if stem.is_empty() { "image" } else { stem },
+        extension
+    )
+}
+
 pub(crate) fn remove_file(path: &Path) {
     if let Err(error) = std::fs::remove_file(path) {
         if error.kind() != std::io::ErrorKind::NotFound {
@@ -162,9 +235,21 @@ pub(crate) async fn write_managed_png(
     conversation_id: Option<String>,
 ) -> Result<ManagedAttachment, String> {
     png_dimensions(bytes)?;
+    write_managed_image(app, bytes, PNG_MIME, "png", None, conversation_id).await
+}
+
+async fn write_managed_image(
+    app: &tauri::AppHandle,
+    bytes: &[u8],
+    mime_type: &str,
+    extension: &str,
+    file_name: Option<&str>,
+    conversation_id: Option<String>,
+) -> Result<ManagedAttachment, String> {
     let outbox = managed_outbox(app).await?;
     let id = uuid::Uuid::new_v4().to_string();
-    let path = outbox.join(format!("{id}.png"));
+    let stored_name = format!("{id}.{extension}");
+    let path = outbox.join(&stored_name);
     let pending_path = outbox.join(format!(".{id}.tmp"));
     if let Err(error) = tokio::fs::write(&pending_path, bytes).await {
         remove_file(&pending_path);
@@ -176,9 +261,9 @@ pub(crate) async fn write_managed_png(
     }
     Ok(ManagedAttachment {
         file_path: path.to_string_lossy().into_owned(),
-        file_name: format!("{id}.png"),
+        file_name: attachment_name(file_name, extension, &stored_name),
         file_size: bytes.len() as u64,
-        mime_type: PNG_MIME.to_string(),
+        mime_type: mime_type.to_string(),
         conversation_id,
     })
 }
@@ -199,10 +284,10 @@ fn trusted_managed_path(outbox: &Path, requested: &Path) -> Result<PathBuf, Stri
 pub async fn stage_image(
     app: &tauri::AppHandle,
     data_url: String,
-    _file_name: Option<String>,
+    file_name: Option<String>,
 ) -> Result<ManagedAttachment, String> {
-    let (bytes, _, _) = png_from_data_url(&data_url)?;
-    write_managed_png(app, &bytes, None).await
+    let (bytes, mime, extension) = image_from_data_url(&data_url)?;
+    write_managed_image(app, &bytes, mime, extension, file_name.as_deref(), None).await
 }
 
 pub async fn discard_staged(app: &tauri::AppHandle, file_path: String) -> Result<(), String> {
@@ -252,6 +337,37 @@ mod tests {
         assert_eq!(decoded, bytes);
         assert_eq!((width, height), (1, 1));
         assert!(png_from_data_url("data:text/plain;base64,SGVsbG8=").is_err());
+    }
+
+    #[test]
+    fn staged_animations_preserve_the_original_bytes_and_file_type() {
+        let gif = b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff\x21\xff\x0bNETSCAPE2.0\x03\x01\0\0\0\x3b";
+        let webp = b"RIFF\x14\0\0\0WEBPANIM\x06\0\0\0\0\0\0\0\0\0";
+        let apng =
+            b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\0\0\0\x08acTL\0\0\0\x02\0\0\0\0";
+        for (bytes, declared, expected, extension) in [
+            (gif.as_slice(), "image/gif", "image/gif", "gif"),
+            (webp.as_slice(), "image/webp", "image/webp", "webp"),
+            (apng.as_slice(), "image/apng", PNG_MIME, "png"),
+        ] {
+            let (original, mime, suffix) = image_from_data_url(&data_url(declared, bytes)).unwrap();
+            assert_eq!(original, bytes, "animation payload must not be re-encoded");
+            assert_eq!((mime, suffix), (expected, extension));
+        }
+        assert!(image_from_data_url(&data_url("image/png", gif)).is_err());
+        assert!(image_from_data_url("data:image/svg+xml;base64,PHN2Zy8+").is_err());
+        assert_eq!(
+            attachment_name(Some("C:\\drafts\\收到.gif"), "gif", "fallback.gif"),
+            "收到.gif"
+        );
+        assert_eq!(
+            attachment_name(Some("animation.png"), "gif", "fallback.gif"),
+            "animation.gif"
+        );
+        assert_eq!(
+            attachment_name(Some("animation.apng"), "png", "fallback.png"),
+            "animation.apng"
+        );
     }
 
     #[test]

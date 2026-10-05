@@ -89,6 +89,7 @@
     "allow-stage-image-attachment",
     "allow-discard-staged-attachment",
     "allow-read-workspace-media",
+    "allow-get-workspace-media-source",
     "allow-refresh-local-ips",
     "allow-get-all-local-ips",
     "allow-set-local-ip",

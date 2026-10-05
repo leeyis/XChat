@@ -5,7 +5,7 @@ use axum::{
         ConnectInfo, DefaultBodyLimit, Json, Multipart, Path, Query, Request, State,
         WebSocketUpgrade,
     },
-    http::{header, Response, StatusCode},
+    http::{header, HeaderMap, Method, Response, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Router,
@@ -23,8 +23,9 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::peers::PeerManager;
 
-// 全局媒体 Token（仅 Android 使用）
+// Local player URLs are only issued through Tauri, never the LAN Web API.
 static MEDIA_TOKEN: Mutex<String> = Mutex::new(String::new());
+static MEDIA_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
 // ponytail: group message writes are rare; shard this lock by client_message_id if throughput matters.
 static GROUP_MESSAGE_WRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -280,7 +281,7 @@ fn safe_file_name(value: &str) -> Option<String> {
         .to_ascii_uppercase();
     let windows_device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
         || (stem.len() == 4
-            && matches!(&stem[..3], "COM" | "LPT")
+            && (stem.as_bytes().starts_with(b"COM") || stem.as_bytes().starts_with(b"LPT"))
             && matches!(stem.as_bytes()[3], b'1'..=b'9'));
     if value.is_empty()
         || value == "."
@@ -386,7 +387,6 @@ pub async fn start_server(
     #[cfg(feature = "desktop")] app_handle: Option<tauri::AppHandle>,
 ) {
     let media_token = uuid::Uuid::new_v4().to_string();
-    println!("[Web Server] 媒体访问 Token: {}", media_token);
 
     match cleanup_persisted_control_messages(&pool).await {
         Ok(removed) if removed > 0 => {
@@ -396,11 +396,11 @@ pub async fn start_server(
         Err(error) => eprintln!("[Web Server] 清理误存消息控制记录失败: {error}"),
     }
 
-    // 将 token 存入全局，供 Tauri command 读取（仅 Android）
-    #[cfg(target_os = "android")]
+    // The command uses the running listener's actual port, including CLI overrides.
     {
         let mut guard = MEDIA_TOKEN.lock().unwrap();
         *guard = media_token.clone();
+        MEDIA_PORT.store(port, std::sync::atomic::Ordering::Release);
     }
 
     let (ws_broadcast, _) = broadcast::channel::<String>(128);
@@ -431,6 +431,7 @@ pub async fn start_server(
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any)
+        .expose_headers([header::CONTENT_RANGE, header::ACCEPT_RANGES])
         .allow_credentials(false); // 明确设置不需要凭证
 
     let app = Router::new()
@@ -537,6 +538,9 @@ pub async fn start_server(
         .route("/api/start_send", post(start_send_http))
         .route("/api/request_file", post(request_file_http))
         .route("/api/media", get(serve_media_http))
+        .route("/api/media-source/:message_id", get(get_media_source_http))
+        .route("/api/media/:message_id", get(serve_message_media_http))
+        .route("/api/workspace-media/:message_id", get(serve_workspace_media_http))
         .route("/ws", get(websocket_handler))
         .route("/*path", get(serve_assets))
         .layer(cors)
@@ -5730,6 +5734,192 @@ async fn open_received_file(
     Ok((file, name, metadata.len()))
 }
 
+fn media_message_ready(message: &crate::db::FileMessageRecord, outgoing: bool) -> bool {
+    outgoing
+        || matches!(
+            message.file_status.as_deref(),
+            Some("received" | "accepted" | "downloaded" | "completed")
+        )
+}
+
+async fn open_web_media(
+    pool: &Pool<Sqlite>,
+    message_id: i64,
+) -> Result<crate::media::MediaFile, ApiResponse> {
+    let message = crate::db::get_file_message_by_id(pool, message_id)
+        .await
+        .map_err(backend_error)?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "文件消息不存在"))?;
+    let self_id = crate::db::get_user_id(pool).await.map_err(backend_error)?;
+    if !media_message_ready(
+        &message,
+        message.sender_id == self_id || message.sender_id == "me",
+    ) {
+        return Err(api_error(StatusCode::CONFLICT, "媒体文件尚未接收完成"));
+    }
+    // The LAN Web endpoint keeps the same received-directory / managed-outbox
+    // boundary as downloads. It never inherits desktop source-file access.
+    let (file, name, size) = open_received_file(pool, message_id).await?;
+    Ok(crate::media::MediaFile::ordinary(file, name, size))
+}
+
+async fn open_workspace_media(
+    pool: &Pool<Sqlite>,
+    message_id: i64,
+) -> Result<crate::media::MediaFile, String> {
+    let message = crate::db::get_file_message_by_id(pool, message_id)
+        .await?
+        .ok_or_else(|| "文件消息不存在".to_string())?;
+    let self_id = crate::db::get_user_id(pool).await?;
+    let outgoing = message.sender_id == self_id || message.sender_id == "me";
+    if !media_message_ready(&message, outgoing) {
+        return Err("媒体文件尚未接收完成".to_string());
+    }
+    let path = message
+        .file_path
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "媒体文件尚未下载或已被删除".to_string())?;
+    #[cfg(target_os = "android")]
+    if path.starts_with("content://") || path.starts_with("fd:") {
+        if !outgoing {
+            return Err("拒绝读取下载目录之外的接收文件".to_string());
+        }
+        let path = path.to_string();
+        let fallback_name = message.content.clone();
+        let fallback_size = message.file_size.unwrap_or(0).max(0) as u64;
+        let (file, name, size) = tokio::task::spawn_blocking(move || {
+            use std::os::unix::fs::FileExt;
+            let (file, name, mut size) = if let Some(id) = path.strip_prefix("fd:") {
+                let id = id
+                    .parse::<i64>()
+                    .map_err(|_| "媒体文件描述符无效".to_string())?;
+                crate::android_fd::duplicate_cached_file_for_media(id)
+                    .ok_or_else(|| "媒体文件权限已过期，请重新选择文件".to_string())?
+            } else {
+                // Reopen every request so grants are checked and descriptors
+                // are released when the player cancels a range request.
+                let file = crate::android_fd::AndroidFile::from_content_uri(&path)?.into_file();
+                let (name, size) = crate::android_fd::AndroidFile::query_content_uri_info(&path)
+                    .unwrap_or((fallback_name, fallback_size));
+                (file, name, size)
+            };
+            if let Ok(metadata) = file.metadata() {
+                if metadata.is_file() {
+                    size = metadata.len();
+                }
+            }
+            // Some document providers supply a pipe. Native seeking cannot be
+            // supported safely there; let the UI retain Download / Open.
+            file.read_at(&mut [0; 1], 0)
+                .map_err(|_| "此媒体来源无法定位，请下载后打开".to_string())?;
+            Ok::<_, String>((file, name, size))
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+        return Ok(crate::media::MediaFile {
+            file: tokio::fs::File::from_std(file),
+            name,
+            size,
+            positional: true,
+        });
+    }
+    let canonical = tokio::fs::canonicalize(path)
+        .await
+        .map_err(|_| "本地媒体文件不存在".to_string())?;
+    if !outgoing {
+        let root = tokio::fs::canonicalize(crate::db::get_download_path(pool).await?)
+            .await
+            .map_err(|_| "下载目录不可用".to_string())?;
+        if !canonical.starts_with(root) {
+            return Err("拒绝读取下载目录之外的接收文件".to_string());
+        }
+    }
+    let file = tokio::fs::File::open(&canonical)
+        .await
+        .map_err(|_| "本地媒体文件不可读".to_string())?;
+    let metadata = file.metadata().await.map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("本地媒体文件不存在".to_string());
+    }
+    let name = safe_file_name(&message.content).unwrap_or_else(|| {
+        canonical
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("media")
+            .to_string()
+    });
+    Ok(crate::media::MediaFile::ordinary(
+        file,
+        name,
+        metadata.len(),
+    ))
+}
+
+pub async fn workspace_media_source(
+    pool: &Pool<Sqlite>,
+    message_id: i64,
+) -> Result<crate::media::MediaSource, String> {
+    let port = MEDIA_PORT.load(std::sync::atomic::Ordering::Acquire);
+    let token = get_media_token();
+    if port == 0 || token.is_empty() {
+        return Err("媒体服务尚未就绪，请稍后重试".to_string());
+    }
+    let media = open_workspace_media(pool, message_id).await?;
+    Ok(media.source(format!(
+        "http://127.0.0.1:{port}/api/workspace-media/{message_id}?token={token}"
+    )))
+}
+
+async fn get_media_source_http(
+    State(state): State<Arc<AppState>>,
+    Path(message_id): Path<i64>,
+) -> ApiResponse {
+    match open_web_media(&state.pool, message_id).await {
+        Ok(media) => Json(media.source(format!("/api/media/{message_id}"))).into_response(),
+        Err(response) => response,
+    }
+}
+
+async fn serve_message_media_http(
+    State(state): State<Arc<AppState>>,
+    Path(message_id): Path<i64>,
+    method: Method,
+    headers: HeaderMap,
+) -> ApiResponse {
+    match open_web_media(&state.pool, message_id).await {
+        Ok(media) => crate::media::response(media, &method, &headers).await,
+        Err(response) => response,
+    }
+}
+
+#[derive(Deserialize)]
+struct WorkspaceMediaQuery {
+    #[serde(default)]
+    token: String,
+}
+
+fn local_media_authorized(addr: SocketAddr, actual: &str, expected: &str) -> bool {
+    addr.ip().is_loopback() && !expected.is_empty() && actual == expected
+}
+
+async fn serve_workspace_media_http(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<Arc<AppState>>,
+    Path(message_id): Path<i64>,
+    Query(params): Query<WorkspaceMediaQuery>,
+    method: Method,
+    headers: HeaderMap,
+) -> ApiResponse {
+    if !local_media_authorized(addr, &params.token, &state.media_token) {
+        return api_error(StatusCode::FORBIDDEN, "拒绝访问本机媒体");
+    }
+    match open_workspace_media(&state.pool, message_id).await {
+        Ok(media) => crate::media::response(media, &method, &headers).await,
+        Err(error) => backend_error(error),
+    }
+}
+
 async fn received_file_response(
     pool: &Pool<Sqlite>,
     message_id: i64,
@@ -6216,6 +6406,149 @@ mod websocket_protocol_tests {
     use super::*;
     use crate::network::protocol::{GroupMember, ProtocolMessage};
     use axum::extract::FromRequest;
+
+    #[test]
+    fn media_file_names_accept_unicode_without_slicing_utf8() {
+        assert_eq!(safe_file_name("A你.mp4"), Some("A你.mp4".to_string()));
+        assert_eq!(safe_file_name("你好.wav"), Some("你好.wav".to_string()));
+        assert_eq!(safe_file_name("COM1.mp4"), None);
+        assert_eq!(safe_file_name("LPT9.wav"), None);
+    }
+
+    #[tokio::test]
+    async fn media_sources_preserve_web_boundaries_and_local_token_requirements() {
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-media-source-test-{}", uuid::Uuid::new_v4()));
+        let pool = crate::db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        let download_dir = app_dir.join("downloads");
+        tokio::fs::create_dir_all(&download_dir).await.unwrap();
+        crate::db::update_download_path(&pool, download_dir.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        let outside = app_dir.join("private.mp4");
+        tokio::fs::write(&outside, b"0123456789").await.unwrap();
+        let self_id = crate::db::get_user_id(&pool).await.unwrap();
+        let outgoing_id = sqlx::query(
+            "INSERT INTO messages (sender_id, receiver_id, content, msg_type, timestamp,
+                file_path, file_status, file_size, status)
+             VALUES (?, 'peer-a', 'private.mp4', 'file', 1, ?, 'sent', 10, 'sent')",
+        )
+        .bind(&self_id)
+        .bind(outside.to_string_lossy().as_ref())
+        .execute(&pool)
+        .await
+        .unwrap()
+        .last_insert_rowid();
+        match open_web_media(&pool, outgoing_id).await {
+            Err(response) => assert_eq!(response.status(), StatusCode::FORBIDDEN),
+            Ok(_) => panic!("a desktop source must not be exposed over the LAN"),
+        }
+        let local = open_workspace_media(&pool, outgoing_id).await.unwrap();
+        assert_eq!(local.name, "private.mp4");
+        assert_eq!(local.size, 10);
+        drop(local);
+
+        let outbox = managed_web_outbox_root(&pool).await.unwrap();
+        let uploaded = outbox.join("uploaded.mp4");
+        tokio::fs::write(&uploaded, b"0123456789").await.unwrap();
+        crate::db::update_file_path_by_id(&pool, outgoing_id, uploaded.to_str().unwrap())
+            .await
+            .unwrap();
+        let web = open_web_media(&pool, outgoing_id).await.unwrap();
+        assert_eq!(web.size, 10);
+        drop(web);
+
+        let received = download_dir.join("incoming.wav");
+        tokio::fs::write(&received, b"0123456789").await.unwrap();
+        let incoming_id = sqlx::query(
+            "INSERT INTO messages (sender_id, receiver_id, content, msg_type, timestamp,
+                file_path, file_status, file_size, status)
+             VALUES ('peer-a', 'me', 'incoming.wav', 'file', 2, ?, 'receiving', 10, 'received')",
+        )
+        .bind(received.to_string_lossy().as_ref())
+        .execute(&pool)
+        .await
+        .unwrap()
+        .last_insert_rowid();
+        match open_web_media(&pool, incoming_id).await {
+            Err(response) => assert_eq!(response.status(), StatusCode::CONFLICT),
+            Ok(_) => panic!("an incomplete incoming file must not play"),
+        }
+        assert!(open_workspace_media(&pool, incoming_id).await.is_err());
+        crate::db::update_file_status_by_id(&pool, incoming_id, "received")
+            .await
+            .unwrap();
+        let web = open_web_media(&pool, incoming_id).await.unwrap();
+        assert_eq!(web.source("/api/media/1".into()).mime_type, "audio/wav");
+        drop(web);
+        crate::db::update_file_path_by_id(&pool, incoming_id, outside.to_str().unwrap())
+            .await
+            .unwrap();
+        assert!(open_workspace_media(&pool, incoming_id).await.is_err());
+
+        let (ws_broadcast, _) = broadcast::channel(8);
+        let state = Arc::new(AppState {
+            pool: pool.clone(),
+            peer_manager: Arc::new(PeerManager::new()),
+            media_token: "secret".into(),
+            ws_broadcast,
+            #[cfg(feature = "desktop")]
+            app_handle: None,
+        });
+        for (addr, token) in [
+            ("192.168.1.8:12", "secret"),
+            ("127.0.0.1:12", "wrong"),
+            ("127.0.0.1:12", ""),
+        ] {
+            let response = serve_workspace_media_http(
+                ConnectInfo(addr.parse().unwrap()),
+                State(state.clone()),
+                Path(outgoing_id),
+                Query(WorkspaceMediaQuery {
+                    token: token.into(),
+                }),
+                Method::GET,
+                HeaderMap::new(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+        assert!(!local_media_authorized(
+            "127.0.0.1:12".parse().unwrap(),
+            "",
+            ""
+        ));
+        assert!(local_media_authorized(
+            "[::1]:12".parse().unwrap(),
+            "secret",
+            "secret"
+        ));
+        let mut headers = HeaderMap::new();
+        headers.insert(header::RANGE, "bytes=3-6".parse().unwrap());
+        let response = serve_workspace_media_http(
+            ConnectInfo("127.0.0.1:12".parse().unwrap()),
+            State(state),
+            Path(outgoing_id),
+            Query(WorkspaceMediaQuery {
+                token: "secret".into(),
+            }),
+            Method::GET,
+            headers,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), 100)
+                .await
+                .unwrap()
+                .as_ref(),
+            b"3456"
+        );
+        pool.close().await;
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
 
     #[test]
     fn web_settings_request_accepts_numeric_and_string_ports() {

@@ -32,6 +32,7 @@ const EVENT_NAMES = [
 ];
 
 const IMAGE_EXTENSIONS = new Set([
+  "apng",
   "avif",
   "bmp",
   "gif",
@@ -54,7 +55,7 @@ const DOCUMENT_EXTENSIONS = new Set([
   "xls",
   "xlsx",
 ]);
-const AUDIO_EXTENSIONS = new Set(["aac", "flac", "m4a", "mp3", "ogg", "wav"]);
+const AUDIO_EXTENSIONS = new Set(["aac", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav"]);
 const VIDEO_EXTENSIONS = new Set(["avi", "mkv", "mov", "mp4", "webm"]);
 const TEXT_EXTENSIONS = new Set(["csv", "json", "md", "rtf", "txt", "log", "yaml", "yml", "xml"]);
 
@@ -235,7 +236,8 @@ export function runtimeCapabilities(runtime, supplied = {}, legacy = false) {
     captureShortcut: runtime === "web" ? webCapture : desktopCapture,
     revealFile: runtime === "tauri" && platform !== "ios",
     openOutgoingFile: runtime === "tauri",
-    saveFileAs: runtime === "tauri",
+    nativeFileOpen: runtime === "tauri",
+    saveFileAs: runtime === "tauri" && platform !== "android",
     notifications:
       runtime === "web"
         ? "Notification" in globalThis
@@ -255,6 +257,8 @@ export function runtimeCapabilities(runtime, supplied = {}, legacy = false) {
     nativeVoiceRecorder: runtime === "tauri" && platform === "android",
   };
   const capabilities = { ...defaults, ...supplied };
+  capabilities.nativeFileOpen = runtime === "tauri";
+  if (runtime === "tauri" && platform === "android") capabilities.saveFileAs = false;
   if (runtime === "web") {
     capabilities.capture = webCapture;
     capabilities.captureShortcut = webCapture;
@@ -733,7 +737,6 @@ function dataUrlFromFile(file) {
 }
 
 async function pngDataUrlFromFile(file) {
-  if (file.type === "image/png") return dataUrlFromFile(file);
   const bitmap = await createImageBitmap(file);
   const canvas = document.createElement("canvas");
   canvas.width = bitmap.width;
@@ -756,6 +759,7 @@ function imageMime(file) {
   const extension = fileExtension(file);
   if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
   if (extension === "gif") return "image/gif";
+  if (extension === "apng") return "image/apng";
   if (extension === "webp") return "image/webp";
   if (extension === "bmp") return "image/bmp";
   if (extension === "avif") return "image/avif";
@@ -1467,10 +1471,17 @@ export class TauriAdapter {
   }
 
   async stageImage(file) {
-    const dataUrl = await pngDataUrlFromFile(file);
+    const preserveOriginal = IMAGE_EXTENSIONS.has(fileExtension(file)) ||
+      /^image\/(png|apng|gif|webp|jpeg|bmp|avif)(?:;|$)/i.test(file.type || "");
+    const originalDataUrl = await (preserveOriginal ? dataUrlFromFile(file) : pngDataUrlFromFile(file));
+    const dataUrl = preserveOriginal && IMAGE_EXTENSIONS.has(fileExtension(file))
+      ? originalDataUrl.replace(/^data:[^;]*;/, `data:${imageMime(file)};`)
+      : originalDataUrl;
     const result = await this.invoke("stage_image_attachment", {
       dataUrl,
-      fileName: `${(file.name || `Xchat-${Date.now()}`).replace(/\.[^.]+$/, "")}.png`,
+      fileName: preserveOriginal
+        ? file.name || `Xchat-${Date.now()}.${fileExtension(file) || "png"}`
+        : `${(file.name || `Xchat-${Date.now()}`).replace(/\.[^.]+$/, "")}.png`,
     });
     return normalizeDraftAttachment(result, {
       file_name: result?.file_name ?? file.name,
@@ -1545,6 +1556,10 @@ export class TauriAdapter {
 
   readMessageMedia(messageId) {
     return this.invoke("read_workspace_media", { messageId });
+  }
+
+  getMessageMediaSource(messageId) {
+    return this.invoke("get_workspace_media_source", { messageId });
   }
 
   pickDirectory(title = "选择文件夹") {
@@ -2177,6 +2192,10 @@ export class HttpWsAdapter {
       blob: await response.blob(),
       mime_type: response.headers.get("content-type") || "",
     };
+  }
+
+  getMessageMediaSource(messageId) {
+    return this.request(`/api/media-source/${encodeURIComponent(messageId)}`);
   }
 
   async pickDirectory() {
@@ -3330,6 +3349,8 @@ export function createXChatModule() {
       }
       case "media.readMessage":
         return adapter.readMessageMedia(action.messageId);
+      case "media.sourceMessage":
+        return adapter.getMessageMediaSource(action.messageId);
       case "message.markRead":
         return markVisibleRead(action.conversationId);
       case "message.search": {
@@ -3556,7 +3577,7 @@ export function createXChatModule() {
         return { ok: true, data };
       } catch (error) {
         const detail = outcomeError(error);
-        if (detail.code !== "cancelled") addNotice(detail.message);
+        if (detail.code !== "cancelled" && action.type !== "media.sourceMessage") addNotice(detail.message);
         return { ok: false, error: detail };
       }
     },

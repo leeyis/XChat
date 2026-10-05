@@ -1755,6 +1755,18 @@ pub async fn trusted_file_path(
         .ok_or_else(|| "文件尚未下载".to_string())?;
     let self_id = db::get_user_id(pool).await?;
     #[cfg(target_os = "android")]
+    if let Some(id) = path.strip_prefix("fd:") {
+        if message.sender_id != self_id && message.sender_id != "me" {
+            return Err("拒绝打开下载目录之外的接收文件".to_string());
+        }
+        let id = id.parse::<i64>().map_err(|_| "无效的文件描述符引用".to_string())?;
+        if crate::android_fd::get_cached_file_name(id).is_none() {
+            return Err("文件权限已过期，请重新选择文件".to_string());
+        }
+        // Availability checks must not seek or consume the shared descriptor.
+        return Ok(PathBuf::from(path));
+    }
+    #[cfg(target_os = "android")]
     if path.starts_with("content://") && (message.sender_id == self_id || message.sender_id == "me") {
         // Only a stored outgoing URI is trusted; the persisted Android grant
         // remains the authority for access, including revocation/deletion.

@@ -58,6 +58,7 @@
     "allow-send-file-from-fd",
     "allow-share-file-to-other-app",
     "allow-get-media-token",
+    "allow-get-workspace-media-source",
     "allow-close-android-fd",
     "allow-delete-messages",
 		"allow-clear-chat-history",

@@ -23,6 +23,7 @@ pub mod db;
 #[cfg(feature = "desktop")]
 pub mod managed_image;
 pub mod models;
+pub mod media;
 pub mod network;
 pub mod peers;
 pub mod utils;
@@ -77,6 +78,7 @@ pub fn run() {
             commands::share_file_to_other_app,
             commands::open_file_in_android,
             commands::get_media_token,
+            commands::get_workspace_media_source,
             commands::delete_messages,
             commands::clear_chat_history,
             commands::request_file,

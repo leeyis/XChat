@@ -47,6 +47,22 @@ import {
 } from "./xchat.js";
 import CaptureEditor from "./CaptureEditor.jsx";
 import { createChatScrollController } from "./chat-scroll.js";
+import {
+  createMediaPlaybackController,
+  detectImageAnimation,
+  formatMediaDuration,
+  imageAnimationHint,
+  mediaPositionKey,
+  mediaTransferDirection,
+} from "./media-playback.js";
+
+const workspaceMediaPlayback = new WeakMap();
+function mediaPlaybackFor(workspace) {
+  if (!workspaceMediaPlayback.has(workspace)) {
+    workspaceMediaPlayback.set(workspace, createMediaPlaybackController());
+  }
+  return workspaceMediaPlayback.get(workspace);
+}
 
 const FILE_KINDS = ["all", "image", "document", "audio", "video", "other"];
 const RECENT_EMOJI_KEY = "xchat.recentEmoji";
@@ -1287,6 +1303,32 @@ function useMessageMedia(message, workspace, enabled = true) {
   return media;
 }
 
+function useMessageMediaSource(message, workspace, enabled) {
+  const messageId = message.message_id ?? message.id;
+  const [media, setMedia] = useState({ source: null, failed: false, animated: false });
+  useEffect(() => {
+    setMedia({ source: null, failed: false, animated: false });
+    if (!enabled || messageId == null) return undefined;
+    const abort = new AbortController();
+    let disposed = false;
+    workspace.dispatch({ type: "media.sourceMessage", messageId }).then(async (result) => {
+      if (disposed) return;
+      if (!result.ok || !result.data?.url) {
+        setMedia({ source: null, failed: true, animated: false });
+        return;
+      }
+      const source = result.data;
+      let animated = false;
+      if (fileKind({ ...message, ...source }) === "image") {
+        animated = await detectImageAnimation({ ...message, ...source }, abort.signal).catch(() => imageAnimationHint(message) === true);
+      }
+      if (!disposed) setMedia({ source, failed: false, animated });
+    });
+    return () => { disposed = true; abort.abort(); };
+  }, [enabled, messageId, message.file_path, workspace]);
+  return media;
+}
+
 function statusText(status, labels) {
   return labels.status[status] || status;
 }
@@ -1868,11 +1910,147 @@ function FileOpenMenu({ file, workspace, labels, canReveal }) {
   );
 }
 
+function MediaDownload({ message, state, workspace, labels }) {
+  if (state.capabilities.nativeFileOpen && !state.capabilities.saveFileAs) {
+    const openTitle = labels.locale === "en" ? "Open original file" : "用系统打开原文件";
+    return <button type="button" className="chat-media-download" data-media-control title={openTitle} aria-label={openTitle} onClick={() => workspace.dispatch({ type: "file.open", file: message })}><Icon name="file" size={17} /></button>;
+  }
+  const title = labels.locale === "en" ? "Download original file" : "下载原文件";
+  if (state.capabilities.saveFileAs) {
+    return <button type="button" className="chat-media-download" data-media-control title={title} aria-label={title} onClick={() => workspace.dispatch({ type: "file.saveAs", file: message })}><Icon name="download" size={17} /></button>;
+  }
+  return <a className="chat-media-download" data-media-control href={`/api/download/${encodeURIComponent(message.message_id ?? message.id)}`} download={message.file_name || message.content} title={title} aria-label={title}><Icon name="download" size={17} /></a>;
+}
+
+function MediaFileDetails({ message, source, duration, labels }) {
+  return <span className="chat-media-copy">
+    <b className="chat-media-name" title={source?.file_name || message.file_name || message.content}>{source?.file_name || message.file_name || message.content || labels.attachment}</b>
+    <span className="chat-media-detail">{duration !== undefined && `${formatMediaDuration(duration)} · `}{formatSize(source?.file_size ?? message.file_size)}</span>
+  </span>;
+}
+
+function MediaTransferProgress({ transfer, message, state, workspace, labels }) {
+  if (!transfer) return null;
+  const percent = transfer.progress_percent || 0;
+  const direction = mediaTransferDirection(transfer, message);
+  const en = labels.locale === "en";
+  return <div className="chat-media-transfer">
+    <div className="chat-media-transfer-top"><span>{direction === "outgoing" ? (en ? "Sending…" : "正在发送") : (en ? "Receiving…" : "正在接收")}</span>
+      {state.capabilities.transferCancel && <button type="button" className="text-action" data-media-control disabled={transfer.status === "cancelling"} onClick={() => workspace.dispatch({ type: "transfer.cancel", id: transfer.id })}>{transfer.status === "cancelling" ? labels.cancelling : labels.cancel}</button>}
+    </div>
+    <span className="progress-track" aria-label={labels.progress(percent)}><i style={{ width: `${percent}%` }} /></span>
+    <span className="message-transfer-meta"><span>{formatProgressSize(transfer.bytes_transferred)} / {formatProgressSize(transfer.bytes_total || message.file_size)}</span><span>{formatRate(transfer.speed_bps)}</span></span>
+  </div>;
+}
+
+function MessagePlayer({ kind, source, message, transfer, state, workspace, labels, onError }) {
+  const player = useRef(null);
+  const [duration, setDuration] = useState(Number(message.duration_ms) > 0 ? Number(message.duration_ms) / 1000 : NaN);
+  const playback = mediaPlaybackFor(workspace);
+  const key = mediaPositionKey(state.activeConversationId, message);
+  useLayoutEffect(() => {
+    const element = player.current;
+    if (!element) return undefined;
+    return playback.register(element, key);
+  }, [key, playback]);
+  const Player = kind === "audio" ? "audio" : "video";
+  const details = <MediaFileDetails message={message} source={source} duration={duration} labels={labels} />;
+  const download = <MediaDownload message={message} state={state} workspace={workspace} labels={labels} />;
+  return <div className={`chat-media chat-media-${kind}`} data-media-kind={kind}>
+    {kind === "audio" && <div className="chat-media-head"><span className="chat-media-icon"><Icon name="audio" size={20} /></span>{details}{download}</div>}
+    <Player
+      ref={player}
+      controls
+      playsInline={kind === "video" ? true : undefined}
+      preload="metadata"
+      src={source.url}
+      aria-label={`${labels.locale === "en" ? "Play" : "播放"} ${source.file_name || message.file_name || labels.attachment}`}
+      onLoadedMetadata={(event) => { setDuration(event.currentTarget.duration); playback.restore(event.currentTarget); }}
+      onPlay={(event) => { if (document.hidden) { event.currentTarget.pause(); return; } playback.play(event.currentTarget); }}
+      onPause={(event) => playback.remember(event.currentTarget)}
+      onTimeUpdate={(event) => playback.remember(event.currentTarget)}
+      onEnded={(event) => playback.remember(event.currentTarget)}
+      onError={onError}
+    />
+    {kind === "video" && <div className="chat-media-foot">{details}{download}</div>}
+    <MediaTransferProgress transfer={transfer} message={message} state={state} workspace={workspace} labels={labels} />
+  </div>;
+}
+
+function MessageMotionImage({ source, message, transfer, state, workspace, labels, onError }) {
+  const root = useRef(null);
+  const image = useRef(null);
+  const [paused, setPaused] = useState(false);
+  const [visible, setVisible] = useState(false);
+  const [pageVisible, setPageVisible] = useState(!document.hidden);
+  const [poster, setPoster] = useState("");
+  const running = !paused && visible && pageVisible;
+  const freeze = () => {
+    const element = image.current;
+    if (!element?.naturalWidth || element.src.startsWith("data:")) return;
+    try {
+      const canvas = document.createElement("canvas");
+      const scale = Math.min(1, 1024 / Math.max(element.naturalWidth, element.naturalHeight));
+      canvas.width = Math.max(1, Math.round(element.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(element.naturalHeight * scale));
+      canvas.getContext("2d").drawImage(element, 0, 0, canvas.width, canvas.height);
+      setPoster(canvas.toDataURL("image/png"));
+    } catch {
+      // Media URLs permit anonymous CORS. If capture fails, hide the animation.
+      setPoster("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='280' height='180'/%3E");
+    }
+  };
+  useEffect(() => {
+    const element = root.current;
+    if (!element) return undefined;
+    if (typeof IntersectionObserver === "undefined") { setVisible(true); return undefined; }
+    const observer = new IntersectionObserver((entries) => {
+      const shown = entries.some((entry) => entry.isIntersecting);
+      if (!shown) freeze();
+      setVisible(shown);
+    }, { root: element.closest(".message-scroll"), threshold: 0.1 });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    const change = () => { if (document.hidden) freeze(); setPageVisible(!document.hidden); };
+    const blur = () => { freeze(); setPageVisible(false); };
+    const focus = () => setPageVisible(!document.hidden);
+    document.addEventListener("visibilitychange", change);
+    globalThis.addEventListener("blur", blur);
+    globalThis.addEventListener("focus", focus);
+    return () => {
+      document.removeEventListener("visibilitychange", change);
+      globalThis.removeEventListener("blur", blur);
+      globalThis.removeEventListener("focus", focus);
+    };
+  }, []);
+  useLayoutEffect(() => { if (!running) freeze(); }, [running]);
+  const filename = source.file_name || message.file_name || "";
+  const badge = /\.gif$/i.test(filename) || source.mime_type === "image/gif" ? "GIF" : /\.webp$/i.test(filename) ? "WebP" : "APNG";
+  return <div className="chat-media chat-media-motion" data-media-kind="image" ref={root}>
+    <span className="chat-media-badge">{badge}</span>
+    <img
+      ref={image}
+      crossOrigin="anonymous"
+      src={running || !poster ? source.url : poster}
+      alt={filename || labels.imagePreview}
+      onLoad={() => { if (!running) freeze(); }}
+      onError={onError}
+    />
+    <div className="chat-media-foot">
+      <MediaFileDetails message={message} source={source} labels={labels} />
+      <button type="button" className="chat-motion-toggle" data-media-control aria-pressed={paused} onClick={() => { if (!paused) freeze(); setPaused((value) => !value); }}>{labels.locale === "en" ? (paused ? "Play animation" : "Pause animation") : (paused ? "播放动图" : "暂停动图")}</button>
+      <MediaDownload message={message} state={state} workspace={workspace} labels={labels} />
+    </div>
+    <MediaTransferProgress transfer={transfer} message={message} state={state} workspace={workspace} labels={labels} />
+  </div>;
+}
+
 function MessageFile({ message, state, workspace, labels }) {
   const status = fileStatus(message);
   const image = isImageFile(message);
   const available = localFileAvailable(message);
-  const media = useMessageMedia(message, workspace, image && available);
   const messageId = message.message_id ?? message.id;
   const activeTransfer = state.transfers.find(
     (transfer) =>
@@ -1881,7 +2059,13 @@ function MessageFile({ message, state, workspace, labels }) {
       String(transfer.message_id) === String(messageId) &&
       ACTIVE_TRANSFER_STATES.has(transfer.status),
   );
-  const direction = message.direction || (message.own ? "outgoing" : "incoming");
+  const direction = mediaTransferDirection({}, message);
+  const kind = fileKind(message);
+  const ready = available && (direction === "outgoing" || (!activeTransfer && ["accepted", "completed", "received", "downloaded", "sent", "delivered", "read"].includes(status)));
+  const media = useMessageMediaSource(message, workspace, ready && ["image", "audio", "video"].includes(kind));
+  const [playbackFailed, setPlaybackFailed] = useState(false);
+  useEffect(() => setPlaybackFailed(false), [messageId, media.source?.url]);
+  const failed = media.failed || playbackFailed;
   const canOpen =
     available &&
     (direction === "incoming" || state.capabilities.openOutgoingFile);
@@ -1890,9 +2074,15 @@ function MessageFile({ message, state, workspace, labels }) {
   const percent = activeTransfer?.progress_percent || 0;
   const progressBytes = `${formatProgressSize(bytesTransferred)} / ${formatProgressSize(bytesTotal)}`;
   const progressRate = formatRate(activeTransfer?.speed_bps || 0);
-  if (image && media.url) {
+  if (ready && media.source && !failed && ["audio", "video"].includes(kind)) {
+    return <MessagePlayer kind={kind} source={media.source} message={message} transfer={activeTransfer} state={state} workspace={workspace} labels={labels} onError={() => setPlaybackFailed(true)} />;
+  }
+  if (ready && media.source && !failed && media.animated) {
+    return <MessageMotionImage source={media.source} message={message} transfer={activeTransfer} state={state} workspace={workspace} labels={labels} onError={() => setPlaybackFailed(true)} />;
+  }
+  if (image && media.source && !failed) {
     return (
-      <button
+      <div className="message-image-group"><button
         className="message-image"
         type="button"
         onClick={() => workspace.dispatch({ type: "file.open", file: message })}
@@ -1901,11 +2091,38 @@ function MessageFile({ message, state, workspace, labels }) {
         }`}
       >
         <img
-          src={media.url}
+          src={media.source.url}
           alt={message.file_name || message.content || labels.imagePreview}
+          onError={() => setPlaybackFailed(true)}
         />
-      </button>
+      </button><MediaTransferProgress transfer={activeTransfer} message={message} state={state} workspace={workspace} labels={labels} /></div>
     );
+  }
+  if (["audio", "video"].includes(kind) || imageAnimationHint(message) === true || (image && failed)) {
+    const waiting = ["offered", "awaiting_acceptance"].includes(status);
+    const en = labels.locale === "en";
+    const failureDetail = !state.capabilities.nativeFileOpen
+      ? (en ? "This file cannot be played here. You can download the original file." : "当前环境无法播放此文件，仍可下载原文件。")
+      : !state.capabilities.saveFileAs
+      ? (en ? "This file cannot be played here. Open the original with a system app." : "当前环境无法播放此文件，可用系统应用打开原文件。")
+      : (en ? "This file cannot be played here. Download it or open it with a system app." : "当前环境无法播放此文件，仍可下载原文件或用系统应用打开。");
+    const detail = activeTransfer
+      ? direction === "outgoing" ? (en ? "Sending the original file." : "正在发送原文件。") : (en ? "Receiving. Playback is available when complete." : "正在接收，完成后即可播放。")
+      : waiting ? (en ? "Waiting to receive. Playback is available when complete." : "等待接收，完成后即可在这里播放。")
+      : status === "failed" ? (en ? "Transfer failed. Try receiving or sending again." : "传输失败，可以重新接收或发送。")
+      : !available ? (en ? "The local file is missing and cannot be played." : "本地文件已被删除，暂时无法播放。")
+      : failed ? failureDetail
+      : (en ? "Loading media…" : "正在载入媒体…");
+    return <div className="chat-media chat-media-error" data-media-kind={kind}>
+      <div className="chat-media-head"><span className="chat-media-icon"><Icon name={image ? "image" : kind} size={20} /></span><MediaFileDetails message={message} source={media.source} labels={labels} /></div>
+      <p role={failed ? "status" : undefined}>{detail}</p>
+      <div className="chat-media-error-actions">
+        {(waiting || status === "failed" || (!available && direction === "incoming" && message.sender_msg_id != null)) && !activeTransfer && <button type="button" data-media-control onClick={() => workspace.dispatch({ type: direction === "incoming" ? "file.accept" : "file.retry", file: message })}>{waiting ? labels.receive : direction === "incoming" ? labels.receiveAgain : labels.retry}</button>}
+        {available && !activeTransfer && state.capabilities.nativeFileOpen && canOpen && <button type="button" data-media-control onClick={() => workspace.dispatch({ type: "file.open", file: message })}>{en ? "Open with system app" : "用系统打开"}</button>}
+        {available && !activeTransfer && (!state.capabilities.nativeFileOpen || state.capabilities.saveFileAs) && <MediaDownload message={message} state={state} workspace={workspace} labels={labels} />}
+      </div>
+      <MediaTransferProgress transfer={activeTransfer} message={message} state={state} workspace={workspace} labels={labels} />
+    </div>;
   }
   return (
     <div
@@ -3038,6 +3255,14 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
     (item) => item.id === state.activeConversationId,
   );
   const messages = state.messagesByConversation[state.activeConversationId] || [];
+  useLayoutEffect(() => () => mediaPlaybackFor(workspace).pauseAll(), [workspace, state.activeConversationId]);
+  useEffect(() => {
+    const visibilityChange = () => { if (document.hidden) mediaPlaybackFor(workspace).pauseAll(); };
+    const blur = () => mediaPlaybackFor(workspace).pauseAll();
+    document.addEventListener("visibilitychange", visibilityChange);
+    globalThis.addEventListener("blur", blur);
+    return () => { document.removeEventListener("visibilitychange", visibilityChange); globalThis.removeEventListener("blur", blur); mediaPlaybackFor(workspace).pauseAll(); };
+  }, [workspace]);
   const scroll = useRef(null);
   const scrollController = useRef(null);
   if (!scrollController.current) scrollController.current = createChatScrollController();
@@ -3078,6 +3303,11 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
     press.current.el = null;
   };
   const startPress = (event, message) => {
+    if (event.target.closest("audio, video, [data-media-control]")) {
+      cancelPress();
+      press.current.fired = false;
+      return;
+    }
     // 鼠标走右键菜单就够了，长按只服务于触摸和手写笔
     if (event.pointerType === "mouse" || !event.isPrimary || selection) return;
     cancelPress();
@@ -3404,12 +3634,14 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
             data-client-message-id={message.client_message_id || undefined}
             tabIndex={message.msg_type === "file" ? 0 : undefined}
             onKeyDown={(event) => {
+              if (event.target.closest("audio, video, [data-media-control]")) return;
               if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
               event.preventDefault();
               const bounds = event.currentTarget.getBoundingClientRect();
               openMessageMenu(message, bounds.left + 30, bounds.top + 20, event.currentTarget);
             }}
             onContextMenu={(event) => {
+              if (event.target.closest("audio, video, [data-media-control]")) return;
               event.preventDefault();
               event.stopPropagation();
               openMessageMenu(message, event.clientX, event.clientY, event.currentTarget);

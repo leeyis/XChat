@@ -8,6 +8,7 @@ Xchat `0.1.6` is a LAN chat client built with Tauri 2, React, and Rust. Install 
 - Direct and group chats, offline delivery, delivered/read receipts
 - Four-way parallel transfer for large files, with resume, cancellation, retry, and a file center
 - Pasted, selected, and dropped image drafts with inline message rendering
+- Inline audio/video playback and GIF, animated WebP, and APNG previews, with pause controls and original-file actions
 - Desktop capture editor (macOS, Windows, Linux) with rectangle, ellipse, arrow, pen, mosaic, text, undo, and pin
 - Chinese/English UI, themes, notifications, download, network, and local IP/MAC identity settings
 - Optional headless Web mode

@@ -90,6 +90,18 @@ pub fn duplicate_cached_file(msg_id: i64) -> Option<(tokio::fs::File, String, u6
     }
 }
 
+/// Clone a cached provider descriptor without changing its shared cursor.
+/// Callers must use positional reads; seek/read on this clone would also move
+/// an upload's cursor on the original descriptor.
+#[cfg(target_os = "android")]
+pub fn duplicate_cached_file_for_media(msg_id: i64) -> Option<(std::fs::File, String, u64)> {
+    use std::mem::ManuallyDrop;
+    let cache = fd_cache().lock().unwrap();
+    let (raw_fd, name, size) = cache.get(&msg_id)?;
+    let original = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(*raw_fd) });
+    original.try_clone().ok().map(|file| (file, name.clone(), *size))
+}
+
 /// 从缓存中移除 FD 并关闭底层文件描述符。
 /// 在消息删除或传输终结时调用。
 #[cfg(target_os = "android")]

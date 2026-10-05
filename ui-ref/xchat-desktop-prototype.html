@@ -1292,5 +1292,144 @@ applyPrototypeTheme(committedSettings.theme);renderConnectionState();
   if(new URLSearchParams(location.search).get('review')==='transfer-stability'){scenarioSelect.value='transfer-stability';enable();}
 })();
 </script>
+<!-- PROTOTYPE ONLY: inline media review. Existing scenarios remain available. -->
+<style>
+  .media-review .chat{display:flex;flex-direction:column}
+  .media-review .chat-head{height:56px;flex:0 0 56px}
+  .media-review .composer,.media-review .announcement-banner,.media-review .connection-banner{flex:0 0 auto}
+  .media-review #messagesScroll{flex:1;min-height:0;scroll-behavior:auto;overflow-anchor:none}
+  .media-review .msg-stack{max-width:calc(100% - 42px)}
+  .media-review .msg{margin:16px 0}
+  .chat-media{width:340px;max-width:100%;overflow:hidden;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+  .chat-media-head{display:flex;align-items:center;gap:10px;padding:12px 14px 7px}
+  .chat-media-icon{display:grid;place-items:center;flex:0 0 34px;width:34px;height:34px;border:1px solid var(--border);border-radius:8px;color:var(--accent)}
+  .chat-media-copy{min-width:0;flex:1}
+  .chat-media-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600}
+  .chat-media-detail{display:block;margin-top:3px;color:var(--muted);font:11px/1.4 var(--mono)}
+  .chat-media audio{display:block;width:calc(100% - 16px);height:40px;margin:4px 8px 10px}
+  .chat-media-video{width:380px}
+  .chat-media video{display:block;width:100%;aspect-ratio:16/9;max-height:300px;background:#12392d;object-fit:contain}
+  .chat-media-foot{display:flex;align-items:center;gap:12px;padding:10px 12px}
+  .chat-media-foot .chat-media-copy{flex:1}
+  .chat-media-download{display:grid;place-items:center;width:30px;height:30px;flex:0 0 30px;border:0;border-radius:6px;background:transparent;color:var(--muted);text-decoration:none}
+  .chat-media-download:hover{background:color-mix(in srgb,var(--fg) 6%,transparent);color:var(--fg)}
+  .chat-media-motion{width:280px;position:relative}
+  .chat-media-motion img{display:block;width:100%;height:auto;aspect-ratio:14/9;object-fit:contain;background:#eaf8ef}
+  .chat-media-badge{position:absolute;top:9px;left:9px;padding:2px 6px;border:1px solid #ffffff70;border-radius:4px;background:#ffffffd9;color:#35634a;font:10px/1.4 var(--mono)}
+  .chat-motion-toggle{height:28px;flex:0 0 auto;padding:0 7px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--muted);font-size:11px}
+  .chat-media-error{padding:14px;width:340px}
+  .chat-media-error .chat-media-head{padding:0}
+  .chat-media-error p{margin:10px 0 12px;color:var(--muted);font-size:12px;line-height:1.6}
+  .chat-media-error-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .chat-media-error-actions button{min-height:30px;padding:0 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-size:12px}
+  .chat-media-error-actions button:first-child{border-color:var(--accent);color:var(--accent)}
+  .chat-media-transfer{margin-top:12px}
+  .chat-media-transfer .progress{margin:0 0 7px}
+  .chat-media-transfer .transfer-meta{margin:0}
+  .chat-media button:focus-visible,.chat-media a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .media-review-controls{display:grid;gap:8px;margin-top:10px}
+  .media-review-controls p{margin:0;color:var(--muted);font-size:11px;line-height:1.6}
+  .media-review-buttons{display:flex;gap:6px;flex-wrap:wrap}
+  .media-review-buttons button{min-height:30px;padding:0 9px;border:1px solid var(--border);border-radius:6px;background:transparent;font-size:11px}
+  .media-review-buttons button[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
+  [data-theme=dark] .chat-media audio,[data-theme=dark] .chat-media video{color-scheme:dark}
+  @media(max-width:1000px){.app.media-review,.app.media-review.info-open{grid-template-columns:56px 256px minmax(0,1fr) 0}.media-review .chat{min-width:0}.media-review .info{display:none}.media-review .chat-media-video{width:340px}.media-review .msg-stack{max-width:calc(100% - 38px)}}
+</style>
+<script>
+(() => {
+  const scenarioSelect=$('desktopReviewScenario'),review=document.querySelector('.desktop-review-tools');
+  scenarioSelect.add(new Option('媒体消息 · 音频、视频与动图','media'));
+  const controls=document.createElement('div');controls.className='media-review-controls';controls.hidden=true;
+  controls.innerHTML='<p>本地样例可真实播放；异常与接收为模拟状态。音视频点击播放，动图可暂停；切换会话停止，返回后保留播放位置。</p><div class="media-review-buttons"><button type="button" data-media-review="normal" aria-pressed="true">常用媒体</button><button type="button" data-media-review="states" aria-pressed="false">异常与接收</button><button type="button" data-media-review="reset">重置演示</button></div>';
+  review.append(controls);
+  const assetRoot='assets/media-demo/',peer=devices.find(item=>item.id==='zhang-3');
+  const icons={
+    audio:'<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l11-2v13M9 8l11-2"/><ellipse cx="6" cy="18" rx="3" ry="2"/><ellipse cx="17" cy="16" rx="3" ry="2"/></svg>',
+    video:'<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m10 9 5 3-5 3z"/></svg>',
+    download:'<svg class="icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 16v5h14v-5"/></svg>'
+  };
+  const reviewLabel=review.querySelector('small'),originalReviewLabel=reviewLabel.textContent;
+  let active=false,mode='normal',retainedNodes=null,retainedPosition=0,transferTimer=null,gifObserver=null;
+  const downloadLink=(asset,name)=>`<a class="chat-media-download" href="${assetRoot+asset}" download="${name}" aria-label="下载 ${name}" title="下载原文件">${icons.download}</a>`;
+  const row=(id,content,sent=false)=>`<div class="msg${sent?' sent':''}" data-message-id="media-${id}" data-media-row="${id}">${avatar(sent?{id:'self',name:'我'}:peer)}<div class="msg-stack">${content}<span class="msg-time">14:35${sent?' <span class="receipt">已送达</span>':''}</span></div></div>`;
+  function audioCard(){return `<div class="chat-media" data-media-kind="audio"><div class="chat-media-head"><span class="chat-media-icon">${icons.audio}</span><div class="chat-media-copy"><b class="chat-media-name">会议提示音.wav</b><span class="chat-media-detail">00:12 · 517 KB</span></div>${downloadLink('preview-chime.wav','会议提示音.wav')}</div><audio controls preload="metadata" src="${assetRoot}preview-chime.wav" aria-label="播放会议提示音"></audio></div>`;}
+  function videoCard(){return `<div class="chat-media chat-media-video" data-media-kind="video"><video controls playsinline preload="metadata" src="${assetRoot}network-preview.mp4" poster="${assetRoot}network-preview-poster.png" aria-label="播放设备连接演示"></video><div class="chat-media-foot"><div class="chat-media-copy"><b class="chat-media-name">设备连接演示.mp4</b><span class="chat-media-detail">00:08 · 104 KB</span></div>${downloadLink('network-preview.mp4','设备连接演示.mp4')}</div></div>`;}
+  function motionCard(){return `<div class="chat-media chat-media-motion" data-media-kind="image"><span class="chat-media-badge">GIF</span><img src="${assetRoot}chat-motion-poster.png" data-motion-image alt="两个聊天气泡轻轻浮动的动图"><div class="chat-media-foot"><div class="chat-media-copy"><b class="chat-media-name">收到啦.gif</b><span class="chat-media-detail">37 KB</span></div><button type="button" class="chat-motion-toggle" data-motion-toggle aria-pressed="false">暂停动图</button>${downloadLink('chat-motion.gif','收到啦.gif')}</div></div>`;}
+  function stateCard(kind,name,detail,actions){return `<div class="chat-media chat-media-error" data-media-kind="${kind}"><div class="chat-media-head"><span class="chat-media-icon">${icons[kind]}</span><b class="chat-media-name">${name}</b></div><p>${detail}</p><div class="chat-media-error-actions">${actions}</div></div>`;}
+  function stopPlayback(){messages.querySelectorAll('audio,video').forEach(player=>player.pause());messages.querySelectorAll('[data-motion-image]').forEach(image=>image.src=assetRoot+'chat-motion-poster.png');}
+  function watchMotion(){
+    gifObserver?.disconnect();
+    gifObserver=new IntersectionObserver(entries=>entries.forEach(entry=>{
+      const image=entry.target,paused=image.closest('.chat-media').querySelector('[data-motion-toggle]').getAttribute('aria-pressed')==='true';
+      image.src=assetRoot+(entry.isIntersecting&&!paused&&!document.hidden?'chat-motion.gif':'chat-motion-poster.png');
+    }),{root:scroll,threshold:0.1});
+    messages.querySelectorAll('[data-motion-image]').forEach(image=>gifObserver.observe(image));
+  }
+  function wirePlayers(){
+    messages.querySelectorAll('audio,video').forEach(player=>{
+      if(player.dataset.mediaReviewWired)return;player.dataset.mediaReviewWired='true';
+      player.addEventListener('play',()=>messages.querySelectorAll('audio,video').forEach(other=>{if(other!==player)other.pause();}));
+      player.addEventListener('error',()=>{
+        if(!player.isConnected)return;
+        const card=player.closest('.chat-media'),name=card.querySelector('.chat-media-name').textContent;
+        player.pause();card.outerHTML=stateCard(player.tagName==='AUDIO'?'audio':'video',uxEsc(name),'当前环境无法播放此文件，仍可下载原文件或用系统应用打开。','<button type="button" data-media-file-action="open">用系统打开</button><button type="button" data-media-file-action="download">下载原文件</button>');
+      },{once:true});
+    });
+  }
+  function renderReview(){
+    stopPlayback();clearInterval(transferTimer);retainedNodes=null;
+    messages.innerHTML='<div class="day">今天</div>'+row('intro','<div class="bubble">会议提示音、设备连接演示和动图都发你了，直接在这里看就行。</div>')+(mode==='normal'
+      ?row('audio',audioCard())+row('video',videoCard(),true)+row('motion',motionCard())
+      :row('receive',stateCard('video','设备连接演示.mp4','104 KB · 等待接收，完成后即可在这里播放。','<button type="button" data-media-receive>接收文件</button>'))
+       +row('unsupported',stateCard('video','旧版演示.mkv','当前环境不支持此文件的编码。可以保留原文件，用系统应用打开。','<button type="button" data-media-file-action="open">用系统打开</button><button type="button" data-media-file-action="download">下载原文件</button>'))
+       +row('missing',stateCard('audio','会议提示音.wav','本地文件已被删除，暂时无法播放。聊天记录仍然保留。','<button type="button" data-media-retry>重新接收</button>')));
+    controls.querySelectorAll('[aria-pressed]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.mediaReview===mode)));
+    scroll.scrollTop=0;$('bottomBtn').classList.remove('show');wirePlayers();watchMotion();
+  }
+  function enable(){
+    active=true;mode='normal';app.classList.add('media-review');controls.hidden=false;review.querySelector('.desktop-review-links').hidden=true;reviewLabel.textContent='媒体消息原型 · 10.05 · 常用格式原生播放';
+    setTab('sessions');selectDevice(peer.id);$('dock').hidden=true;$('connectionBanner').hidden=true;uxCloseMessageMenu();renderReview();
+  }
+  function disable(){
+    if(!active)return;stopPlayback();clearInterval(transferTimer);gifObserver?.disconnect();retainedNodes=null;active=false;
+    app.classList.remove('media-review');controls.hidden=true;review.querySelector('.desktop-review-links').hidden=false;reviewLabel.textContent=originalReviewLabel;
+  }
+  const originalSelect=selectDevice;
+  selectDevice=function(id){
+    if(active){if(selectedId===peer.id&&messages.querySelector('[data-media-row]')){retainedNodes=[...messages.childNodes];retainedPosition=scroll.scrollTop;}stopPlayback();gifObserver?.disconnect();}
+    originalSelect(id);
+    if(active&&id===peer.id){
+      $('connectionBanner').hidden=true;$('dock').hidden=true;
+      if(retainedNodes){messages.replaceChildren(...retainedNodes);scroll.scrollTop=retainedPosition;wirePlayers();watchMotion();}else renderReview();
+    }
+  };
+  const originalTab=setTab;
+  setTab=function(tab){if(active&&activeTab!==tab)stopPlayback();originalTab(tab);if(active&&tab==='sessions'&&selectedId===peer.id)watchMotion();};
+  // Capture on the parent so earlier scenario handlers cannot leave media review enabled.
+  review.addEventListener('change',event=>{if(event.target!==scenarioSelect)return;if(scenarioSelect.value==='media'){event.stopImmediatePropagation();enable();}else disable();},true);
+  controls.addEventListener('click',event=>{const action=event.target.closest('[data-media-review]')?.dataset.mediaReview;if(!action)return;if(selectedId!==peer.id)selectDevice(peer.id);mode=action==='reset'?'normal':action;renderReview();});
+  function receive(card){
+    clearInterval(transferTimer);let progress=0;const audio=card.dataset.mediaKind==='audio',total=audio?517:104;
+    card.querySelector('p').textContent='正在接收，完成后即可播放。';
+    card.querySelector('.chat-media-error-actions').innerHTML='<button type="button" data-media-cancel>取消接收</button>';
+    card.insertAdjacentHTML('beforeend',`<div class="chat-media-transfer"><div class="progress"><span style="--p:0%"></span></div><div class="transfer-meta"><span data-media-progress>0 / ${total} KB</span><span>${audio?85:17} KB/s</span></div></div>`);
+    transferTimer=setInterval(()=>{
+      if(!active){clearInterval(transferTimer);return;}
+      progress=Math.min(100,progress+7);card.querySelector('.progress span').style.setProperty('--p',progress+'%');card.querySelector('[data-media-progress]').textContent=`${Math.round(total*progress/100)} / ${total} KB`;
+      if(progress===100){clearInterval(transferTimer);const target=card.closest('.msg-stack');card.outerHTML=audio?audioCard():videoCard();wirePlayers();if(target.isConnected){target.querySelector('audio,video').focus();toast('接收完成，可以播放了');}}
+    },400);
+  }
+  messages.addEventListener('click',event=>{
+    if(!active)return;const card=event.target.closest('.chat-media');if(!card)return;
+    const toggle=event.target.closest('[data-motion-toggle]');
+    if(toggle){const paused=toggle.getAttribute('aria-pressed')!=='true';toggle.setAttribute('aria-pressed',String(paused));toggle.textContent=paused?'播放动图':'暂停动图';card.querySelector('img').src=assetRoot+(paused?'chat-motion-poster.png':'chat-motion.gif');return;}
+    if(event.target.closest('[data-media-receive],[data-media-retry]'))receive(card);
+    else if(event.target.closest('[data-media-cancel]')){clearInterval(transferTimer);card.querySelector('p').textContent='已取消接收，可重新接收。';card.querySelector('.chat-media-transfer')?.remove();card.querySelector('.chat-media-error-actions').innerHTML='<button type="button" data-media-receive>重新接收</button>';}
+    else {const action=event.target.closest('[data-media-file-action]')?.dataset.mediaFileAction;if(action)toast(action==='open'?'原型演示：用系统应用打开原文件':'原型演示：下载原文件');}
+  });
+  document.addEventListener('visibilitychange',()=>{if(!active)return;if(document.hidden)stopPlayback();else if(selectedId===peer.id&&activeTab==='sessions')watchMotion();});
+  if(new URLSearchParams(location.search).get('review')==='media'){scenarioSelect.value='media';enable();}
+})();
+</script>
 </body>
 </html>

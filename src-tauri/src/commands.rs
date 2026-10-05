@@ -1503,23 +1503,29 @@ pub async fn send_file_from_fd(
     }
 }
 
+#[cfg(target_os = "android")]
+fn android_external_file_path(file_path: &str) -> Result<String, String> {
+    let Some(message_id) = file_path.strip_prefix("fd:") else {
+        return Ok(file_path.to_string());
+    };
+    let message_id = message_id
+        .parse::<i64>()
+        .map_err(|_| "无效的文件描述符引用".to_string())?;
+    let file_name = crate::android_fd::get_cached_file_name(message_id)
+        .ok_or_else(|| "文件权限已过期，请重新选择文件".to_string())?;
+    Ok(format!(
+        "content://com.xchat.app.fdprovider/{message_id}/{}",
+        urlencoding::encode(&file_name)
+    ))
+}
+
 // 分享文件到其他应用（仅 Android）
 #[cfg(target_os = "android")]
 #[tauri::command]
 pub async fn share_file_to_other_app(
     #[allow(non_snake_case)] filePath: String,
 ) -> Result<(), String> {
-    // 🌟 fd: 路径 → 转为自定义 FdContentProvider 的 URI，零拷贝分享
-    let final_path = if filePath.starts_with("fd:") {
-        let msg_id = &filePath[3..];
-        let msg_id_i64: i64 = msg_id.parse().unwrap_or(0);
-        // 从 FD 缓存中获取文件名，让第三方 App 能识别文件类型
-        let file_name = crate::android_fd::get_cached_file_name(msg_id_i64)
-            .unwrap_or_else(|| "file".to_string());
-        format!("content://com.xchat.app.fdprovider/{msg_id}/{file_name}")
-    } else {
-        filePath.clone()
-    };
+    let final_path = android_external_file_path(&filePath)?;
 
     println!("[Command] 准备分享文件到其他应用: {}", final_path);
 
@@ -1565,7 +1571,8 @@ pub async fn share_file_to_other_app(
 #[cfg(target_os = "android")]
 #[tauri::command]
 pub async fn open_file_in_android(#[allow(non_snake_case)] filePath: String) -> Result<(), String> {
-    println!("[Command] 准备打开文件: {}", filePath);
+    let final_path = android_external_file_path(&filePath)?;
+    println!("[Command] 准备打开文件: {}", final_path);
 
     use jni::objects::JValue;
 
@@ -1580,7 +1587,7 @@ pub async fn open_file_in_android(#[allow(non_snake_case)] filePath: String) -> 
     let activity = unsafe { jni::objects::JObject::from_raw(context.context().cast()) };
 
     let file_path_jstring = env
-        .new_string(&filePath)
+        .new_string(&final_path)
         .map_err(|e| format!("创建字符串失败: {}", e))?;
 
     env.call_method(
@@ -1606,6 +1613,16 @@ pub async fn open_file_in_android(#[allow(non_snake_case)] filePath: String) -> 
 #[tauri::command]
 pub async fn get_media_token() -> String {
     crate::web_server::get_media_token()
+}
+
+/// Resolve a player URL from a stored message rather than exposing arbitrary
+/// filesystem paths to the HTTP server.
+#[tauri::command]
+pub async fn get_workspace_media_source(
+    state: State<'_, DbState>,
+    message_id: i64,
+) -> Result<crate::media::MediaSource, String> {
+    crate::web_server::workspace_media_source(&state.pool, message_id).await
 }
 
 // 读取剪贴板中的文件路径（桌面端）

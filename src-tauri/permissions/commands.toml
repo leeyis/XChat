@@ -436,6 +436,11 @@ description = "Allows reading image bytes resolved from a stored message ID"
 commands.allow = ["read_workspace_media"]
 
 [[permission]]
+identifier = "allow-get-workspace-media-source"
+description = "Allows resolving a token-protected media URL from a stored message ID"
+commands.allow = ["get_workspace_media_source"]
+
+[[permission]]
 identifier = "allow-refresh-local-ips"
 description = "Allows refreshing the list of available local IP addresses"
 commands.allow = ["refresh_local_ips"]
