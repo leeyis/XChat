@@ -30,6 +30,7 @@ pub const DISCOVERY_CAPABILITIES: &[&str] = &[
     "transfer_cancel",
     "parallel_file_v2",
     "parallel_file_v3:16",
+    "parallel_file_v4:16",
 ];
 static LOCAL_DEVICE_METADATA: OnceLock<(Option<String>, Option<String>)> = OnceLock::new();
 /// 当前对外展示/使用的本机 IP。外层 `None` 表示尚未探测过，

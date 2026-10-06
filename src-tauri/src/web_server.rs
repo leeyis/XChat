@@ -495,11 +495,25 @@ pub async fn start_server(
         .route(
             "/api/uploads/v3/prepare",
             post(prepare_parallel_upload_v3_http)
-                .layer(DefaultBodyLimit::max(64 * 1024)),
+                .layer(DefaultBodyLimit::max(512 * 1024)),
         )
         .route(
             "/api/uploads/v3/:transfer_id/:chunk_index",
             post(receive_parallel_upload_v3_http),
+        )
+        .route(
+            "/api/uploads/v4/prepare",
+            post(prepare_parallel_upload_v4_http)
+                .layer(DefaultBodyLimit::max(512 * 1024)),
+        )
+        .route(
+            "/api/uploads/v4/complete",
+            post(complete_parallel_upload_v4_http)
+                .layer(DefaultBodyLimit::max(512 * 1024)),
+        )
+        .route(
+            "/api/uploads/v4/:transfer_id/:chunk_index",
+            post(receive_parallel_upload_v4_http),
         )
         .route("/api/get_my_name", get(get_name_http))
         .route("/api/get_my_id", get(get_id_http))
@@ -3635,14 +3649,31 @@ async fn prepare_parallel_upload_v3_http(
     prepare_parallel_upload_for_version(state, payload, 3).await
 }
 
+async fn prepare_parallel_upload_v4_http(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<crate::network::conversation_file::ParallelPrepareRequest>,
+) -> ApiResponse {
+    prepare_parallel_upload_for_version(state, payload, 4).await
+}
+
+async fn complete_parallel_upload_v4_http(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<crate::network::conversation_file::ParallelPrepareRequest>,
+) -> ApiResponse {
+    if !crate::network::conversation_file::valid_parallel_sha256(&payload.file_sha256) {
+        return api_error(StatusCode::BAD_REQUEST, "完成传输必须提供完整文件摘要");
+    }
+    prepare_parallel_upload_for_version(state, payload, 4).await
+}
+
 async fn prepare_parallel_upload_for_version(
     state: Arc<AppState>,
     payload: crate::network::conversation_file::ParallelPrepareRequest,
     protocol_version: u8,
 ) -> ApiResponse {
     use crate::network::conversation_file::{
-        create_or_resume_parallel_manifest, load_parallel_manifest, valid_parallel_prepare,
-        ParallelTransferManifest,
+        create_or_resume_parallel_manifest, load_parallel_manifest, parallel_manifests_match,
+        valid_parallel_prepare, ParallelTransferManifest,
     };
 
     if !valid_parallel_prepare(&payload, protocol_version)
@@ -3777,19 +3808,25 @@ async fn prepare_parallel_upload_for_version(
     };
     let final_path = download_root.join(&final_file_name);
     if message.file_status.as_deref() == Some("accepted") {
+        let digest_pending = protocol_version == 4 && payload.file_sha256.is_empty();
         let final_matches = tokio::fs::metadata(&final_path)
             .await
             .is_ok_and(|metadata| metadata.is_file() && metadata.len() == payload.file_size);
-        let digest_matches = if final_matches {
+        let digest_matches = if final_matches && !digest_pending {
             crate::network::conversation_file::sha256_file(&final_path)
                 .await
                 .is_ok_and(|digest| digest == payload.file_sha256)
         } else {
-            false
+            final_matches
         };
         if !digest_matches {
             return api_error(StatusCode::CONFLICT, "已完成文件的本地副本不一致");
         }
+        let transfer_status = if digest_pending {
+            "transferring"
+        } else {
+            "completed"
+        };
         let transfer = match crate::db::create_transfer(
             &state.pool,
             &payload.transfer_id,
@@ -3797,7 +3834,7 @@ async fn prepare_parallel_upload_for_version(
             &payload.conversation_id,
             &payload.sender_id,
             "receive",
-            "completed",
+            transfer_status,
             payload.file_size as i64,
         )
         .await
@@ -3805,23 +3842,31 @@ async fn prepare_parallel_upload_for_version(
             Ok(transfer) => transfer,
             Err(error) => return backend_error(error),
         };
+        if digest_pending && transfer.status == "cancelled" {
+            return api_error(
+                StatusCode::CONFLICT,
+                "该接收尝试已结束，请使用新的传输 ID 重试",
+            );
+        }
         if transfer.status != "completed" {
             let _ = crate::db::update_transfer(
                 &state.pool,
                 &payload.transfer_id,
-                "completed",
+                transfer_status,
                 payload.file_size as i64,
                 None,
             )
             .await;
         }
-        let _ = crate::network::conversation_file::cleanup_parallel_transfer(
-            &download_root,
-            &payload.transfer_id,
-        )
-        .await;
+        if !digest_pending {
+            let _ = crate::network::conversation_file::cleanup_parallel_transfer(
+                &download_root,
+                &payload.transfer_id,
+            )
+            .await;
+        }
         return Json(serde_json::json!({
-            "status": "already_exists",
+            "status": if digest_pending { "ready" } else { "already_exists" },
             "message_id": message.id,
             "transfer_id": payload.transfer_id,
             "received": payload.file_size,
@@ -3845,7 +3890,7 @@ async fn prepare_parallel_upload_for_version(
         message_id: message.id,
     };
     match load_parallel_manifest(&download_root, &payload.transfer_id).await {
-        Ok(Some(existing)) if existing != manifest => {
+        Ok(Some(existing)) if !parallel_manifests_match(&existing, &manifest) => {
             return api_error(StatusCode::CONFLICT, "并行传输清单与已有记录冲突")
         }
         Ok(_) => {}
@@ -3985,9 +4030,8 @@ async fn prepare_parallel_upload_for_version(
         )
             .into_response();
     }
-    drop(transfer_guard);
-    if missing_chunks.is_empty() {
-        return match finalize_parallel_receive(&state, &download_root, &manifest).await {
+    if missing_chunks.is_empty() && !manifest.file_sha256.is_empty() {
+        return match finalize_parallel_receive_locked(&state, &download_root, &manifest).await {
             Ok(message) => Json(serde_json::json!({
                 "status": "completed",
                 "message_id": message.id,
@@ -3999,6 +4043,7 @@ async fn prepare_parallel_upload_for_version(
             Err(error) => backend_error(error),
         };
     }
+    drop(transfer_guard);
     Json(serde_json::json!({
         "status": "ready",
         "message_id": message.id,
@@ -4016,6 +4061,14 @@ async fn finalize_parallel_receive(
 ) -> Result<crate::db::MessageRecord, String> {
     let _guard =
         crate::network::conversation_file::lock_receive_file(&manifest.client_message_id).await;
+    finalize_parallel_receive_locked(state, download_root, manifest).await
+}
+
+async fn finalize_parallel_receive_locked(
+    state: &AppState,
+    download_root: &std::path::Path,
+    manifest: &crate::network::conversation_file::ParallelTransferManifest,
+) -> Result<crate::db::MessageRecord, String> {
     let transfer = crate::db::get_transfer(&state.pool, &manifest.transfer_id)
         .await?
         .ok_or_else(|| "并行接收传输不存在".to_string())?;
@@ -4123,6 +4176,14 @@ async fn receive_parallel_upload_v3_http(
     receive_parallel_upload_for_version(state, transfer_id, chunk_index, request, 3).await
 }
 
+async fn receive_parallel_upload_v4_http(
+    State(state): State<Arc<AppState>>,
+    Path((transfer_id, chunk_index)): Path<(String, usize)>,
+    request: Request,
+) -> ApiResponse {
+    receive_parallel_upload_for_version(state, transfer_id, chunk_index, request, 4).await
+}
+
 async fn receive_parallel_upload_for_version(
     state: Arc<AppState>,
     transfer_id: String,
@@ -4204,7 +4265,7 @@ async fn receive_parallel_upload_for_version(
             "transfer_id": result.manifest.transfer_id,
         }),
     );
-    if result.complete {
+    if result.complete && !result.manifest.file_sha256.is_empty() {
         return match finalize_parallel_receive(&state, &download_root, &result.manifest).await {
             Ok(message) => Json(serde_json::json!({
                 "status": "completed",
@@ -7507,6 +7568,160 @@ mod websocket_protocol_tests {
 
         pool.close().await;
         std::fs::remove_dir_all(app_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn streaming_upload_verifies_digest_after_receiving_and_resumes_safely() {
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-streaming-receive-{}", uuid::Uuid::new_v4()));
+        let pool = crate::db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        let download_dir = app_dir.join("downloads");
+        crate::db::update_download_path(&pool, download_dir.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        crate::db::set_auto_download(&pool, true).await.unwrap();
+        crate::db::save_or_update_user(
+            &pool,
+            "peer-a".into(),
+            "Alice".into(),
+            "127.0.0.1:9".into(),
+            true,
+            0,
+        )
+        .await
+        .unwrap();
+        let conversation = crate::db::ensure_direct_conversation(&pool, "peer-a")
+            .await
+            .unwrap();
+        let self_id = crate::db::get_user_id(&pool).await.unwrap();
+        let data = b"verified";
+        let source = app_dir.join("source.bin");
+        tokio::fs::write(&source, data).await.unwrap();
+        let digest = crate::network::conversation_file::sha256_file(&source)
+            .await
+            .unwrap();
+        let (ws_broadcast, _) = broadcast::channel(8);
+        let state = Arc::new(AppState {
+            pool: pool.clone(),
+            peer_manager: Arc::new(PeerManager::new()),
+            media_token: String::new(),
+            ws_broadcast,
+            #[cfg(feature = "desktop")]
+            app_handle: None,
+        });
+        let mut payload = crate::network::conversation_file::ParallelPrepareRequest {
+            sender_id: "peer-a".into(),
+            conversation_id: conversation.id,
+            client_message_id: "streaming-receive".into(),
+            transfer_id: crate::network::conversation_file::recipient_transfer_id(
+                "streaming-receive",
+                &self_id,
+            ),
+            sender_msg_id: "sender-message".into(),
+            file_name: "report.bin".into(),
+            file_size: data.len() as u64,
+            file_sha256: String::new(),
+            chunks: crate::network::conversation_file::parallel_chunk_ranges(data.len() as u64),
+        };
+        let response =
+            prepare_parallel_upload_v3_http(State(state.clone()), Json(payload.clone())).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        // A failed integrity check must not publish a file; retry keeps the same message.
+        for correct_digest in [false, true] {
+            if correct_digest {
+                payload.transfer_id = format!(
+                    "{}:retry:v4c4-{}",
+                    crate::network::conversation_file::recipient_transfer_id(
+                        &payload.client_message_id,
+                        &self_id,
+                    ),
+                    uuid::Uuid::new_v4()
+                );
+            }
+            payload.file_sha256.clear();
+            let response =
+                prepare_parallel_upload_v4_http(State(state.clone()), Json(payload.clone())).await;
+            assert!(response.status().is_success());
+            let request = axum::http::Request::builder()
+                .header(header::CONTENT_LENGTH, data.len())
+                .body(Body::from(data.as_slice()))
+                .unwrap();
+            let response = receive_parallel_upload_v4_http(
+                State(state.clone()),
+                Path((payload.transfer_id.clone(), 0)),
+                request,
+            )
+            .await;
+            assert!(response.status().is_success());
+            let message = crate::db::get_message_by_client_id(&pool, &payload.client_message_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(message.file_status.as_deref(), Some("downloading"));
+            assert!(!download_dir.join("report.bin").exists());
+
+            // All ranges already present after a restart still require the final digest.
+            let response =
+                prepare_parallel_upload_v4_http(State(state.clone()), Json(payload.clone())).await;
+            let body = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let resumed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(resumed["status"], "ready");
+            assert_eq!(resumed["missing_chunks"], serde_json::json!([]));
+            let response =
+                complete_parallel_upload_v4_http(State(state.clone()), Json(payload.clone())).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            payload.file_sha256 = if correct_digest {
+                digest.clone()
+            } else {
+                "0".repeat(64)
+            };
+            let response =
+                complete_parallel_upload_v4_http(State(state.clone()), Json(payload.clone())).await;
+            if correct_digest {
+                assert!(response.status().is_success());
+                assert_eq!(
+                    tokio::fs::read(download_dir.join("report.bin"))
+                        .await
+                        .unwrap(),
+                    data
+                );
+            } else {
+                assert!(response.status().is_server_error());
+                assert!(!download_dir.join("report.bin").exists());
+                let transfer = crate::db::get_transfer(&pool, &payload.transfer_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(transfer.status, "failed");
+            }
+        }
+        let response =
+            complete_parallel_upload_v4_http(State(state.clone()), Json(payload.clone())).await;
+        assert!(response.status().is_success());
+        payload.file_sha256.clear();
+        let response =
+            prepare_parallel_upload_v4_http(State(state.clone()), Json(payload.clone())).await;
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let prepared: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(prepared["status"], "ready");
+        payload.file_sha256 = "0".repeat(64);
+        let response = complete_parallel_upload_v4_http(State(state), Json(payload)).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            tokio::fs::read(download_dir.join("report.bin"))
+                .await
+                .unwrap(),
+            data
+        );
+        pool.close().await;
+        tokio::fs::remove_dir_all(app_dir).await.unwrap();
     }
 
     #[tokio::test]
