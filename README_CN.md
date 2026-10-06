@@ -1,6 +1,6 @@
 # Xchat
 
-Xchat `0.1.6` 是一款基于 Tauri 2、React 和 Rust 的局域网聊天客户端。每台设备只需安装并运行客户端；客户端自身负责局域网发现、消息、文件传输和本地 SQLite 存储，不需要单独部署服务端。
+Xchat `0.1.7` 是一款基于 Tauri 2、React 和 Rust 的局域网聊天客户端。每台设备只需安装并运行客户端；客户端自身负责局域网发现、消息、文件传输和本地 SQLite 存储，不需要单独部署服务端。
 
 ## 功能
 
@@ -45,11 +45,21 @@ npm run dev
 cargo tauri build
 ```
 
+Windows 使用 `tauri.windows.conf.json` 将前端构建到 `dist/frontend`，并通过相对路径嵌入程序。`frontendDist` 请保持相对路径：Windows 盘符路径可能被解析成 URL，导致安装包缺少前端资源。
+
+打包前检查首页及其 JavaScript、CSS 和图标是否已嵌入：
+
+```bash
+npm run build -- --outDir ../dist/frontend --emptyOutDir
+cargo test --manifest-path src-tauri/Cargo.toml \
+  --no-default-features --features desktop,custom-protocol --test bundled_frontend
+```
+
 macOS 产物通常位于：
 
 ```text
 src-tauri/target/release/bundle/macos/Xchat.app
-src-tauri/target/release/bundle/dmg/Xchat_0.1.6_*.dmg
+src-tauri/target/release/bundle/dmg/Xchat_0.1.7_*.dmg
 ```
 
 指定架构：
@@ -85,7 +95,7 @@ cargo run --manifest-path src-tauri/Cargo.toml \
   -- --port 8888 --db-path /tmp/xchat-web
 ```
 
-内部 Rust 包和兼容二进制仍使用 `lanchat` / `lanchat-web` 名称；应用界面、安装包、版本和 bundle identifier 分别为 `Xchat`、`0.1.6` 和 `com.xchat.app`。
+内部 Rust 包和兼容二进制仍使用 `lanchat` / `lanchat-web` 名称；应用界面、安装包、版本和 bundle identifier 分别为 `Xchat`、`0.1.7` 和 `com.xchat.app`。
 
 ## 验证
 

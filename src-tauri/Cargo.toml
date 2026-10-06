@@ -1,6 +1,6 @@
 [package]
 name = "lanchat"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 default-run = "lanchat"
 
@@ -21,6 +21,7 @@ required-features = ["web"]
 
 [features]
 default = ["desktop"]
+custom-protocol = ["tauri/custom-protocol"]
 desktop = ["tauri", "tauri-plugin-shell", "tauri-plugin-fs", "tauri-plugin-dialog", "tauri-plugin-sql", "tauri-plugin-log", "tauri-plugin-single-instance", "tauri-plugin-opener", "tauri-plugin-global-shortcut", "tauri-build", "sysinfo", "clipboard-rs", "wl-clipboard-rs", "xcap"]
 web = ["sysinfo"]
 

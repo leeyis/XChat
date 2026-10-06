@@ -1,6 +1,6 @@
 # Xchat
 
-Xchat `0.1.6` is a LAN chat client built with Tauri 2, React, and Rust. Install and run the client on each device; discovery, messaging, file transfer, and SQLite storage are built in, so normal desktop use does not require a separate server.
+Xchat `0.1.7` is a LAN chat client built with Tauri 2, React, and Rust. Install and run the client on each device; discovery, messaging, file transfer, and SQLite storage are built in, so normal desktop use does not require a separate server.
 
 ## Features
 
@@ -45,11 +45,21 @@ Build bundles for the current platform:
 cargo tauri build
 ```
 
+On Windows, `tauri.windows.conf.json` builds the frontend into `dist/frontend` and embeds it through a relative path. Keep `frontendDist` relative: a Windows drive path can be parsed as a URL and leave the installer without bundled frontend assets.
+
+Check the embedded entry point and its JavaScript, CSS, and icon before packaging:
+
+```bash
+npm run build -- --outDir ../dist/frontend --emptyOutDir
+cargo test --manifest-path src-tauri/Cargo.toml \
+  --no-default-features --features desktop,custom-protocol --test bundled_frontend
+```
+
 Typical macOS outputs:
 
 ```text
 src-tauri/target/release/bundle/macos/Xchat.app
-src-tauri/target/release/bundle/dmg/Xchat_0.1.6_*.dmg
+src-tauri/target/release/bundle/dmg/Xchat_0.1.7_*.dmg
 ```
 
 Build a specific macOS architecture:
@@ -85,7 +95,7 @@ cargo run --manifest-path src-tauri/Cargo.toml \
   -- --port 8888 --db-path /tmp/xchat-web
 ```
 
-The internal Rust package and compatibility binaries remain named `lanchat` / `lanchat-web`. The visible app name, version, and bundle identifier are `Xchat`, `0.1.6`, and `com.xchat.app`.
+The internal Rust package and compatibility binaries remain named `lanchat` / `lanchat-web`. The visible app name, version, and bundle identifier are `Xchat`, `0.1.7`, and `com.xchat.app`.
 
 ## Verification
 

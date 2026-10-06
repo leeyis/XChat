@@ -1,0 +1,6 @@
+{
+  "build": {
+    "beforeBuildCommand": "npm run build -- --outDir ../dist/frontend --emptyOutDir",
+    "frontendDist": "../dist/frontend"
+  }
+}
