@@ -1,5 +1,7 @@
 #[cfg(feature = "desktop")]
 fn main() {
+    // RustEmbed serves these files from the desktop and headless HTTP servers.
+    println!("cargo:rerun-if-changed=../src");
     // 构建脚本里的 #[cfg(target_os = ...)] 判断的是*宿主机*，不是编译目标。
     // 在 Windows 上交叉编译 Android 时会误把 MSVC 专属的 /MANIFESTINPUT 链接参数
     // 传给 clang，因此这里改读 CARGO_CFG_TARGET_OS。
@@ -24,4 +26,5 @@ fn main() {
 #[cfg(not(feature = "desktop"))]
 fn main() {
     // Web 端不需要 tauri_build
+    println!("cargo:rerun-if-changed=../src");
 }

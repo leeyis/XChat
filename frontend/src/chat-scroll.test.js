@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createChatScrollController } from "./chat-scroll.js";
 
-function viewportFixture(count = 40) {
+function viewportFixture(count = 40, maximumRounding = 0) {
   let items = Array.from({ length: count }, (_, index) => ({ key: String(index), height: 40 }));
   let position = 0;
   const viewport = {
@@ -11,7 +11,7 @@ function viewportFixture(count = 40) {
     writes: [],
     get scrollHeight() { return items.reduce((sum, item) => sum + item.height, 0); },
     get scrollTop() { return position; },
-    set scrollTop(value) { position = Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight)); },
+    set scrollTop(value) { position = Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight - maximumRounding)); },
     getBoundingClientRect() { return { top: this.top }; },
     scrollTo(options) { this.writes.push(options); this.scrollTop = options.top; },
     querySelectorAll() {
@@ -102,6 +102,23 @@ test("late image loads keep a following reader at the bottom", () => {
   viewport.update((items) => items.map((item) => item.key === "4" ? { ...item, height: 240 } : item));
   scroll.resize(viewport);
   assert.equal(viewport.scrollTop, 1500);
+});
+
+test("a rounded DOM maximum does not repeatedly scroll an already pinned reader", () => {
+  const viewport = viewportFixture(40, 1);
+  const scroll = createChatScrollController();
+  scroll.reconcile(viewport, "chat");
+  assert.equal(viewport.scrollTop, 1299);
+  const writes = viewport.writes.length;
+  for (let update = 0; update < 20; update += 1) {
+    scroll.capture(viewport);
+    scroll.reconcile(viewport, "chat");
+    scroll.resize(viewport);
+  }
+  assert.equal(viewport.writes.length, writes);
+  viewport.update((items) => [...items, { key: "new", height: 40 }]);
+  scroll.reconcile(viewport, "chat");
+  assert.equal(viewport.scrollTop, 1339, "new messages still follow the reachable bottom");
 });
 
 test("deleted anchors fall back to a surviving visible neighbor", () => {

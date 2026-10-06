@@ -320,11 +320,27 @@ async fn candidates(
     )
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum VerificationVisibility {
+    Public,
+    Background,
+}
+
 /// Validate known candidates. Concurrent callers share the completed result of one attempt.
 pub async fn resolve_peer_connection(
     pool: &Pool<Sqlite>,
     manager: &PeerManager,
     peer_id: &str,
+) -> Result<PeerConnectionStatus, String> {
+    resolve_peer_connection_with_visibility(pool, manager, peer_id, VerificationVisibility::Public)
+        .await
+}
+
+async fn resolve_peer_connection_with_visibility(
+    pool: &Pool<Sqlite>,
+    manager: &PeerManager,
+    peer_id: &str,
+    visibility: VerificationVisibility,
 ) -> Result<PeerConnectionStatus, String> {
     let requested = Instant::now();
     let gate = {
@@ -352,8 +368,12 @@ pub async fn resolve_peer_connection(
         .connection_snapshot(peer_id)
         .ok_or_else(|| "设备不存在".to_string())?
         .address;
-    if let Some(status) = manager.connections.begin_verification(peer_id) {
-        publish(&status);
+    // Automatic retries preserve the existing failure notice while probing. Explicit checks
+    // keep their verification feedback; both paths still publish the verified final result.
+    if visibility == VerificationVisibility::Public {
+        if let Some(status) = manager.connections.begin_verification(peer_id) {
+            publish(&status);
+        }
     }
     let deadline = Instant::now() + Duration::from_secs(7);
     let mut attempted = Vec::new();
@@ -594,7 +614,13 @@ pub fn schedule_validation(pool: &Pool<Sqlite>, manager: &PeerManager, peer_id: 
     let manager = manager.clone();
     let peer_id = peer_id.to_string();
     tokio::spawn(async move {
-        let result = resolve_peer_connection(&pool, &manager, &peer_id).await;
+        let result = resolve_peer_connection_with_visibility(
+            &pool,
+            &manager,
+            &peer_id,
+            VerificationVisibility::Background,
+        )
+        .await;
         if let Some(entry) = manager
             .connections
             .entries
@@ -846,6 +872,163 @@ mod tests {
             let checking = registry.begin_verification("expected").unwrap();
             assert_eq!(checking.status, "verifying");
             assert_eq!(checking.error, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn automatic_recovery_preserves_notices_and_shares_verified_results_with_explicit_checks()
+    {
+        for phase in ["missing", "stale", "mismatch"] {
+            for identity in [Some("expected"), Some("reassigned-device"), None] {
+                for background in [true, false] {
+                    let pool = test_pool().await;
+                    let manager = PeerManager::new();
+                    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    let address = listener.local_addr().unwrap().to_string();
+                    let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+                    let (continue_tx, continue_rx) = tokio::sync::oneshot::channel();
+                    let server = tokio::spawn(async move {
+                        let (stream, _) = listener.accept().await.unwrap();
+                        accepted_tx.send(()).unwrap();
+                        continue_rx.await.unwrap();
+                        if let Some(identity) = identity {
+                            let mut socket = tokio_tungstenite::accept_hdr_async(
+                                stream,
+                                move |_: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                                      mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                                    response.headers_mut().insert(
+                                        "x-xchat-device-id",
+                                        identity.parse().unwrap(),
+                                    );
+                                    Ok(response)
+                                },
+                            )
+                            .await
+                            .unwrap();
+                            while let Some(Ok(message)) = socket.next().await {
+                                assert!(
+                                    !message.is_text(),
+                                    "a recovery probe must not send payloads"
+                                );
+                                if message.is_close() {
+                                    break;
+                                }
+                            }
+                        } else {
+                            drop(stream);
+                        }
+                        assert!(
+                            tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                                .await
+                                .is_err(),
+                            "concurrent checks must share one identity probe"
+                        );
+                    });
+                    manager.add_or_update("expected".into(), "Peer".into(), address.clone());
+                    sqlx::query("INSERT INTO users VALUES ('expected', ?, 0, 1)")
+                        .bind(&address)
+                        .execute(&pool)
+                        .await
+                        .unwrap();
+                    save_fixed(&pool, &address, 1).await;
+                    let prior_error = Some(format!("stored {phase} error"));
+                    let gate = {
+                        let mut entries = manager.connections.entries.lock().unwrap();
+                        let entry = entries.get_mut("expected").unwrap();
+                        entry.status.status = phase.into();
+                        entry.status.error = prior_error.clone();
+                        // Successful recovery also exercises a verified address replacement.
+                        if phase == "stale" {
+                            entry.status.address = "192.0.2.7:8888".into();
+                        }
+                        entry.gate.clone()
+                    };
+                    let explicit = if background {
+                        schedule_validation(&pool, &manager, "expected");
+                        None
+                    } else {
+                        let validation_pool = pool.clone();
+                        let validation_manager = manager.clone();
+                        Some(tokio::spawn(async move {
+                            resolve_peer_connection(
+                                &validation_pool,
+                                &validation_manager,
+                                "expected",
+                            )
+                            .await
+                        }))
+                    };
+                    tokio::time::timeout(Duration::from_secs(2), accepted_rx)
+                        .await
+                        .expect("every recovery must perform a real identity handshake")
+                        .unwrap();
+                    assert!(
+                        gate.try_lock().is_err(),
+                        "the shared peer gate must protect the probe"
+                    );
+                    let checking = manager.connection_snapshot("expected").unwrap();
+                    assert_eq!(
+                        checking.status,
+                        if background { phase } else { "verifying" }
+                    );
+                    assert_eq!(checking.error, if background { prior_error } else { None });
+
+                    let duplicate_pool = pool.clone();
+                    let duplicate_manager = manager.clone();
+                    let mut duplicate = tokio::spawn(async move {
+                        resolve_peer_connection(&duplicate_pool, &duplicate_manager, "expected")
+                            .await
+                    });
+                    assert!(
+                        tokio::time::timeout(Duration::from_millis(20), &mut duplicate)
+                            .await
+                            .is_err(),
+                        "an explicit check must wait for the in-flight background probe"
+                    );
+                    let still_checking = manager.connection_snapshot("expected").unwrap();
+                    assert_eq!(still_checking.status, checking.status);
+                    assert_eq!(still_checking.error, checking.error);
+                    continue_tx.send(()).unwrap();
+                    let result = duplicate.await.unwrap().unwrap();
+                    if let Some(explicit) = explicit {
+                        assert_eq!(explicit.await.unwrap().unwrap().status, result.status);
+                    }
+                    if background {
+                        tokio::time::timeout(Duration::from_secs(2), async {
+                            loop {
+                                let scheduled = manager.connections.entries.lock().unwrap()
+                                    ["expected"]
+                                    .scheduled;
+                                if !scheduled {
+                                    break;
+                                }
+                                tokio::task::yield_now().await;
+                            }
+                        })
+                        .await
+                        .unwrap();
+                    }
+                    let expected_phase = match identity {
+                        Some("expected") if phase == "stale" => "updated",
+                        Some("expected") => "ready",
+                        Some(_) => "mismatch",
+                        None => "missing",
+                    };
+                    let completed = manager.connection_snapshot("expected").unwrap();
+                    assert_eq!(completed.status, expected_phase);
+                    assert_eq!(result.status, expected_phase);
+                    if identity == Some("expected") {
+                        assert_eq!(completed.address, address);
+                        assert!(completed.error.is_none());
+                        assert!(completed.is_fresh_at(now()));
+                    } else {
+                        assert!(completed.error.is_some());
+                        assert!(!completed.is_fresh_at(now()));
+                    }
+                    server.await.unwrap();
+                    pool.close().await;
+                }
+            }
         }
     }
 

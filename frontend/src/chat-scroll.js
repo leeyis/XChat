@@ -13,7 +13,8 @@ export function createChatScrollController() {
 
   function setTop(viewport, top) {
     const next = Math.max(0, Math.min(top, maximum(viewport)));
-    if (Math.abs(viewport.scrollTop - next) < 0.5) return;
+    // DOM heights are rounded while high-DPI scroll offsets can be fractional.
+    if (Math.abs(viewport.scrollTop - next) <= 1) return;
     viewport.scrollTo({ top: next, behavior: "auto" });
   }
 
