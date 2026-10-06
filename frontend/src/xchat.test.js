@@ -12,6 +12,7 @@ import {
   EMOJI_SET,
   fileKind,
   fileStatus,
+  fileProcessingPhase,
   groupMentionCandidates,
   groupAvatarCells,
   groupAvatarRows,
@@ -1462,4 +1463,20 @@ test("transfer snapshots derive percentage and monotonic speed from byte deltas"
   ], 500);
   assert.equal(completed.progress_percent, 100);
   assert.equal(completed.speed_bps, 0);
+});
+
+test("received bytes wait for actual finalization and terminal transfers drop processing hints", () => {
+  const transfer = { direction: "receive", status: "transferring", bytes_transferred: 4096, bytes_total: 4096 };
+  assert.equal(fileProcessingPhase({ ...transfer, bytes_transferred: 4095 }), null);
+  assert.equal(fileProcessingPhase(transfer), "waiting");
+  assert.equal(fileProcessingPhase({ ...transfer, bytes_total: 0, bytes_transferred: 0 }), null);
+  for (const phase of ["merging", "verifying", "saving"]) {
+    const [snapshot] = measureTransfers([], [{ ...transfer, processing_phase: phase }], 1000);
+    assert.equal(fileProcessingPhase(snapshot), phase);
+    assert.equal(fileProcessingPhase({ ...snapshot, direction: "send" }), null);
+    for (const status of ["completed", "failed", "cancelled", "cancelling", "awaiting_acceptance"]) {
+      assert.equal(fileProcessingPhase({ ...snapshot, status }), null);
+    }
+  }
+  assert.equal(fileProcessingPhase({ ...transfer, processing_phase: "future-stage" }), "waiting");
 });

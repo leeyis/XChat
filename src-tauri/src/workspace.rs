@@ -185,6 +185,8 @@ pub struct WorkspaceTransfer {
     #[serde(flatten)]
     pub transfer: TransferRecord,
     pub file_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processing_phase: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1474,9 +1476,17 @@ pub async fn transfers(pool: &Pool<Sqlite>) -> Result<Vec<WorkspaceTransfer>, St
                 .unwrap_or_default(),
             None => String::new(),
         };
+        let processing_phase =
+            if transfer.direction == "receive" && transfer.status == "transferring" {
+                crate::network::conversation_file::receive_processing_phase(&transfer.id)
+                    .map(|phase| phase.as_str())
+            } else {
+                None
+            };
         views.push(WorkspaceTransfer {
             transfer,
             file_name,
+            processing_phase,
         });
     }
     Ok(views)

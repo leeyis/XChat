@@ -43,6 +43,67 @@ type FileSha256 = Shared<BoxFuture<'static, Result<String, String>>>;
 static RECEIVE_TRANSFER_LOCKS: OnceLock<Mutex<HashMap<String, Weak<ReceiveTransferLock>>>> =
     OnceLock::new();
 static RESUME_TRANSFER_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+static RECEIVE_PROCESSING_PHASES: OnceLock<Mutex<HashMap<String, ReceiveProcessingPhase>>> =
+    OnceLock::new();
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReceiveProcessingPhase {
+    Merging,
+    Verifying,
+    Saving,
+}
+
+impl ReceiveProcessingPhase {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Merging => "merging",
+            Self::Verifying => "verifying",
+            Self::Saving => "saving",
+        }
+    }
+}
+
+pub(crate) fn receive_processing_phase(transfer_id: &str) -> Option<ReceiveProcessingPhase> {
+    RECEIVE_PROCESSING_PHASES.get().and_then(|phases| {
+        phases
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(transfer_id)
+            .copied()
+    })
+}
+
+// The caller holds the receive-file lock. A dropped/failed finalizer cannot leave a stale phase.
+pub(crate) struct ReceiveProcessingGuard {
+    transfer_id: String,
+}
+
+impl ReceiveProcessingGuard {
+    pub(crate) fn new(transfer_id: &str) -> Self {
+        Self {
+            transfer_id: transfer_id.to_string(),
+        }
+    }
+
+    pub(crate) fn set_phase(&self, phase: ReceiveProcessingPhase) {
+        RECEIVE_PROCESSING_PHASES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(self.transfer_id.clone(), phase);
+    }
+}
+
+impl Drop for ReceiveProcessingGuard {
+    fn drop(&mut self) {
+        if let Some(phases) = RECEIVE_PROCESSING_PHASES.get() {
+            phases
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&self.transfer_id);
+        }
+    }
+}
 
 pub(crate) async fn lock_receive_file(key: &str) -> tokio::sync::OwnedMutexGuard<()> {
     let lock = {
@@ -2600,10 +2661,12 @@ pub(crate) async fn receive_parallel_chunk(
 pub(crate) async fn merge_parallel_parts(
     download_root: &Path,
     manifest: &ParallelTransferManifest,
+    mut on_phase: impl FnMut(ReceiveProcessingPhase),
 ) -> Result<PathBuf, String> {
     if !valid_parallel_sha256(&manifest.file_sha256) {
         return Err("并行传输缺少完整文件摘要".to_string());
     }
+    on_phase(ReceiveProcessingPhase::Merging);
     let partial_path = received_partial_path(download_root, &manifest.transfer_id);
     let mut output = tokio::fs::File::create(&partial_path)
         .await
@@ -2632,6 +2695,7 @@ pub(crate) async fn merge_parallel_parts(
         let _ = tokio::fs::remove_file(&partial_path).await;
         return Err("并行合并文件大小不一致".to_string());
     }
+    on_phase(ReceiveProcessingPhase::Verifying);
     let digest = sha256_file(&partial_path).await?;
     if digest != manifest.file_sha256 {
         let _ = tokio::fs::remove_file(&partial_path).await;
@@ -3025,10 +3089,9 @@ mod tests {
             message_id: 7,
         };
 
-        let (_, missing, received) =
-            create_or_resume_parallel_manifest(&root, manifest.clone())
-                .await
-                .unwrap();
+        let (_, missing, received) = create_or_resume_parallel_manifest(&root, manifest.clone())
+            .await
+            .unwrap();
         assert_eq!(missing, vec![0, 1, 2, 3]);
         assert_eq!(received, 0);
 
@@ -3049,14 +3112,23 @@ mod tests {
             .await
             .unwrap();
         }
-        let (_, missing, received) =
-            create_or_resume_parallel_manifest(&root, manifest.clone())
-                .await
-                .unwrap();
+        let (_, missing, received) = create_or_resume_parallel_manifest(&root, manifest.clone())
+            .await
+            .unwrap();
         assert!(missing.is_empty());
         assert_eq!(received, size as u64);
 
-        let merged = merge_parallel_parts(&root, &manifest).await.unwrap();
+        let mut phases = Vec::new();
+        let merged = merge_parallel_parts(&root, &manifest, |phase| phases.push(phase))
+            .await
+            .unwrap();
+        assert_eq!(
+            phases,
+            [
+                ReceiveProcessingPhase::Merging,
+                ReceiveProcessingPhase::Verifying
+            ]
+        );
         assert_eq!(tokio::fs::read(&merged).await.unwrap(), data);
         cleanup_parallel_transfer(&root, &manifest.transfer_id)
             .await

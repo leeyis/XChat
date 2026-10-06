@@ -136,6 +136,13 @@ test("download progress cannot replace a file message before its authoritative r
     };
     emit("new-message", progress);
     assert.deepEqual(messages(), before, "a partial progress event must leave message fields and order intact");
+    for (const processing_phase of ["merging", "verifying", "saving", null]) {
+      emit("new-message", {
+        msg_type: "file_status_update", id: 119, client_message_id: "message-119",
+        conversation_id: conversationId, transfer_id: progress.transfer_id, processing_phase,
+      });
+      assert.deepEqual(messages(), before, "finalization events must not change message order or metadata");
+    }
     // Tauri can also deliver progress via the event name without msg_type.
     const { msg_type: ignored, ...namedProgress } = progress;
     for (const eventName of ["file_download_progress", "upload_progress"]) {

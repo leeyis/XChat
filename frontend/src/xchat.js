@@ -86,6 +86,14 @@ export const ACTIVE_TRANSFER_STATES = new Set([
   "cancelling",
 ]);
 
+export function fileProcessingPhase(transfer = {}) {
+  if (transfer.direction !== "receive" || !["transferring", "receiving", "downloading"].includes(transfer.status)) return null;
+  if (["merging", "verifying", "saving"].includes(transfer.processing_phase)) return transfer.processing_phase;
+  // 100% is only the byte count, including while a v4 sender is still supplying its digest.
+  const total = Number(transfer.bytes_total);
+  return total > 0 && Number(transfer.bytes_transferred) >= total ? "waiting" : null;
+}
+
 export function isAppActive(visibilityState, focused) {
   return visibilityState === "visible" && focused;
 }

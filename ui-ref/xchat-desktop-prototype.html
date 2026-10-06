@@ -1431,5 +1431,95 @@ applyPrototypeTheme(committedSettings.theme);renderConnectionState();
   if(new URLSearchParams(location.search).get('review')==='media'){scenarioSelect.value='media';enable();}
 })();
 </script>
+<!-- PROTOTYPE ONLY: receive finalization states; no real transfer or file writes. -->
+<style>
+  .app.file-finishing-review,.app.file-finishing-review.info-open{grid-template-columns:56px 280px minmax(420px,1fr) 0}
+  .file-finishing-review .info{display:none}
+  .file-finishing-review .chat{display:flex;flex-direction:column}
+  .file-finishing-review .chat-head{height:56px;flex:0 0 56px}
+  .file-finishing-review .composer{flex:0 0 auto}
+  .file-finishing-review #messagesScroll{flex:1;min-height:0;scroll-behavior:auto;overflow-anchor:none}
+  .file-finishing-review .msg-stack{max-width:calc(100% - 42px)}
+  .file-finishing-review .finish-file{width:360px;max-width:100%;padding:13px;border:1px solid var(--border);border-radius:11px;background:var(--surface);box-shadow:var(--shadow)}
+  .finish-file .file-top{grid-template-columns:40px minmax(0,1fr) 44px;gap:10px}
+  .finish-file .file-status{white-space:nowrap;font:12px/18px var(--font)}
+  .finish-file .file-name{font-size:14px;line-height:20px}
+  .finish-file .finish-work{height:33px;margin:7px 0 0 50px}
+  .finish-file .transfer-meta{height:14px;margin:0;font:10px/14px var(--mono)}
+  .finish-file .progress{height:5px;margin:7px 0 0}
+  .finish-file[data-stage=receiving] .progress span{width:74.3%}
+  .finish-file .finish-action{display:grid;place-items:center;min-height:32px}
+  .finish-file .finish-action button{border:0;background:transparent;color:var(--accent);padding:5px 0;font-size:12px;white-space:nowrap}
+  .finish-file .finish-spinner{display:block;width:17px;height:17px;border:2px solid color-mix(in oklch,var(--accent) 22%,transparent);border-top-color:var(--accent);border-radius:50%;animation:finish-spin 1s linear infinite}
+  .finish-file.is-processing .progress span{width:34%;animation:finish-sweep 1.8s ease-in-out infinite}
+  .finish-file.is-processing .file-status{color:var(--accent)}
+  .finish-file[data-stage=completed] .finish-work{display:none}
+  .finish-file[data-stage=failed]{border-color:color-mix(in oklch,var(--danger) 55%,var(--border))}
+  .finish-file[data-stage=failed] .file-status{color:var(--danger)}
+  .finish-file[data-stage=failed] .progress{visibility:hidden}
+  .finish-file .finish-action button:focus-visible,.finishing-review-controls button:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+  .finishing-review-controls p{margin:9px 0;color:var(--muted);font-size:11px;line-height:1.6}
+  .finishing-review-buttons{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .finishing-review-buttons button{height:30px;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-size:11px}
+  .finishing-review-buttons button[aria-pressed=true]{border-color:var(--accent);background:color-mix(in oklch,var(--accent) 7%,var(--surface));color:var(--accent)}
+  .finishing-review-controls .finish-play{width:100%;height:31px;margin-top:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-size:11px}
+  @keyframes finish-spin{to{transform:rotate(360deg)}}
+  @keyframes finish-sweep{0%{transform:translateX(-110%)}100%{transform:translateX(395%)}}
+  @media(prefers-reduced-motion:reduce){.finish-file .finish-spinner,.finish-file.is-processing .progress span{animation:none}.finish-file.is-processing .progress span{width:100%;opacity:.45}}
+</style>
+<script>
+(() => {
+  const select=$('desktopReviewScenario'),review=document.querySelector('.desktop-review-tools');
+  select.add(new Option('大文件接收 · 合并与校验','file-finishing'));
+  const controls=document.createElement('div');controls.className='finishing-review-controls';controls.hidden=true;
+  controls.innerHTML='<p>点击预览各阶段。数据收齐后显示实际处理状态；处理中卡片高度不变，完成后恢复普通文件卡片。</p><div class="finishing-review-buttons"><button type="button" data-finish-stage="receiving">接收中</button><button type="button" data-finish-stage="merging">合并中</button><button type="button" data-finish-stage="verifying">校验中</button><button type="button" data-finish-stage="saving">保存中</button><button type="button" data-finish-stage="completed">已完成</button><button type="button" data-finish-stage="failed">校验失败</button></div><button type="button" class="finish-play" data-finish-play>播放完整流程</button><p>仅模拟状态；动画表示仍在处理，不代表完成比例。完成前不能打开文件；处理阶段不提供取消按钮。</p>';
+  review.append(controls);
+  const peer=devices.find(item=>item.id==='zhang-3');
+  const stages={
+    receiving:{label:'正在接收',left:'428.4 MB / 576.6 MB',right:'12.8 MB/s'},
+    merging:{label:'正在合并文件',left:'数据已收齐',right:'请稍候',busy:true},
+    verifying:{label:'正在校验文件',left:'正在检查完整性',right:'请稍候',busy:true},
+    saving:{label:'正在保存文件',left:'即将完成',right:'请稍候',busy:true},
+    completed:{label:'已完成',left:'',right:''},
+    failed:{label:'文件校验失败',left:'请重新接收文件',right:''},
+    cancelled:{label:'已取消',left:'可以重新接收',right:''}
+  };
+  const label=review.querySelector('small'),originalLabel=label.textContent;
+  let active=false,stage='merging',timer=null;
+  function stop(){clearInterval(timer);timer=null;controls.querySelector('[data-finish-play]').textContent='播放完整流程';}
+  function paint(){
+    const card=$('finishReceivingFile');if(!card)return;
+    const state=stages[stage];card.dataset.stage=stage;card.classList.toggle('is-processing',!!state.busy);card.classList.toggle('local-ready',stage==='completed');card.dataset.localAvailable=String(stage==='completed');
+    card.querySelector('.file-status').textContent=state.label+' · 576.6 MB';
+    card.querySelector('[data-finish-meta]').textContent=state.left;card.querySelector('[data-finish-rate]').textContent=state.right;
+    card.querySelector('.finish-action').innerHTML=state.busy?'<span class="finish-spinner" aria-hidden="true"></span>':stage==='receiving'?'<button type="button" data-finish-action="cancel">取消</button>':['failed','cancelled'].includes(stage)?'<button type="button" data-finish-action="retry">重试</button>':'';
+    const progress=card.querySelector('.progress');progress.setAttribute('aria-label',state.label);progress.toggleAttribute('hidden',stage==='cancelled');
+    if(stage==='receiving')progress.setAttribute('aria-valuenow','74.3');else progress.removeAttribute('aria-valuenow');
+    controls.querySelectorAll('[data-finish-stage]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.finishStage===stage)));
+  }
+  function render(){
+    $('connectionBanner').hidden=true;$('dock').hidden=true;$('bottomBtn').classList.remove('show');
+    $('chatTitle').textContent=peer.name;$('chatSub').textContent=peer.address+' · 在线 · 连接已验证';
+    messages.innerHTML='<div class="day">今天 · 17:20</div><div class="msg"><span class="avatar" style="--avatar:var(--av4)">ws</span><div class="msg-stack"><div class="bubble">安装包发给你了。</div><span class="msg-time">17:20</span></div></div><div class="msg" data-message-id="finish-file" data-message-type="file"><span class="avatar" style="--avatar:var(--av4)">ws</span><div class="msg-stack"><div class="file-card finish-file" id="finishReceivingFile"><div class="file-top"><span class="file-icon">'+fileIcon+'</span><div style="min-width:0"><div class="file-name" title="Xagent Setup 2.2.3.exe">Xagent Setup 2.2.3.exe</div><div class="file-status" role="status" aria-live="polite" aria-atomic="true"></div></div><span class="finish-action"></span></div><div class="finish-work"><div class="transfer-meta"><span data-finish-meta></span><span data-finish-rate></span></div><div class="progress" role="progressbar"><span></span></div></div></div><span class="msg-time">17:20</span></div></div>';
+    paint();scroll.scrollTop=0;
+  }
+  function enable(){active=true;stage='merging';stop();app.classList.add('file-finishing-review');controls.hidden=false;review.querySelector('.desktop-review-links').hidden=true;label.textContent='大文件状态原型 · 10.06 · 接收后仍有处理阶段';setTab('sessions');selectDevice(peer.id);uxCloseMessageMenu();render();}
+  function disable(){if(!active)return;stop();active=false;controls.hidden=true;app.classList.remove('file-finishing-review');review.querySelector('.desktop-review-links').hidden=false;label.textContent=originalLabel;}
+  // Clean up before earlier scenario handlers consume their selection event.
+  document.addEventListener('change',event=>{if(event.target===select&&select.value!=='file-finishing')disable();},true);
+  select.addEventListener('change',()=>{if(select.value==='file-finishing')enable();});
+  const originalSelect=selectDevice;selectDevice=function(id){originalSelect(id);if(active&&id===peer.id)render();};
+  controls.addEventListener('click',event=>{
+    const chosen=event.target.closest('[data-finish-stage]')?.dataset.finishStage;
+    if(chosen){stop();stage=chosen;if(selectedId!==peer.id)selectDevice(peer.id);paint();return;}
+    if(!event.target.closest('[data-finish-play]'))return;
+    if(timer){stop();return;}
+    const sequence=['receiving','merging','verifying','saving','completed'];let index=0;stage=sequence[index];if(selectedId!==peer.id)selectDevice(peer.id);paint();controls.querySelector('[data-finish-play]').textContent='暂停演示';
+    timer=setInterval(()=>{stage=sequence[++index];paint();if(index===sequence.length-1)stop();},3000);
+  });
+  messages.addEventListener('click',event=>{if(!active)return;const action=event.target.closest('[data-finish-action]')?.dataset.finishAction;if(!action)return;event.preventDefault();event.stopImmediatePropagation();stop();stage=action==='cancel'?'cancelled':'receiving';paint();},true);
+  if(new URLSearchParams(location.search).get('review')==='file-finishing'){select.value='file-finishing';enable();}
+})();
+</script>
 </body>
 </html>

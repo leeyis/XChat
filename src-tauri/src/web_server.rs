@@ -4080,29 +4080,63 @@ async fn finalize_parallel_receive_locked(
     if transfer.status != "transferring" {
         return Err("并行接收传输已结束".to_string());
     }
-    let partial_path =
-        match crate::network::conversation_file::merge_parallel_parts(download_root, manifest)
-            .await
+    let processing =
+        crate::network::conversation_file::ReceiveProcessingGuard::new(&manifest.transfer_id);
+    let result = materialize_parallel_receive(state, download_root, manifest, &processing).await;
+    drop(processing);
+    if let Err(error) = &result {
+        // Include failures after verification (publishing or DB updates), so the UI exits processing.
+        if crate::db::get_transfer(&state.pool, &manifest.transfer_id)
+            .await?
+            .is_some_and(|current| current.status != "completed")
         {
-            Ok(path) => path,
-            Err(error) => {
-                let _ = crate::db::update_transfer(
-                    &state.pool,
-                    &manifest.transfer_id,
-                    "failed",
-                    transfer.bytes_transferred,
-                    Some(&error),
-                )
+            let _ = crate::db::update_transfer(
+                &state.pool,
+                &manifest.transfer_id,
+                "failed",
+                transfer.bytes_transferred,
+                Some(error),
+            )
+            .await;
+            let _ = crate::db::update_file_status_by_id(&state.pool, manifest.message_id, "failed")
                 .await;
-                let _ = crate::db::update_file_status_by_id(
-                    &state.pool,
-                    manifest.message_id,
-                    "failed",
-                )
-                .await;
-                return Err(error);
-            }
-        };
+        }
+    }
+    broadcast_receive_processing(state, manifest);
+    result
+}
+
+fn broadcast_receive_processing(
+    state: &AppState,
+    manifest: &crate::network::conversation_file::ParallelTransferManifest,
+) {
+    // This is a control event, never a partial message to merge into the conversation.
+    broadcast_incoming_event(
+        state,
+        serde_json::json!({
+            "msg_type": "file_status_update",
+            "id": manifest.message_id,
+            "client_message_id": manifest.client_message_id,
+            "conversation_id": manifest.conversation_id,
+            "transfer_id": manifest.transfer_id,
+            "processing_phase": crate::network::conversation_file::receive_processing_phase(&manifest.transfer_id)
+                .map(|phase| phase.as_str()),
+        }),
+    );
+}
+
+async fn materialize_parallel_receive(
+    state: &AppState,
+    download_root: &std::path::Path,
+    manifest: &crate::network::conversation_file::ParallelTransferManifest,
+    processing: &crate::network::conversation_file::ReceiveProcessingGuard,
+) -> Result<crate::db::MessageRecord, String> {
+    let partial_path =
+        crate::network::conversation_file::merge_parallel_parts(download_root, manifest, |phase| {
+            processing.set_phase(phase);
+            broadcast_receive_processing(state, manifest);
+        })
+        .await?;
     let expected_final_path = download_root.join(&manifest.final_file_name);
     let already_materialized = tokio::fs::metadata(&expected_final_path)
         .await
@@ -4110,6 +4144,8 @@ async fn finalize_parallel_receive_locked(
         && crate::network::conversation_file::sha256_file(&expected_final_path)
             .await
             .is_ok_and(|hash| hash == manifest.file_sha256);
+    processing.set_phase(crate::network::conversation_file::ReceiveProcessingPhase::Saving);
+    broadcast_receive_processing(state, manifest);
     let (final_file_name, final_path) = if already_materialized {
         let _ = tokio::fs::remove_file(&partial_path).await;
         (manifest.final_file_name.clone(), expected_final_path)
@@ -7663,6 +7699,36 @@ mod websocket_protocol_tests {
             assert_eq!(message.file_status.as_deref(), Some("downloading"));
             assert!(!download_dir.join("report.bin").exists());
 
+            // Processing metadata is visible in both API snapshots without changing persisted status.
+            {
+                use crate::network::conversation_file::{
+                    ReceiveProcessingGuard, ReceiveProcessingPhase,
+                };
+                let processing = ReceiveProcessingGuard::new(&payload.transfer_id);
+                for phase in [
+                    ReceiveProcessingPhase::Merging,
+                    ReceiveProcessingPhase::Verifying,
+                    ReceiveProcessingPhase::Saving,
+                ] {
+                    processing.set_phase(phase);
+                    let snapshots = crate::workspace::transfers(&pool).await.unwrap();
+                    let snapshot = snapshots
+                        .iter()
+                        .find(|item| item.transfer.id == payload.transfer_id)
+                        .unwrap();
+                    assert_eq!(snapshot.transfer.status, "transferring");
+                    assert_eq!(snapshot.processing_phase, Some(phase.as_str()));
+                    assert_eq!(
+                        serde_json::to_value(snapshot).unwrap()["processing_phase"],
+                        phase.as_str()
+                    );
+                }
+            }
+            assert!(crate::network::conversation_file::receive_processing_phase(
+                &payload.transfer_id
+            )
+            .is_none());
+
             // All ranges already present after a restart still require the final digest.
             let response =
                 prepare_parallel_upload_v4_http(State(state.clone()), Json(payload.clone())).await;
@@ -7680,8 +7746,49 @@ mod websocket_protocol_tests {
             } else {
                 "0".repeat(64)
             };
+            let mut events = state.ws_broadcast.subscribe();
             let response =
                 complete_parallel_upload_v4_http(State(state.clone()), Json(payload.clone())).await;
+            let mut phases = Vec::new();
+            while let Ok(event) = events.try_recv() {
+                let event: serde_json::Value = serde_json::from_str(&event).unwrap();
+                if let Some(phase) = event.get("processing_phase") {
+                    assert_eq!(event["msg_type"], "file_status_update");
+                    assert_eq!(event["transfer_id"], payload.transfer_id);
+                    phases.push(phase.clone());
+                }
+            }
+            assert_eq!(
+                phases,
+                if correct_digest {
+                    vec![
+                        serde_json::json!("merging"),
+                        serde_json::json!("verifying"),
+                        serde_json::json!("saving"),
+                        serde_json::Value::Null,
+                    ]
+                } else {
+                    vec![
+                        serde_json::json!("merging"),
+                        serde_json::json!("verifying"),
+                        serde_json::Value::Null,
+                    ]
+                }
+            );
+            assert!(crate::network::conversation_file::receive_processing_phase(
+                &payload.transfer_id
+            )
+            .is_none());
+            let snapshots = crate::workspace::transfers(&pool).await.unwrap();
+            let snapshot = snapshots
+                .iter()
+                .find(|item| item.transfer.id == payload.transfer_id)
+                .unwrap();
+            assert!(snapshot.processing_phase.is_none());
+            assert!(serde_json::to_value(snapshot)
+                .unwrap()
+                .get("processing_phase")
+                .is_none());
             if correct_digest {
                 assert!(response.status().is_success());
                 assert_eq!(
@@ -7799,6 +7906,7 @@ mod websocket_protocol_tests {
         let partial = crate::network::conversation_file::merge_parallel_parts(
             &download_dir,
             &received.manifest,
+            |_| {},
         )
         .await
         .unwrap();

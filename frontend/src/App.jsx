@@ -17,6 +17,7 @@ import {
   fileMessageActions,
   fileKind,
   fileStatus,
+  fileProcessingPhase,
   groupMentionCandidates,
   groupAvatarRows,
   insertTextAtSelection,
@@ -194,6 +195,16 @@ const copy = {
     attachmentReady: "待发送",
     imagePreview: "图片预览",
     localFileUnavailable: "本地文件不可用",
+    receivingFile: "正在接收",
+    sendingFile: "正在发送",
+    fileVerificationFailed: "文件校验失败",
+    fileProcessingWait: "请稍候",
+    fileProcessing: {
+      waiting: { title: "等待文件处理", detail: "数据已收齐" },
+      merging: { title: "正在合并文件", detail: "数据已收齐" },
+      verifying: { title: "正在校验文件", detail: "正在检查完整性" },
+      saving: { title: "正在保存文件", detail: "即将完成" },
+    },
     previewFile: "预览文件",
     sentDirection: "我发送的",
     receivedDirection: "我接收的",
@@ -554,6 +565,16 @@ const copy = {
     attachmentReady: "Ready to send",
     imagePreview: "Image preview",
     localFileUnavailable: "Local file unavailable",
+    receivingFile: "Receiving file",
+    sendingFile: "Sending file",
+    fileVerificationFailed: "File verification failed",
+    fileProcessingWait: "Please wait",
+    fileProcessing: {
+      waiting: { title: "Waiting for file processing", detail: "All data received" },
+      merging: { title: "Merging file", detail: "All data received" },
+      verifying: { title: "Verifying file", detail: "Checking integrity" },
+      saving: { title: "Saving file", detail: "Almost done" },
+    },
     previewFile: "Preview file",
     sentDirection: "Sent by me",
     receivedDirection: "Received by me",
@@ -1192,7 +1213,7 @@ function formatTime(timestamp, locale) {
 function appVersion() {
   return typeof globalThis.__XCHAT_VERSION__ === "string" && globalThis.__XCHAT_VERSION__
     ? globalThis.__XCHAT_VERSION__
-    : "0.1.8";
+    : "0.1.9";
 }
 
 function formatSize(bytes) {
@@ -1933,13 +1954,14 @@ function MediaTransferProgress({ transfer, message, state, workspace, labels }) 
   if (!transfer) return null;
   const percent = transfer.progress_percent || 0;
   const direction = mediaTransferDirection(transfer, message);
-  const en = labels.locale === "en";
-  return <div className="chat-media-transfer">
-    <div className="chat-media-transfer-top"><span>{direction === "outgoing" ? (en ? "Sending…" : "正在发送") : (en ? "Receiving…" : "正在接收")}</span>
-      {state.capabilities.transferCancel && <button type="button" className="text-action" data-media-control disabled={transfer.status === "cancelling"} onClick={() => workspace.dispatch({ type: "transfer.cancel", id: transfer.id })}>{transfer.status === "cancelling" ? labels.cancelling : labels.cancel}</button>}
+  const phase = fileProcessingPhase(transfer);
+  const processing = labels.fileProcessing[phase];
+  return <div className={`chat-media-transfer${processing ? " processing" : ""}`} data-processing-phase={phase || undefined}>
+    <div className="chat-media-transfer-top"><span role="status">{processing?.title || (direction === "outgoing" ? labels.sendingFile : labels.receivingFile)}</span>
+      {processing ? <span className="file-processing-spinner" aria-hidden="true" /> : state.capabilities.transferCancel && <button type="button" className="text-action" data-media-control disabled={transfer.status === "cancelling"} onClick={() => workspace.dispatch({ type: "transfer.cancel", id: transfer.id })}>{transfer.status === "cancelling" ? labels.cancelling : labels.cancel}</button>}
     </div>
-    <span className="progress-track" aria-label={labels.progress(percent)}><i style={{ width: `${percent}%` }} /></span>
-    <span className="message-transfer-meta"><span>{formatProgressSize(transfer.bytes_transferred)} / {formatProgressSize(transfer.bytes_total || message.file_size)}</span><span>{formatRate(transfer.speed_bps)}</span></span>
+    <span className="progress-track" role="progressbar" aria-label={processing?.title || labels.progress(percent)} aria-valuenow={processing ? undefined : percent}><i style={processing ? undefined : { width: `${percent}%` }} /></span>
+    <span className="message-transfer-meta"><span>{processing?.detail || `${formatProgressSize(transfer.bytes_transferred)} / ${formatProgressSize(transfer.bytes_total || message.file_size)}`}</span><span>{processing ? labels.fileProcessingWait : formatRate(transfer.speed_bps)}</span></span>
   </div>;
 }
 
@@ -2052,13 +2074,19 @@ function MessageFile({ message, state, workspace, labels }) {
   const image = isImageFile(message);
   const available = localFileAvailable(message);
   const messageId = message.message_id ?? message.id;
-  const activeTransfer = state.transfers.find(
+  const messageTransfers = state.transfers.filter(
     (transfer) =>
       messageId != null &&
       transfer.message_id != null &&
-      String(transfer.message_id) === String(messageId) &&
-      ACTIVE_TRANSFER_STATES.has(transfer.status),
+      String(transfer.message_id) === String(messageId),
   );
+  const activeTransfer = messageTransfers.find((transfer) => ACTIVE_TRANSFER_STATES.has(transfer.status));
+  const phase = fileProcessingPhase(activeTransfer);
+  const processing = labels.fileProcessing[phase];
+  const failedTransfer = messageTransfers.find((transfer) => transfer.status === "failed");
+  const verificationFailed = status === "failed" && /SHA-256|校验|checksum/i.test(failedTransfer?.error || "");
+  const pending = Boolean(activeTransfer) || ACTIVE_TRANSFER_STATES.has(status) || status === "offered";
+  const unavailable = !available && !pending;
   const direction = mediaTransferDirection({}, message);
   const kind = fileKind(message);
   const ready = available && (direction === "outgoing" || (!activeTransfer && ["accepted", "completed", "received", "downloaded", "sent", "delivered", "read"].includes(status)));
@@ -2107,8 +2135,9 @@ function MessageFile({ message, state, workspace, labels }) {
       ? (en ? "This file cannot be played here. Open the original with a system app." : "当前环境无法播放此文件，可用系统应用打开原文件。")
       : (en ? "This file cannot be played here. Download it or open it with a system app." : "当前环境无法播放此文件，仍可下载原文件或用系统应用打开。");
     const detail = activeTransfer
-      ? direction === "outgoing" ? (en ? "Sending the original file." : "正在发送原文件。") : (en ? "Receiving. Playback is available when complete." : "正在接收，完成后即可播放。")
+      ? direction === "outgoing" ? (en ? "Sending the original file." : "正在发送原文件。") : (en ? "Playback is available once receiving and processing finish." : "文件接收并处理完成后，即可在这里播放。")
       : waiting ? (en ? "Waiting to receive. Playback is available when complete." : "等待接收，完成后即可在这里播放。")
+      : verificationFailed ? (en ? "File verification failed. Try receiving again." : "文件校验失败，请重新接收文件。")
       : status === "failed" ? (en ? "Transfer failed. Try receiving or sending again." : "传输失败，可以重新接收或发送。")
       : !available ? (en ? "The local file is missing and cannot be played." : "本地文件已被删除，暂时无法播放。")
       : failed ? failureDetail
@@ -2126,29 +2155,30 @@ function MessageFile({ message, state, workspace, labels }) {
   }
   return (
     <div
-      className={`message-file ${
-        status === "failed" || !available ? "invalid" : ""
-      }`}
+      className={`message-file${status === "failed" || unavailable ? " invalid" : ""}${processing ? " processing" : ""}`}
+      data-processing-phase={phase || undefined}
     >
       <span className="file-icon">
         <Icon name={image ? "image" : "file"} />
       </span>
       <span className="message-file-main">
         <b>{message.file_name || message.content || labels.attachment}</b>
-        <span>
-          {!available
-            ? labels.localFileUnavailable
-            : statusText(status, labels) || labels.file}{" "}
+        <span className="file-receive-status" role="status" aria-live="polite">
+          {processing?.title || (verificationFailed ? labels.fileVerificationFailed
+            : status === "failed" ? statusText(status, labels)
+            : activeTransfer ? activeTransfer.status === "cancelling" ? labels.cancelling : direction === "outgoing" ? labels.sendingFile : labels.receivingFile
+            : unavailable ? labels.localFileUnavailable
+            : statusText(status, labels) || labels.file)}{" "}
           · {formatSize(message.file_size)}
         </span>
         {activeTransfer && (
           <>
             <span className="message-transfer-meta">
-              <span title={progressBytes}>{progressBytes}</span>
-              <span title={progressRate}>{progressRate}</span>
+              <span title={processing?.detail || progressBytes}>{processing?.detail || progressBytes}</span>
+              <span title={processing ? labels.fileProcessingWait : progressRate}>{processing ? labels.fileProcessingWait : progressRate}</span>
             </span>
-            <span className="progress-track" aria-label={labels.progress(percent)}>
-              <i style={{ width: `${percent}%` }} />
+            <span className="progress-track" role="progressbar" aria-label={processing?.title || labels.progress(percent)} aria-valuenow={processing ? undefined : percent}>
+              <i style={processing ? undefined : { width: `${percent}%` }} />
             </span>
           </>
         )}
@@ -2170,7 +2200,7 @@ function MessageFile({ message, state, workspace, labels }) {
           {direction === "incoming" ? labels.receiveAgain : labels.retry}
         </button>
       )}
-      {activeTransfer && state.capabilities.transferCancel && (
+      {activeTransfer && (processing || state.capabilities.transferCancel) && <span className="file-transfer-action">{processing ? <span className="file-processing-spinner" aria-hidden="true" /> : (
         <button
           disabled={activeTransfer.status === "cancelling"}
           onClick={() =>
@@ -2184,8 +2214,8 @@ function MessageFile({ message, state, workspace, labels }) {
             ? labels.cancelling
             : labels.cancel}
         </button>
-      )}
-      {canOpen && ["accepted", "completed", "sent"].includes(status) && (
+      )}</span>}
+      {canOpen && !activeTransfer && ["accepted", "completed", "sent"].includes(status) && (
         <FileOpenMenu
           file={message}
           workspace={workspace}
