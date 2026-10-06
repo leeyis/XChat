@@ -1068,7 +1068,7 @@ applyPrototypeTheme(committedSettings.theme);renderConnectionState();
       missing:['暂未找到可连接的设备','已保留历史地址和聊天记录。确认对方已打开 XChat 且网络可达后重试。'],
       mismatch:['发现的地址属于其他设备','设备 ID 不匹配，已停止连接；原设备和聊天记录保持不变。']
     }[s.state];
-    banner.hidden=!copy;
+    banner.hidden=!copy||(app.classList.contains('header-refresh-review')&&s.state==='updated');
     if(copy){$('connectionTitle').textContent=copy[0];$('connectionText').textContent=copy[1];banner.classList.toggle('checking',busy);banner.classList.toggle('restored',s.state==='updated');banner.classList.toggle('route-error',s.state==='mismatch');}
     const retry=$('retryConnection');retry.hidden=busy||s.state==='updated';retry.disabled=busy;retry.textContent=s.state==='stale'?'刷新地址':'重新发现';
     drawerRender();
@@ -1519,6 +1519,25 @@ applyPrototypeTheme(committedSettings.theme);renderConnectionState();
   });
   messages.addEventListener('click',event=>{if(!active)return;const action=event.target.closest('[data-finish-action]')?.dataset.finishAction;if(!action)return;event.preventDefault();event.stopImmediatePropagation();stop();stage=action==='cancel'?'cancelled':'receiving';paint();},true);
   if(new URLSearchParams(location.search).get('review')==='file-finishing'){select.value='file-finishing';enable();}
+})();
+</script>
+<style>
+  .app.header-refresh-review #refreshPeerAddress{display:none!important}
+</style>
+<script>
+(() => {
+  const select=$('desktopReviewScenario'),review=document.querySelector('.desktop-review-tools');
+  select.add(new Option('会话顶栏 · 移除重复刷新入口','header-refresh'));
+  const note=document.createElement('div');note.className='finishing-review-controls';note.hidden=true;
+  note.innerHTML='<p>会话右上角仅保留更多按钮。打开侧边设备信息抽屉，仍可使用“刷新设备地址”。</p><p>验证成功后自动收起连接横幅；顶部保留简洁连接状态。可点击抽屉中的刷新按钮验证此流程。</p>';
+  review.append(note);
+  const label=review.querySelector('small'),original=label.textContent;
+  let active=false;
+  function enable(){active=true;app.classList.add('header-refresh-review');note.hidden=false;review.querySelector('.desktop-review-links').hidden=true;label.textContent='会话顶栏原型 · 10.06 · 合并重复入口';setTab('sessions');selectDevice('zhang-3');app.classList.add('info-open');$('moreBtn').classList.add('active');drawerRender();}
+  function disable(){if(!active)return;active=false;app.classList.remove('header-refresh-review');note.hidden=true;label.textContent=original;review.querySelector('.desktop-review-links').hidden=false;}
+  document.addEventListener('change',event=>{if(event.target===select&&select.value!=='header-refresh')disable();},true);
+  select.addEventListener('change',()=>{if(select.value==='header-refresh')enable();});
+  if(new URLSearchParams(location.search).get('review')==='header-refresh'){select.value='header-refresh';enable();}
 })();
 </script>
 </body>

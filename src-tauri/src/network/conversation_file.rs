@@ -31,6 +31,7 @@ use super::{
 
 const CHUNK_SIZE: usize = 4 * 1024 * 1024;
 const PARALLEL_STREAM_BUFFER: usize = 256 * 1024;
+const FILE_MERGE_BUFFER: usize = 1024 * 1024;
 const PARALLEL_PARTS_PER_CHANNEL: usize = 4;
 const MAX_PARALLEL_PARTS: usize = 4096;
 pub const PARALLEL_FILE_CAPABILITY: &str = "parallel_file_v2";
@@ -2177,7 +2178,7 @@ pub(crate) async fn sha256_file(path: &Path) -> Result<String, String> {
             }
             digest.update(&buffer[..read]);
         }
-        Ok(format!("{:x}", digest.finalize()))
+        Ok(sha256_hex(&digest.finalize()))
     })
     .await
     .map_err(|error| format!("文件摘要任务失败: {error}"))?
@@ -2186,7 +2187,7 @@ pub(crate) async fn sha256_file(path: &Path) -> Result<String, String> {
 fn parallel_transfer_key(transfer_id: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(transfer_id.as_bytes());
-    format!("{:x}", digest.finalize())
+    sha256_hex(&digest.finalize())
 }
 
 pub(crate) fn parallel_transfer_dir(download_root: &Path, transfer_id: &str) -> PathBuf {
@@ -2658,6 +2659,91 @@ pub(crate) async fn receive_parallel_chunk(
     })
 }
 
+// Own only this attempt's staging file. A cancelled blocking task must never
+// truncate or remove another attempt's output, even after its caller is dropped.
+struct PendingMergedFile {
+    path: PathBuf,
+    file: Option<std::fs::File>,
+}
+
+impl Drop for PendingMergedFile {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn copy_and_hash_parallel_parts(
+    download_root: &Path,
+    manifest: &ParallelTransferManifest,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> Result<(PendingMergedFile, String), String> {
+    use std::io::{Read, Write};
+
+    let path = parallel_transfer_dir(download_root, &manifest.transfer_id)
+        .join(format!("merging-{}.tmp", uuid::Uuid::new_v4()));
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| format!("创建并行合并文件失败: {error}"))?;
+    let mut pending = PendingMergedFile {
+        path,
+        file: Some(file),
+    };
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0; FILE_MERGE_BUFFER];
+    let mut total = 0u64;
+    for chunk in &manifest.chunks {
+        let path = parallel_part_path(download_root, &manifest.transfer_id, chunk.index);
+        let mut part =
+            std::fs::File::open(path).map_err(|error| format!("打开并行分块失败: {error}"))?;
+        let mut copied = 0u64;
+        loop {
+            if is_cancelled() {
+                return Err("文件合并已取消".to_string());
+            }
+            let read = part
+                .read(&mut buffer)
+                .map_err(|error| format!("读取并行分块失败: {error}"))?;
+            if read == 0 {
+                break;
+            }
+            copied += read as u64;
+            if copied > chunk.length {
+                return Err("并行分块长度在合并前发生变化".to_string());
+            }
+            let bytes = &buffer[..read];
+            pending
+                .file
+                .as_mut()
+                .unwrap()
+                .write_all(bytes)
+                .map_err(|error| format!("合并并行分块失败: {error}"))?;
+            // Hash the bytes being assembled instead of reading the whole file again.
+            digest.update(bytes);
+        }
+        if copied != chunk.length {
+            return Err("并行分块长度在合并前发生变化".to_string());
+        }
+        total += copied;
+    }
+    if total != manifest.file_size {
+        return Err("并行合并文件大小不一致".to_string());
+    }
+    drop(pending.file.take());
+    Ok((pending, sha256_hex(&digest.finalize())))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut result = String::with_capacity(64);
+    for byte in bytes {
+        write!(&mut result, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    result
+}
+
 pub(crate) async fn merge_parallel_parts(
     download_root: &Path,
     manifest: &ParallelTransferManifest,
@@ -2668,40 +2754,25 @@ pub(crate) async fn merge_parallel_parts(
     }
     on_phase(ReceiveProcessingPhase::Merging);
     let partial_path = received_partial_path(download_root, &manifest.transfer_id);
-    let mut output = tokio::fs::File::create(&partial_path)
-        .await
-        .map_err(|error| format!("创建并行合并文件失败: {error}"))?;
-    let mut total = 0u64;
-    for chunk in &manifest.chunks {
-        let path = parallel_part_path(download_root, &manifest.transfer_id, chunk.index);
-        let mut part = tokio::fs::File::open(&path)
-            .await
-            .map_err(|error| format!("打开并行分块失败: {error}"))?;
-        let copied = tokio::io::copy(&mut part, &mut output)
-            .await
-            .map_err(|error| format!("合并并行分块失败: {error}"))?;
-        if copied != chunk.length {
-            let _ = tokio::fs::remove_file(&partial_path).await;
-            return Err("并行分块长度在合并前发生变化".to_string());
-        }
-        total += copied;
-    }
-    output
-        .flush()
-        .await
-        .map_err(|error| format!("保存并行合并文件失败: {error}"))?;
-    drop(output);
-    if total != manifest.file_size {
-        let _ = tokio::fs::remove_file(&partial_path).await;
-        return Err("并行合并文件大小不一致".to_string());
-    }
+    let root = download_root.to_path_buf();
+    let job = manifest.clone();
+    let (_cancel_on_drop, mut cancellation) = tokio::sync::oneshot::channel::<()>();
+    let (pending, digest) = tokio::task::spawn_blocking(move || {
+        copy_and_hash_parallel_parts(&root, &job, || {
+            cancellation.try_recv() == Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        })
+    })
+    .await
+    .map_err(|error| format!("文件合并任务失败: {error}"))??;
     on_phase(ReceiveProcessingPhase::Verifying);
-    let digest = sha256_file(&partial_path).await?;
     if digest != manifest.file_sha256 {
-        let _ = tokio::fs::remove_file(&partial_path).await;
+        drop(pending);
         cleanup_parallel_transfer(download_root, &manifest.transfer_id).await?;
         return Err("并行合并文件 SHA-256 校验失败".to_string());
     }
+    tokio::fs::rename(&pending.path, &partial_path)
+        .await
+        .map_err(|error| format!("保存并行合并文件失败: {error}"))?;
     Ok(partial_path)
 }
 
@@ -3138,6 +3209,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn single_pass_merge_cleans_failed_attempts_and_preserves_retry_output() {
+        let root = std::env::temp_dir().join(format!("xchat-single-pass-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        let data: Vec<u8> = (0..(2 * FILE_MERGE_BUFFER + 17))
+            .map(|index| (index % 251) as u8)
+            .collect();
+        let manifest = ParallelTransferManifest {
+            version: 4,
+            sender_id: "sender".into(),
+            conversation_id: "conversation".into(),
+            client_message_id: "single-pass-message".into(),
+            transfer_id: "single-pass-transfer".into(),
+            sender_msg_id: "1".into(),
+            file_name: "data.bin".into(),
+            final_file_name: "data.bin".into(),
+            file_size: data.len() as u64,
+            // Independently generated with Python hashlib, also checking SHA-256 compatibility.
+            file_sha256: "b057f26faa652e9916aa08eed7e50906151f83de0e878173e9d06e359c0dd75e".into(),
+            chunks: parallel_chunk_ranges(data.len() as u64),
+            message_id: 1,
+        };
+        create_or_resume_parallel_manifest(&root, manifest.clone())
+            .await
+            .unwrap();
+        let part = parallel_part_path(&root, &manifest.transfer_id, 0);
+        tokio::fs::write(&part, &data).await.unwrap();
+        let partial = received_partial_path(&root, &manifest.transfer_id);
+        tokio::fs::write(&partial, b"previous attempt")
+            .await
+            .unwrap();
+
+        let job_root = root.clone();
+        let job_manifest = manifest.clone();
+        let error = tokio::task::spawn_blocking(move || {
+            let mut reads = 0;
+            copy_and_hash_parallel_parts(&job_root, &job_manifest, || {
+                reads += 1;
+                reads > 1
+            })
+            .err()
+            .unwrap()
+        })
+        .await
+        .unwrap();
+        assert!(error.contains("取消"));
+        assert_eq!(
+            tokio::fs::read(&partial).await.unwrap(),
+            b"previous attempt"
+        );
+
+        for bytes in [&data[..data.len() - 1], &data[..]] {
+            tokio::fs::write(&part, bytes).await.unwrap();
+            let mut changed = manifest.clone();
+            if bytes.len() == data.len() {
+                changed.chunks[0].length -= 1;
+            }
+            let error = merge_parallel_parts(&root, &changed, |_| {})
+                .await
+                .unwrap_err();
+            assert!(error.contains("长度"));
+            assert_eq!(
+                tokio::fs::read(&partial).await.unwrap(),
+                b"previous attempt"
+            );
+            let mut entries =
+                tokio::fs::read_dir(parallel_transfer_dir(&root, &manifest.transfer_id))
+                    .await
+                    .unwrap();
+            while let Some(entry) = entries.next_entry().await.unwrap() {
+                assert!(!entry.file_name().to_string_lossy().starts_with("merging-"));
+            }
+        }
+
+        let mut corrupt = data.clone();
+        corrupt[FILE_MERGE_BUFFER + 1] ^= 1;
+        tokio::fs::write(&part, corrupt).await.unwrap();
+        assert!(merge_parallel_parts(&root, &manifest, |_| {})
+            .await
+            .unwrap_err()
+            .contains("SHA-256"));
+        assert!(!parallel_transfer_dir(&root, &manifest.transfer_id).exists());
+        assert_eq!(
+            tokio::fs::read(&partial).await.unwrap(),
+            b"previous attempt"
+        );
+
+        create_or_resume_parallel_manifest(&root, manifest.clone())
+            .await
+            .unwrap();
+        tokio::fs::write(&part, &data).await.unwrap();
+        let merged = merge_parallel_parts(&root, &manifest, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(merged, partial);
+        assert_eq!(tokio::fs::read(&merged).await.unwrap(), data);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn parallel_chunk_progress_failure_cleans_attempt_and_rolls_back() {
         let app_dir = std::env::temp_dir().join(format!(
             "xchat-parallel-progress-test-{}",
@@ -3253,7 +3423,7 @@ mod tests {
     #[tokio::test]
     async fn streaming_upload_sends_chunks_before_digest_is_ready() {
         let data = b"a file whose checksum is deliberately delayed";
-        let expected_hash = format!("{:x}", Sha256::digest(data));
+        let expected_hash = sha256_hex(&Sha256::digest(data));
         let (chunks_tx, mut chunks_rx) = tokio::sync::mpsc::unbounded_channel();
         let (complete_tx, mut complete_rx) = tokio::sync::mpsc::unbounded_channel();
         let router = axum::Router::new()

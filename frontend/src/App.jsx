@@ -160,7 +160,7 @@ const copy = {
       policy_disabled: "网络发现已关闭",
     },
     connectionHints: {
-      stale: "收到上线广播后，还需确认消息服务可连接。点击刷新地址重新验证。",
+      stale: "收到上线广播后，还需确认消息服务可连接。可在设备信息中刷新地址重新验证。",
       discovering: "正在已启用的网络中查找设备最新地址。",
       verifying: "正在核对设备 ID 与消息连接，请稍候。",
       ready: "设备 ID 与消息连接已验证。",
@@ -530,7 +530,7 @@ const copy = {
       policy_disabled: "Network discovery disabled",
     },
     connectionHints: {
-      stale: "The device was discovered. Refresh its address to verify the messaging connection.",
+      stale: "The device was discovered. Refresh its address in device information to verify the messaging connection.",
       discovering: "Looking for the device on enabled networks.",
       verifying: "Checking the device ID and messaging connection.",
       ready: "The device ID and messaging connection are verified.",
@@ -1213,7 +1213,7 @@ function formatTime(timestamp, locale) {
 function appVersion() {
   return typeof globalThis.__XCHAT_VERSION__ === "string" && globalThis.__XCHAT_VERSION__
     ? globalThis.__XCHAT_VERSION__
-    : "0.1.9";
+    : "0.1.10";
 }
 
 function formatSize(bytes) {
@@ -3597,7 +3597,6 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
           <span>{subtitle}</span>
         </div>
         <div className="head-actions">
-          {conversation.kind !== "group" && <PeerRefreshButton device={peer} state={state} workspace={workspace} labels={labels} />}
           <button
             className={`icon-button info-toggle ${infoOpen ? "active" : ""}`}
             onClick={onToggleInfo}
