@@ -104,6 +104,63 @@ test("transfer updates keep loaded history and still apply authoritative deletio
   });
 });
 
+test("download progress cannot replace a file message before its authoritative refresh", async () => {
+  await withWorkspace(async ({ workspace, messages, emit, editRows, holdNext, heldFetches }) => {
+    editRows((rows) => rows.map((message) => message.id === 119 ? {
+      ...message,
+      content: "ProPlus2019Retail.img",
+      msg_type: "file",
+      sender_name: "ad",
+      file_name: "ProPlus2019Retail.img",
+      file_path: "C:/Downloads/ProPlus2019Retail.img",
+      file_size: 4_200_000_000,
+      file_status: "downloading",
+      local_available: false,
+    } : message));
+    await workspace.dispatch({ type: "conversation.open", id: conversationId });
+    const before = structuredClone(messages());
+    holdNext();
+    // This is the actual stable receive event shape: file_name is present,
+    // while timestamp, content, sender and the full file metadata are absent.
+    const progress = {
+      msg_type: "file_download_progress",
+      id: 119,
+      client_message_id: "message-119",
+      conversation_id: conversationId,
+      file_name: "ProPlus2019Retail.img",
+      file_status: "downloading",
+      received: 65_200_000,
+      total: 4_200_000_000,
+      speed_mb_s: 2.9,
+      transfer_id: "receive-progress-regression",
+    };
+    emit("new-message", progress);
+    assert.deepEqual(messages(), before, "a partial progress event must leave message fields and order intact");
+    // Tauri can also deliver progress via the event name without msg_type.
+    const { msg_type: ignored, ...namedProgress } = progress;
+    for (const eventName of ["file_download_progress", "upload_progress"]) {
+      emit(eventName, namedProgress);
+      assert.deepEqual(messages(), before, `${eventName} must preserve message fields and order without a payload type`);
+    }
+    await waitFor(() => heldFetches.length === 1, "the authoritative refresh must be pending");
+    assert.deepEqual(messages(), before, "a delayed history refresh must not expose a temporary control-message row");
+    heldFetches[0]();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(messages(), before, "refreshing the same message must keep its original model and order");
+
+    const completed = {
+      ...before.find((message) => message.id === 119),
+      file_status: "accepted",
+      local_available: true,
+    };
+    editRows((rows) => rows.map((message) => message.id === 119 ? completed : message));
+    emit("new-message", completed);
+    assert.deepEqual(messages().map((message) => message.id), before.map((message) => message.id));
+    assert.equal(messages().find((message) => message.id === 119).file_status, "accepted", "the full completion message must still update immediately");
+    await waitFor(() => messages().find((message) => message.id === 119).local_available, "the completed file must become locally available");
+  });
+});
+
 test("a slow refresh cannot discard history loaded while it was pending", async () => {
   await withWorkspace(async ({ workspace, fetches, messages, emit, holdNext, heldFetches }) => {
     holdNext();

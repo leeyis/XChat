@@ -2672,6 +2672,17 @@ export function createXChatModule() {
       }
       return;
     }
+    // Transfer/status payloads are partial control events, even when they carry
+    // a file name and message ID. Refresh their state without replacing messages.
+    const payloadType = String(payload?.msg_type ?? payload?.type ?? "")
+      .replace(/[.-]/g, "_");
+    if (
+      isMessageAlertControlType(payloadType) ||
+      isMessageAlertControlType(eventType.replaceAll(".", "_"))
+    ) {
+      scheduleRefresh();
+      return;
+    }
     if (
       (eventType.includes("message") || payload?.from_id || payload?.conversation_id) &&
       (payload?.content !== undefined || payload?.file_name)
