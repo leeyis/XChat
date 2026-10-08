@@ -247,3 +247,57 @@
 - 设备身份需要备注、hostname、地址、MAC 和在线/发现信息。
 - 文件行必须同时呈现阶段、大小或进度、速度或原因，以及可执行动作。
 - 小于 1100px 收窄文件列，小于 1000px 隐藏详情栏，小于 860px 隐藏列表栏。
+
+
+## 2026-10-07 截图与贴图实施发现
+
+- 用户已批准原型 v0.7，授权 Web 和 PC 全面实现。评审重点是选区坐标、文字编辑/移动/删除、完整滚轮参数、浅色图标工具条、独立贴图阴影开关和悬浮提示。
+- 现有实际源码为 frontend/src/CaptureEditor.jsx、capture-drawing.js、capture-editor.css、xchat.js；根 AGENTS.md 的无框架描述已过时，沿用现有 React 技术栈。
+- PC capture_editor.rs 与 Tauri commands 已存在截图和单张贴图；React CapturePin 已有部分阴影操作，需要核对而非重复新增。
+- 起始工作树只有本任务的原型及对齐基线变更；保留全部历史计划和其他历史记录。
+
+- 现有编辑器把标注存为裁剪后相对坐标并锁死标注后的选区；文字 input 有独立避让坐标且拖动会反推锚点，是位置漂移的直接原因。文字绘制仅支持单行、CSS/Canvas 基线不同。
+- Web 的 copy 能力在 UI 中被 native-only 条件禁用；PC 贴图为单例。将统一原图坐标，并沿用现有 workspace.dispatch 作为平台接口。
+- 代码图部分符号行号已过时（startCapture 返回无关方法），已启动当前目录重新索引；已知文件用实际源码核查。
+
+- 实施决定：保留 workspace.dispatch 双端边界与现有历史纯函数；将单体编辑器拆出源图坐标/工具参数、统一 Canvas 渲染、IndexedDB 资料库及贴图视图。Web 用应用内全屏层和浮动贴图，避免弹窗拦截及 data: URL 空白窗口；PC 继续用原生透明窗口并按窗口 ID 路由。
+- 生产状态不能复用原型演示数据：桌面截图来自原生捕获，Web 来自 getDisplayMedia；平台不能提供的窗口识别/置顶/穿透明确不伪装。
+- 原生贴图改为多 ID 保存；已有阴影命令扩展为当前窗口作用域，同时保留现有 command 名称并补齐权限。
+
+
+### 截图实施：坐标和验证环境
+- DOM textarea 与 Canvas 都采用400字重、1.35行高及实际字体基线，2倍设备比例下实测中文像素边界完全一致。
+- 已批准原型的边缘编辑框会避让并显示原锚点预览；生产实现保留此策略，拖动增量从原始抓取坐标计算。
+- 并行修改会触发Vite全页热重载，组件交互夹具需隔离HMR，完整端到端验证仍使用真实App与适配器。
+- PowerShell嵌套-Command双引号会提前展开 $_，第一次进程枚举失败，改为无变量Where-Object属性语法；没有执行写入操作。
+
+### 2026-10-07 Windows 抓屏运行限制
+- 当前工具及 QA 应用在 session 1，WTSActive 且已解锁；inputDesktop=Default，WINSTA_READSCREEN 可读取。控制台 session 4 的差异不能单独解释故障。
+- xcap/GDI 两条真实抓屏路径分别返回0x80070006及BitBlt OS error5；错误后窗口完整恢复。记录为系统拒绝访问，不宣称抓屏端到端已通过。
+- 不修改会话/锁屏/安全设置，不接管用户已安装的Xchat进程；仅对现有xcap的WGC可选后端做一次独立验证。
+
+### 2026-10-07 GitHub与官方文档补充排查
+- GitHub openai/codex#32637报告过自动化会话中屏幕/鼠标读取失败的类似现象；属于排查线索，不直接认定XChat同因。https://github.com/openai/codex/issues/32637
+- Microsoft官方排查说明：不可见或最小化的远程桌面会话可能无法截图。https://learn.microsoft.com/en-us/troubleshoot/power-platform/copilot-studio/actions/computer-use-screenshot-error
+- 新只读探针实际为remoteSession=true、thread/input desktop均接收输入、GetCursorPos成功。没有修改会话、权限或抓屏实现。
+- 在生产默认desktop feature下重跑windows_captures_the_current_monitor，1通过/0失败/163过滤，2.51秒；实际验证尺寸、非透明、非单色。此前的失败不能再记为稳定必现，但具体触发条件仍未确定；继续补PC实际窗口流程。
+- cargo tauri dev构建并启动后，Tauri鼠标读取与抓屏仍失败；同一binary直接启动，鼠标与抓屏成功。没有改产品代码，差异收敛到启动上下文或当时的远程桌面状态，不能认定CLI本身存在缺陷。
+- Tauri会把cursorPosition派发到GUI主线程，底层直接GetCursorPos且抹去原始Windows错误；外部C#成功不能代替该线程的运行证据。Tauri CLI、SharedChild与RTK相关启动代码未发现主动切换desktop逻辑，标准流/父链差别尚不能解释拒绝访问。
+- PC真实闭环已获得独立证据：1920×1080源图、125%缩放、800×400选区输出与系统剪贴板逐像素一致；再截440×240直接生成对应物理尺寸的独立贴图。单独PNG编码字节可以不同，实际比较使用解码RGBA。
+- 后续加入真实光标开关后，再以cargo tauri dev启动也通过实际截图。因此“启动方式”仍只是初次对照线索，不是已证实根因；需要保留间歇性环境条件未明的结论。
+- 当前Chrome getSupportedConstraints没有cursor键。按[W3C Screen Capture](https://www.w3.org/TR/2026/WD-screen-capture-20260716/)的能力、源模式及实际settings分别核实，不能按浏览器品牌推定能显示/隐藏指针。不支持时禁用选项，历史开启偏好不阻止普通截图。
+
+### 2026-10-07 截图启动性能
+- 用户报告快捷键和按钮约2秒；隔离Windows debug实例实测：指针关闭时原生2893ms、Canvas首帧3804ms；指针开启时原生4571ms、Canvas首帧5433ms。计时包含真实捕获与新编辑窗口，不以invoke开始或空窗口当作完成。
+- 同一真实1920×1080原图、image 0.25.9 debug rlib，3次/策略且解码像素全部一致：Fast+Adaptive编码1748–1937ms、688672B；Fast+Sub 398–442ms、885898B；Fast+Up 441–456ms、936255B；NoFilter 734–743ms、4320856B。因此选Sub而不是只改压缩级别或禁用滤波。
+- 现有系统光标整图DIB往返实测751–881ms；已改为只合成与画面相交的小区域，实测0.49–1.68ms。8种系统指针与7种边界位置共56例，与旧结果逐像素一致。
+- 截图route没有运行聊天bootstrap，但DEV StrictMode确有两次pending读取、解码和整图复制；真实React夹具已锁定并修为1/1/1。生产原本单次加载，不把该修复描述为生产速度翻倍。
+- 性能复测曾因远程桌面不接收输入失败；用户恢复桌面可见后，同样的系统探针恢复为接收输入、GetCursorPos成功，新QA实际抓屏也成功。此轮有成对证据，但不反推所有此前访问异常都已确定原因。
+- 新trace的1080p正常样本：native1348ms、Canvas2140ms；capture526–573ms、PNG529–602ms、180ms避让等待、pending base64约45ms，regions约6ms、窗口API调用少于10ms。剩余开发版成本集中于未优化图像处理；待独立profile验证，避免把debug数字当发布版指标。
+- 测试中光标切换到第二显示器，源尺寸从1920×1080变成2560×1440。计时脚本已记录源尺寸、DPR和浏览器内首帧标记；后续以相同分辨率分组，CPU基准编译期间暂停整链路采样。
+- 最终独立开发配置基准：调用方opt1 + image/png/fdeflate/simd-adler32/crc32fast opt2，1080p Fast+Sub编码5次中位78.08 ms，逐像素一致；调用方opt2为15.07 ms但未采用。xcap同源换色循环opt0/opt2中位301.49/3.38 ms，不含OS抓屏。GUI二进制的完整Cargo指纹链已确认采用配置。
+- 截图/贴图独立入口保持原CaptureEditor、全局样式及语言行为；App原先在capture路由早返回，未运行主界面的theme/language hooks，因此不存在跳过原有初始化。最终生产入口315.33 kB、App188.90 kB；截图不请求App模块。
+- 最终真实流程再次通过：800×400剪贴板与历史RGBA差异0，550×300贴图客户区为550×300物理像素、背景透明。组件/入口夹具不能代替这两条原生运行证据。
+- 最终首帧对照时无本轮编译或微基准任务，主机仍连续99.98%–100% CPU；QEMU在进程CPU增量采样中占用最多，原始进程增量的枚举间隔不精确，不据此计算百分比。未擅自停止或调整用户进程。
+- 同一最终前端、trace关闭、2560×1440/125%：旧版无指针原生命令8432–18631 ms（2次），新版1070–2913 ms（3次）；旧版含指针9745–13120 ms（2次），新版成功首帧样本1438 ms（1次）。另一次新版原生命令1389 ms但Canvas30秒超时，来源尺寸未记录，不混入匹配组。
+- Canvas完整首帧和调试目标等待在满载下波动很大，存在30秒超时；保留全部结果，尚无正常负载P50/P95或发布版耗时结论。分段trace为同步日志，后一段可能包含前一条日志阻塞，因此最终对照关闭日志。

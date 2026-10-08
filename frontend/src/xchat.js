@@ -1,3 +1,7 @@
+import { captureRecord, captureRecords, captureSettings, downloadCapture, patchCaptureRecord, removeCaptureRecord, saveCaptureRecord, writeCaptureClipboard } from "./capture-library.js";
+import { captureId, normalizePinView } from "./capture-model.js";
+import { renderPinnedCapture } from "./capture-renderer.js";
+
 const MESSAGE_STATUS = ["pending", "sent", "delivered", "read"];
 const EVENT_NAMES = [
   "workspace-changed",
@@ -1207,6 +1211,78 @@ async function parseResponse(response) {
   return data;
 }
 
+function captureCancelled() {
+  return new TransportError(uiCopy("已取消截屏", "Capture cancelled"), "cancelled", 0, false);
+}
+
+function waitForCaptureDelay(milliseconds, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(captureCancelled()); return; }
+    const aborted = () => { clearTimeout(timer); signal.removeEventListener("abort", aborted); reject(captureCancelled()); };
+    const timer = setTimeout(() => { signal?.removeEventListener("abort", aborted); resolve(); }, milliseconds);
+    signal?.addEventListener("abort", aborted, { once: true });
+  });
+}
+
+function browserCaptureCursorSupported() {
+  try { return globalThis.navigator?.mediaDevices?.getSupportedConstraints?.().cursor === true; }
+  catch { return false; }
+}
+
+async function verifyCaptureCursor(track, captureCursor, advertised, signal) {
+  const mode = captureCursor ? "always" : "never";
+  const readMode = () => { try { return track?.getSettings?.().cursor; } catch { return undefined; } };
+  let modes;
+  try { modes = track?.getCapabilities?.().cursor; } catch { modes = undefined; }
+  const knownModes = Array.isArray(modes) ? modes : null;
+  let current = readMode();
+  const controlled = advertised || knownModes !== null;
+  const unsupported = () => new TransportError(
+    captureCursor
+      ? uiCopy("当前浏览器或所选共享来源不支持包含鼠标指针，请更换来源或关闭该选项", "This browser or shared source cannot include the cursor; choose another source or turn off this option")
+      : uiCopy("所选共享来源不能隐藏鼠标指针，请选择其他来源", "This shared source cannot hide the cursor; choose another source"),
+    "capture_cursor_unsupported", 0, false,
+  );
+  // Unrecognized constraints are ignored by browsers. Do not advertise control
+  // or synthesize a cursor when ordinary, default captures use such a browser.
+  if (!advertised && !captureCursor) return current || null;
+  if (knownModes && !knownModes.includes(mode)) throw unsupported();
+  if (current !== mode && typeof track?.applyConstraints === "function" && controlled) {
+    let abort;
+    try {
+      if (signal?.aborted) throw captureCancelled();
+      const applying = track.applyConstraints({ cursor: { exact: mode } });
+      if (signal) {
+        const cancelled = new Promise((resolve, reject) => {
+          if (signal.aborted) { reject(captureCancelled()); return; }
+          abort = () => reject(captureCancelled());
+          signal.addEventListener("abort", abort, { once: true });
+        });
+        await Promise.race([applying, cancelled]);
+      } else await applying;
+    } catch (error) {
+      if (signal?.aborted || error?.code === "cancelled") throw captureCancelled();
+      throw unsupported();
+    } finally { if (abort) signal.removeEventListener("abort", abort); }
+    current = readMode();
+  }
+  if (signal?.aborted) throw captureCancelled();
+  if (current !== mode) throw unsupported();
+  return current;
+}
+
+function subscribeCaptureReady(emit) {
+  if (!globalThis.addEventListener) return () => {};
+  const receive = (data) => {
+    if (data?.type === "capture-ready" && data.attachment) emit({ type: "capture-ready", payload: data.attachment });
+  };
+  const local = (event) => receive(event.detail);
+  globalThis.addEventListener("xchat-capture-ready", local);
+  const channel = globalThis.BroadcastChannel ? new BroadcastChannel("xchat-capture") : null;
+  if (channel) channel.onmessage = ({ data }) => receive(data);
+  return () => { globalThis.removeEventListener("xchat-capture-ready", local); channel?.close(); };
+}
+
 export class TauriAdapter {
   constructor(tauri) {
     this.tauri = tauri;
@@ -1503,23 +1579,38 @@ export class TauriAdapter {
   }
 
   startCapture(conversationId) {
-    return this.invoke("start_capture_editor", { conversationId });
+    return this.invoke("start_capture_editor", { conversationId, delay: captureSettings().delay }).catch((error) => {
+      if (String(error?.message || error) === "capture_cancelled") throw captureCancelled();
+      throw error;
+    });
   }
 
   pendingCapture() {
     return this.invoke("get_pending_capture");
   }
 
-  finishCapture(dataUrl) {
-    return this.invoke("finish_capture_editor", { dataUrl });
+  cancelCaptureStart(sessionId) {
+    return this.invoke("cancel_capture_start", { sessionId });
+  }
+
+  async finishCapture(dataUrl, { conversationId } = {}) {
+    const view = new URLSearchParams(globalThis.location?.search || "").get("view");
+    if (view === "capture-editor" || view === "capture-pin") {
+      return this.invoke("finish_capture_editor", { dataUrl });
+    }
+    if (!conversationId) throw new TransportError(uiCopy("这张截图没有关联会话", "This capture has no conversation"), "capture_conversation_required", 0, false);
+    const attachment = await this.invoke("stage_image_attachment", { dataUrl, fileName: `XChat-${Date.now()}.png` });
+    return normalizeDraftAttachment(attachment, { conversation_id: conversationId, preview_url: dataUrl });
   }
 
   cancelCapture() {
+    const view = new URLSearchParams(globalThis.location?.search || "").get("view");
+    if (view !== "capture-editor") return;
     return this.invoke("cancel_capture_editor");
   }
 
-  pinCapture(dataUrl) {
-    return this.invoke("pin_capture", { dataUrl });
+  pinCapture(dataUrl, pinId, view, conversationId) {
+    return this.invoke("pin_capture", { dataUrl, pinId, view, conversationId });
   }
 
   copyCapture(dataUrl) {
@@ -1542,24 +1633,51 @@ export class TauriAdapter {
     return this.invoke("stop_tray_flash");
   }
 
-  copyPinnedCapture(scale) {
-    return this.invoke("copy_pinned_capture", { scale });
+  copyPinnedCapture(scale, pinId, dataUrl) {
+    return this.invoke("copy_pinned_capture", { scale, pinId, dataUrl });
   }
 
-  savePinnedCapture() {
-    return this.invoke("save_pinned_capture");
+  savePinnedCapture(pinId, dataUrl) {
+    return this.invoke("save_pinned_capture", { pinId, dataUrl });
   }
 
-  resizePinnedCapture(scale) {
-    return this.invoke("resize_pinned_capture", { scale });
+  resizePinnedCapture(scale, pinId) {
+    return this.invoke("resize_pinned_capture", { scale, pinId });
   }
 
-  setPinnedCaptureShadow(enabled) {
-    return this.invoke("set_pinned_capture_shadow", { enabled });
+  setPinnedCaptureShadow(enabled, pinId) {
+    return this.invoke("set_pinned_capture_shadow", { enabled, pinId });
   }
 
-  closePinnedCapture(destroy) {
-    return this.invoke("close_pinned_capture", { destroy });
+  closePinnedCapture(destroy, pinId) {
+    return this.invoke("close_pinned_capture", { destroy, pinId });
+  }
+
+  updatePinnedCapture(pinId, view, overlay) {
+    return this.invoke("update_pinned_capture", { pinId, view, overlay });
+  }
+
+  listPinnedCaptures() {
+    return this.invoke("list_pinned_captures");
+  }
+
+  readCaptureClipboard() {
+    return this.invoke("read_capture_clipboard");
+  }
+
+  setCaptureGroup(group) {
+    return this.invoke("set_capture_pin_group", { group });
+  }
+
+  setCapturePreferences(delaySeconds, captureCursor) {
+    const preferences = {};
+    if (delaySeconds !== undefined) preferences.delaySeconds = delaySeconds;
+    if (typeof captureCursor === "boolean") preferences.captureCursor = captureCursor;
+    return this.invoke("set_capture_preferences", preferences);
+  }
+
+  writeCaptureText(text) {
+    return this.invoke("write_capture_text", { text });
   }
 
   readMessageMedia(messageId) {
@@ -1736,6 +1854,7 @@ export class TauriAdapter {
   }
 
   subscribe(emit) {
+    const stopCapture = subscribeCaptureReady(emit);
     let disposed = false;
     const unlisteners = [];
     for (const name of EVENT_NAMES) {
@@ -1746,6 +1865,7 @@ export class TauriAdapter {
     }
     return () => {
       disposed = true;
+      stopCapture();
       unlisteners.splice(0).forEach((unlisten) => unlisten());
     };
   }
@@ -2071,101 +2191,132 @@ export class HttpWsAdapter {
     );
   }
 
-  async capture() {
+  async capture({ signal, sessionId } = {}) {
     if (!globalThis.navigator?.mediaDevices?.getDisplayMedia) {
-      throw new TransportError(
-        uiCopy("当前浏览器不支持截屏", "This browser does not support screen capture"),
-        "capture_unsupported",
-        0,
-        false,
-      );
+      throw new TransportError(uiCopy("当前浏览器不支持截屏，请使用支持屏幕共享的浏览器和 HTTPS", "Screen capture requires a supported browser and HTTPS"), "capture_unsupported", 0, false);
     }
     let stream;
+    let video;
+    let countingDown = false;
+    const countdown = (remaining) => globalThis.dispatchEvent?.(new CustomEvent("xchat-capture-countdown", { detail: { remaining, session_id: sessionId } }));
     try {
-      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-      const video = document.createElement("video");
+      // Request permission while the initiating click still has user activation.
+      const preferences = captureSettings();
+      const cursorSupported = browserCaptureCursorSupported();
+      const captureCursor = cursorSupported && preferences.captureCursor === true;
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: cursorSupported ? { cursor: captureCursor ? "always" : "never" } : true,
+        audio: false,
+      });
+      if (signal?.aborted) throw captureCancelled();
+      const track = stream.getVideoTracks?.()[0];
+      this.captureCursorMode = await verifyCaptureCursor(track, captureCursor, cursorSupported, signal);
+      if (signal?.aborted) throw captureCancelled();
+      video = document.createElement("video");
+      video.muted = true;
+      video.playsInline = true;
       video.srcObject = stream;
       await video.play();
+      const delay = preferences.delay;
+      if (delay) {
+        countingDown = true;
+        for (let remaining = delay; remaining > 0; remaining--) {
+          countdown(remaining);
+          await waitForCaptureDelay(1000, signal);
+        }
+        countdown(0);
+        countingDown = false;
+        // Let the shared source render one frame after the countdown disappears.
+        await waitForCaptureDelay(120, signal);
+      }
+      if (signal?.aborted) throw captureCancelled();
+      if (!video.videoWidth || !video.videoHeight || stream.getVideoTracks?.().some((track) => track.readyState === "ended")) {
+        throw new TransportError(uiCopy("屏幕共享已结束，请重新截屏", "Screen sharing ended; start a new capture"), "capture_ended", 0, false);
+      }
       const canvas = document.createElement("canvas");
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       canvas.getContext("2d").drawImage(video, 0, 0);
-      const blob = await new Promise((resolve, reject) =>
-        canvas.toBlob(
-          (value) =>
-            value
-              ? resolve(value)
-              : reject(new Error(uiCopy("PNG 编码失败", "PNG encoding failed"))),
-          "image/png",
-        ),
-      );
-      return new File([blob], `Xchat-${Date.now()}.png`, { type: "image/png" });
+      const blob = await new Promise((resolve, reject) => canvas.toBlob(
+        (value) => value ? resolve(value) : reject(new Error(uiCopy("PNG 编码失败", "PNG encoding failed"))), "image/png",
+      ));
+      this.captureDimensions = { width: canvas.width, height: canvas.height };
+      return new File([blob], `XChat-${Date.now()}.png`, { type: "image/png" });
     } catch (error) {
-      if (error?.name === "NotAllowedError") {
-        throw new TransportError(uiCopy("已取消截屏", "Capture cancelled"), "cancelled", 0, false);
-      }
+      if (error?.name === "NotAllowedError") throw new TransportError(uiCopy("已取消截屏或未授权屏幕共享", "Screen capture was cancelled or permission was denied"), "cancelled", 0, false);
       throw error;
     } finally {
+      if (countingDown) countdown(0);
       stream?.getTracks().forEach((track) => track.stop());
+      if (video) { video.pause?.(); video.srcObject = null; }
     }
   }
 
-  async startCapture(conversationId) {
-    const file = await this.capture();
-    const dataUrl = await dataUrlFromFile(file);
-    storage.set(
-      "xchat.capture.pending",
-      JSON.stringify({
-        conversation_id: conversationId,
-        data_url: dataUrl,
-        file_name: file.name,
-        mime_type: file.type,
-      }),
-    );
-    globalThis.open(
-      `${location.pathname}?view=capture-editor`,
-      "xchat-capture-editor",
-      "popup,width=1100,height=760",
-    );
-    return { pending: true };
+  startCapture(conversationId) {
+    if (this.captureInFlight) return this.captureInFlight;
+    const controller = new AbortController();
+    const sessionId = captureId();
+    this.captureAbort = controller;
+    this.captureRequestId = sessionId;
+    this.captureInFlight = (async () => {
+      const file = await this.capture({ signal: controller.signal, sessionId });
+      const dataUrl = await dataUrlFromFile(file);
+      if (controller.signal.aborted) throw captureCancelled();
+      this.captureSession = { session_id: sessionId, conversation_id: conversationId || null,
+        data_url: dataUrl, file_name: file.name, mime_type: file.type, cursor_mode: this.captureCursorMode, ...this.captureDimensions };
+      globalThis.dispatchEvent?.(new CustomEvent("xchat-capture-open", { detail: this.captureSession }));
+      return { session_id: this.captureSession.session_id, pending: true };
+    })().finally(() => { this.captureInFlight = null; this.captureAbort = null; this.captureRequestId = null; });
+    return this.captureInFlight;
   }
 
   pendingCapture() {
-    try {
-      return JSON.parse(storage.get("xchat.capture.pending") || "null");
-    } catch {
-      return null;
-    }
+    return this.captureSession || null;
   }
 
-  async finishCapture(dataUrl) {
-    const pending = await this.pendingCapture();
+  cancelCaptureStart(sessionId) {
+    if (!this.captureAbort || (sessionId && sessionId !== this.captureRequestId)) return false;
+    this.captureAbort.abort();
+    globalThis.dispatchEvent?.(new CustomEvent("xchat-capture-countdown", { detail: { remaining: 0, session_id: this.captureRequestId } }));
+    return true;
+  }
+
+  async finishCapture(dataUrl, options = {}) {
+    const pending = this.pendingCapture();
+    const conversationId = Object.hasOwn(options, "conversationId") ? options.conversationId : pending?.conversation_id;
+    if (!conversationId) throw new TransportError(uiCopy("这张截图没有关联会话", "This capture has no conversation"), "capture_conversation_required", 0, false);
     const blob = await fetch(dataUrl).then((response) => response.blob());
-    const file = new File(
-      [blob],
-      pending?.file_name || `Xchat-${Date.now()}.png`,
-      { type: "image/png" },
-    );
-    storage.set("xchat.capture.pending", "");
-    return normalizeDraftAttachment(file, {
-      conversation_id: pending?.conversation_id,
-      preview_url: dataUrl,
-    });
+    const sourceName = !options.sourceSessionId || options.sourceSessionId === pending?.session_id ? pending?.file_name : null;
+    const file = new File([blob], sourceName || `XChat-${Date.now()}.png`, { type: "image/png" });
+    this.releaseCapture(options.sourceSessionId || pending?.session_id);
+    return normalizeDraftAttachment(file, { conversation_id: conversationId, preview_url: dataUrl });
   }
 
-  cancelCapture() {
-    storage.set("xchat.capture.pending", "");
+  releaseCapture(sourceSessionId) {
+    if (sourceSessionId && this.captureSession?.session_id !== sourceSessionId) return;
+    this.captureSession = null;
   }
 
-  pinCapture(dataUrl) {
-    globalThis.open(dataUrl, "_blank", "popup");
+  cancelCapture(sourceSessionId) {
+    this.releaseCapture(sourceSessionId);
   }
 
-  saveCapture(dataUrl) {
-    const link = document.createElement("a");
-    link.href = dataUrl;
-    link.download = `Xchat-${Date.now()}.png`;
-    link.click();
+  pinCapture(dataUrl, pinId, view, conversationId, sourceSessionId) {
+    if (sourceSessionId) this.releaseCapture(sourceSessionId);
+    return { session_id: pinId, pin_id: pinId };
+  }
+
+  async copyCapture(dataUrl, options = {}) {
+    const sourceSessionId = options.sourceSessionId || this.captureSession?.session_id;
+    await writeCaptureClipboard(dataUrl);
+    this.releaseCapture(sourceSessionId);
+    return { copied: true };
+  }
+
+  saveCapture(dataUrl, options = {}) {
+    const result = downloadCapture(dataUrl);
+    this.releaseCapture(options.sourceSessionId);
+    return result;
   }
 
   showAlert(title, body) {
@@ -2179,18 +2330,60 @@ export class HttpWsAdapter {
 
   stopAttention() {}
 
-  copyPinnedCapture() {}
-
-  savePinnedCapture() {}
-
-  resizePinnedCapture(scale) {
-    return scale;
+  copyPinnedCapture(scale, pinId, dataUrl) {
+    if (!dataUrl) throw new Error(uiCopy("没有可复制的贴图", "No pinned image to copy"));
+    return writeCaptureClipboard(dataUrl);
   }
 
-  setPinnedCaptureShadow() {}
+  savePinnedCapture(pinId, dataUrl) {
+    if (!dataUrl) throw new Error(uiCopy("没有可保存的贴图", "No pinned image to save"));
+    return downloadCapture(dataUrl);
+  }
 
-  closePinnedCapture(destroy) {
-    if (destroy) globalThis.close();
+  closePinnedCapture() {}
+
+  updatePinnedCapture(pinId, view) {
+    return normalizePinView(view);
+  }
+
+  listPinnedCaptures() {
+    return captureRecords("pin");
+  }
+
+  setCaptureGroup(group) {
+    return group;
+  }
+
+  setCapturePreferences(delaySeconds, captureCursor) {
+    const settings = captureSettings();
+    const cursorSupported = browserCaptureCursorSupported();
+    if (captureCursor === true && !cursorSupported) throw new TransportError(
+      uiCopy("当前浏览器不支持控制鼠标指针", "This browser cannot control cursor capture"),
+      "capture_cursor_unsupported", 0, false,
+    );
+    return { delaySeconds: delaySeconds ?? settings.delay,
+      captureCursor: captureCursor ?? Boolean(settings.captureCursor), cursorSupported };
+  }
+
+  async readCaptureClipboard() {
+    const clipboard = globalThis.navigator?.clipboard;
+    if (clipboard?.read) {
+      const items = await clipboard.read();
+      let text = "";
+      for (const item of items) {
+        const imageType = item.types.find((type) => type.startsWith("image/"));
+        if (imageType) return { data_url: await dataUrlFromFile(await item.getType(imageType)) };
+        if (!text && item.types.includes("text/plain")) text = await (await item.getType("text/plain")).text();
+      }
+      return { text };
+    }
+    if (clipboard?.readText) return { text: await clipboard.readText() };
+    throw new TransportError(uiCopy("当前浏览器无法读取剪贴板，请使用 HTTPS 或导入图片", "Clipboard reading requires HTTPS; alternatively import an image"), "clipboard_unsupported", 0, false);
+  }
+
+  async writeCaptureText(text) {
+    if (!globalThis.navigator?.clipboard?.writeText) throw new TransportError(uiCopy("当前浏览器不能复制文本，请使用 HTTPS", "Text copying requires HTTPS"), "clipboard_unsupported", 0, false);
+    await navigator.clipboard.writeText(text);
   }
 
   async readMessageMedia(messageId) {
@@ -2320,6 +2513,7 @@ export class HttpWsAdapter {
   }
 
   subscribe(emit) {
+    const stopCapture = subscribeCaptureReady(emit);
     let stopped = false;
     let socket;
     let retryTimer;
@@ -2351,6 +2545,7 @@ export class HttpWsAdapter {
     connect();
     return () => {
       stopped = true;
+      stopCapture();
       clearTimeout(retryTimer);
       socket?.close();
     };
@@ -2674,8 +2869,8 @@ export function createXChatModule() {
       eventType.includes("capture.ready") ||
       eventType.includes("capture-ready")
     ) {
-      const conversationId = payload?.conversation_id ?? snapshot.activeConversationId;
-      if (payload?.file_path || payload?.path || payload?.file) {
+      const conversationId = payload?.conversation_id;
+      if (conversationId && (payload?.file_path || payload?.path || payload?.file)) {
         addDraftAttachments(conversationId, [payload]);
       }
       return;
@@ -2846,6 +3041,75 @@ export function createXChatModule() {
       (conversation) =>
         conversation.id === (action.conversationId ?? snapshot.activeConversationId),
     );
+
+  const requiredPin = async (pinId) => {
+    const id = pinId || (await adapter.pendingCapture())?.pin_id;
+    const record = id ? await captureRecord(id) : null;
+    if (!record || record.kind !== "pin") throw new TransportError(uiCopy("贴图记录不存在或已关闭", "The pinned image no longer exists"), "capture_pin_missing", 0, false);
+    return record;
+  };
+
+  const storePinOutput = async (action) => {
+    const id = action.pinId || captureId();
+    const previous = await captureRecord(id);
+    const pending = Object.hasOwn(action, "conversationId") ? null : await Promise.resolve(adapter.pendingCapture()).catch(() => null);
+    const width = Number(action.width) || previous?.width || pending?.width || 1;
+    const height = Number(action.height) || previous?.height || pending?.height || 1;
+    const view = previous?.view || normalizePinView({
+      scale: Math.min(1, Math.max(.1, ((globalThis.innerWidth || width + 120) - 120) / width), Math.max(.1, ((globalThis.innerHeight || height + 160) - 160) / height)),
+      group: captureSettings().group,
+    });
+    const content = { data_url: action.dataUrl, width, height, document: action.document || previous?.document,
+      conversation_id: Object.hasOwn(action, "conversationId") ? action.conversationId : previous?.conversation_id ?? pending?.conversation_id ?? null,
+      source_session_id: action.sourceSessionId || previous?.source_session_id,
+    };
+    const record = previous
+      ? await patchCaptureRecord(id, content)
+      : await saveCaptureRecord({ ...content, id, kind: "pin", created: Date.now(), view });
+    if (!record) throw new TransportError(uiCopy("贴图已关闭，无法覆盖", "The pinned image was closed"), "capture_pin_missing", 0, false);
+    return { record, previous };
+  };
+
+  const openStoredPin = async (action) => {
+    // Native pin creation may close the capture editor before its promise resolves.
+    // Persist the editable document first so the new window can load it immediately.
+    const { record, previous } = await storePinOutput(action);
+    try {
+      const result = await adapter.pinCapture(record.data_url, record.id, adapter.runtime === "tauri" && !previous ? undefined : record.view, record.conversation_id, action.sourceSessionId);
+      return { ...result, pin_id: record.id, record };
+    } catch (error) {
+      if (previous) await patchCaptureRecord(record.id, { data_url: previous.data_url, document: previous.document, width: previous.width, height: previous.height, conversation_id: previous.conversation_id, source_session_id: previous.source_session_id });
+      else await removeCaptureRecord(record.id);
+      throw error;
+    }
+  };
+
+  const nativePinExists = async (id) => {
+    if (adapter.runtime !== "tauri") return true;
+    const requested = new URLSearchParams(globalThis.location?.search || "").get("view");
+    if (requested === "capture-pin") return true;
+    return (await adapter.listPinnedCaptures()).some(item => (item.pin_id || item.session_id) === id);
+  };
+
+  const updateStoredPin = async (action) => {
+    const record = await requiredPin(action.pinId);
+    const view = normalizePinView({ ...record.view, ...action.view });
+    if (!(await nativePinExists(record.id))) return (await patchCaptureRecord(record.id, { view: action.view })).view;
+    const applied = await adapter.updatePinnedCapture(record.id, view, action.overlay);
+    if (action.overlay === true) return applied;
+    try { return (await patchCaptureRecord(record.id, { view: applied || action.view })).view; }
+    catch (error) {
+      await Promise.resolve(adapter.updatePinnedCapture(record.id, record.view)).catch(() => {});
+      throw error;
+    }
+  };
+
+  const pinnedOutput = async (action) => {
+    if (action.dataUrl) return action.dataUrl;
+    const record = await requiredPin(action.pinId);
+    const view = Number.isFinite(action.scale) ? { ...record.view, scale: action.scale } : record.view;
+    return (await renderPinnedCapture({ ...record, view }, action.original === true)).toDataURL("image/png");
+  };
 
   const run = async (action) => {
     switch (action.type) {
@@ -3306,47 +3570,77 @@ export function createXChatModule() {
         return { ok: true, attachment };
       }
       case "capture.start": {
-        const conversation = activeConversation();
-        if (!snapshot.capabilities.capture) {
-          throw new TransportError(
-            uiCopy("当前平台不支持截屏", "The current platform does not support screen capture"),
-            "capture_unsupported",
-            0,
-            false,
-          );
-        }
-        if (!conversation && adapter.runtime !== "tauri") {
-          throw new TransportError(
-            uiCopy("请先选择一个会话", "Select a conversation first"),
-            "capture_conversation_required",
-            0,
-            false,
-          );
-        }
-        return adapter.startCapture(conversation?.id ?? null);
+        if (!snapshot.capabilities.capture) throw new TransportError(uiCopy("当前平台不支持截屏", "The current platform does not support screen capture"), "capture_unsupported", 0, false);
+        return adapter.startCapture(activeConversation()?.id ?? null);
       }
       case "capture.pending":
         return adapter.pendingCapture();
+      case "capture.cancel-start":
+        return adapter.cancelCaptureStart(action.sessionId);
       case "capture.finish":
-        return adapter.finishCapture(action.dataUrl);
-      case "capture.cancel":
-        return adapter.cancelCapture();
-      case "capture.pin":
-        return adapter.pinCapture(action.dataUrl);
       case "capture.copy":
-        return adapter.copyCapture(action.dataUrl);
-      case "capture.save":
-        return adapter.saveCapture(action.dataUrl);
+      case "capture.save": {
+        if (action.pinId && action.document) await openStoredPin(action);
+        if (action.type === "capture.finish") return adapter.finishCapture(action.dataUrl, action);
+        if (action.type === "capture.copy") return action.pinId
+          ? adapter.copyPinnedCapture(undefined, action.pinId, action.dataUrl)
+          : adapter.copyCapture(action.dataUrl, action);
+        return action.pinId ? adapter.savePinnedCapture(action.pinId, action.dataUrl) : adapter.saveCapture(action.dataUrl, action);
+      }
+      case "capture.cancel":
+        return adapter.cancelCapture(action.sourceSessionId);
+      case "capture.pin":
+        return openStoredPin(action);
+      case "capture.pin.update":
+        return updateStoredPin(action);
+      case "capture.pin.list":
+        return adapter.listPinnedCaptures();
+      case "capture.pin.restore": {
+        const record = await requiredPin(action.pinId);
+        const live = adapter.runtime === "tauri"
+          ? (await adapter.listPinnedCaptures()).find(item => (item.pin_id || item.session_id) === record.id)
+          : null;
+        const restored = await patchCaptureRecord(record.id, { view: { ...(live?.view || {}), hidden: false, through: false } });
+        if (!restored) throw new TransportError(uiCopy("贴图已关闭", "The pinned image was closed"), "capture_pin_missing", 0, false);
+        try {
+          // Existing native pins keep their current pixels and editable session.
+          // Restoring visibility must never replay an older PNG over an active edit.
+          const result = live || await adapter.pinCapture(restored.data_url, record.id, restored.view, restored.conversation_id);
+          await adapter.updatePinnedCapture(record.id, restored.view);
+          return result;
+        } catch (error) { await patchCaptureRecord(record.id, { view: { hidden: record.view.hidden, through: record.view.through } }); throw error; }
+      }
       case "capture.pin.copy":
-        return adapter.copyPinnedCapture(action.scale);
+        return adapter.copyPinnedCapture(undefined, action.pinId, await pinnedOutput(action));
       case "capture.pin.save":
-        return adapter.savePinnedCapture();
+        return adapter.savePinnedCapture(action.pinId, await pinnedOutput(action));
       case "capture.pin.resize":
-        return adapter.resizePinnedCapture(action.scale);
+        return updateStoredPin({ ...action, view: { scale: action.scale } });
       case "capture.pin.shadow":
-        return adapter.setPinnedCaptureShadow(action.enabled);
-      case "capture.pin.close":
-        return adapter.closePinnedCapture(action.destroy);
+        return updateStoredPin({ ...action, view: { shadow: Boolean(action.enabled) } });
+      case "capture.pin.close": {
+        const record = await requiredPin(action.pinId);
+        const exists = await nativePinExists(record.id);
+        // Destruction closes this webview; write recovery state before the command.
+        if (action.destroy) await removeCaptureRecord(record.id);
+        else await patchCaptureRecord(record.id, { view: { hidden: true } });
+        try { if (exists) return await adapter.closePinnedCapture(Boolean(action.destroy), record.id); return; }
+        catch (error) { if (action.destroy) await saveCaptureRecord(record); else await patchCaptureRecord(record.id, { view: { hidden: record.view.hidden } }); throw error; }
+      }
+      case "capture.preferences":
+        return adapter.setCapturePreferences(
+          action.delaySeconds === undefined ? undefined : [0, 3, 5].includes(action.delaySeconds) ? action.delaySeconds : 0,
+          typeof action.captureCursor === "boolean" ? action.captureCursor : undefined,
+        );
+      case "capture.group":
+        return adapter.setCaptureGroup(action.group === "设计参考" ? "设计参考" : "默认");
+      case "capture.clipboard":
+        return adapter.readCaptureClipboard();
+      case "capture.color.copy":
+        return adapter.writeCaptureText(String(action.text || ""));
+      case "capture.workspace":
+        globalThis.dispatchEvent?.(new CustomEvent("xchat-capture-workspace", { detail: { panel: action.panel || "pins" } }));
+        return;
       case "attention.clear":
         return adapter.stopAttention();
       case "strongReminder.dismiss":

@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "capture-pin",
   "description": "Narrow permissions for the pinned screenshot window",
-  "windows": ["capture-pin"],
+  "windows": [
+    "capture-pin-*"
+  ],
   "permissions": [
     "core:default",
     "core:event:default",
@@ -20,6 +22,13 @@
     "allow-save-pinned-capture",
     "allow-resize-pinned-capture",
     "allow-set-pinned-capture-shadow",
-    "allow-close-pinned-capture"
+    "allow-close-pinned-capture",
+    "allow-read-capture-clipboard",
+    "allow-write-capture-text",
+    "allow-update-pinned-capture",
+    "allow-finish-capture-editor",
+    "allow-save-capture-editor",
+    "core:window:allow-current-monitor",
+    "core:window:allow-outer-position"
   ]
 }

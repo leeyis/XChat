@@ -47,6 +47,7 @@ import {
   withDiscoveryInterfaceSelection,
 } from "./xchat.js";
 import CaptureEditor from "./CaptureEditor.jsx";
+import CaptureWorkspace from "./CaptureWorkspace.jsx";
 import { createChatScrollController } from "./chat-scroll.js";
 import {
   createMediaPlaybackController,
@@ -1213,7 +1214,7 @@ function formatTime(timestamp, locale) {
 function appVersion() {
   return typeof globalThis.__XCHAT_VERSION__ === "string" && globalThis.__XCHAT_VERSION__
     ? globalThis.__XCHAT_VERSION__
-    : "0.1.10";
+    : "0.1.11";
 }
 
 function formatSize(bytes) {
@@ -3028,8 +3029,9 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
               <button
                 className="icon-button composer-tool"
                 onClick={() => workspace.dispatch({ type: "capture.start" })}
+                onContextMenu={(event) => { event.preventDefault(); workspace.dispatch({ type: "capture.workspace" }); }}
                 aria-label={labels.capture}
-                title={labels.capture}
+                title={`${labels.capture} · ${labels.capture === copy["zh-CN"].capture ? "右键打开截图工作台" : "Right-click for capture workspace"}`}
               >
                 <Icon name="capture" />
               </button>
@@ -5640,6 +5642,7 @@ export default function App({ workspace }) {
       ) {
         return;
       }
+      if (document.querySelector(".capture-production")) return;
       if (matchesShortcut(event, state.settings.capture_shortcut)) {
         event.preventDefault();
         workspace.dispatch({ type: "capture.start" });
@@ -5648,21 +5651,6 @@ export default function App({ workspace }) {
     addEventListener("keydown", onKeyDown);
     return () => removeEventListener("keydown", onKeyDown);
   }, [state.capabilities.captureShortcut, state.settings.capture_shortcut, workspace]);
-
-  useEffect(() => {
-    if (!globalThis.BroadcastChannel) return;
-    const channel = new BroadcastChannel("xchat-capture");
-    channel.onmessage = ({ data }) => {
-      if (data?.type === "capture-ready" && data.attachment) {
-        workspace.dispatch({
-          type: "draft.addManaged",
-          conversationId: data.attachment.conversation_id,
-          attachment: data.attachment,
-        });
-      }
-    };
-    return () => channel.close();
-  }, [workspace]);
 
   useEffect(() => {
     workspace.dispatch({ type: "bootstrap" });
@@ -5797,6 +5785,7 @@ export default function App({ workspace }) {
 
   return (
     <section className={shellClass} data-od-id="xchat-desktop-app">
+      {(state.capabilities.capture || !globalThis.window?.__TAURI__) && <CaptureWorkspace workspace={workspace} english={language === "en"} captureShortcut={state.settings.capture_shortcut} />}
       <Rail state={state} labels={labels} onOpen={openSection} />
       <ListPane
         state={state}

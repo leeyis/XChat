@@ -1,6 +1,6 @@
 [package]
 name = "lanchat"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2021"
 default-run = "lanchat"
 
@@ -87,7 +87,7 @@ ndk-context = "0.1"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock", "Win32_System_IO"] }
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock", "Win32_System_IO", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
 # Wayland 剪贴板 - 仅 Linux 桌面端
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -102,6 +102,29 @@ xcap = { version = "0.9", optional = true }
 tauri-plugin-notification = "2.0"
 
 
+
+# 截图像素转换和 PNG 编码是开发态热路径；泛型编码还需调用方基础优化。
+# 仅调整优化等级，保留 dev 的调试符号、断言和溢出检查。
+[profile.dev.package.lanchat]
+opt-level = 1
+
+[profile.dev.package.xcap]
+opt-level = 2
+
+[profile.dev.package.image]
+opt-level = 2
+
+[profile.dev.package."png:0.18.1"]
+opt-level = 2
+
+[profile.dev.package.fdeflate]
+opt-level = 2
+
+[profile.dev.package.simd-adler32]
+opt-level = 2
+
+[profile.dev.package.crc32fast]
+opt-level = 2
 
 # Release 优化配置
 [profile.release]

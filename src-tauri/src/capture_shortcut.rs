@@ -9,6 +9,14 @@ pub struct CaptureShortcutState {
 
 fn native_capture_shortcut(label: &str) -> Result<String, String> {
     let compact = label.replace(' ', "");
+    let function_key = compact.to_ascii_uppercase().rfind('F').and_then(|index| {
+        let suffix = &compact[index + 1..];
+        suffix
+            .parse::<u8>()
+            .ok()
+            .filter(|number| (1..=24).contains(number))
+            .map(|number| format!("F{number}"))
+    });
     let key = compact
         .chars()
         .last()
@@ -37,10 +45,10 @@ fn native_capture_shortcut(label: &str) -> Result<String, String> {
     if compact.contains('⇧') || lower.contains("shift") {
         parts.push("Shift");
     }
-    if parts.is_empty() {
+    if parts.is_empty() && function_key.is_none() {
         return Err("快捷键必须包含至少一个修饰键".to_string());
     }
-    let key = key.to_string();
+    let key = function_key.unwrap_or_else(|| key.to_string());
     parts.push(&key);
     Ok(parts.join("+"))
 }
@@ -76,6 +84,9 @@ fn replace_registered_shortcut(
 
 pub fn register(app: &AppHandle, label: &str) -> Result<(), String> {
     let next = native_capture_shortcut(label)?;
+    if next == "F3" || next == "Shift+F3" {
+        return Err("F3 已用于贴图管理，请选择其他截图快捷键".to_string());
+    }
     let state = app.state::<CaptureShortcutState>();
     let mut current = state
         .shortcut
@@ -97,12 +108,57 @@ pub fn register(app: &AppHandle, label: &str) -> Result<(), String> {
     )
 }
 
+pub fn handle_shortcut(
+    app: &AppHandle,
+    shortcut: &tauri_plugin_global_shortcut::Shortcut,
+    event: tauri_plugin_global_shortcut::ShortcutEvent,
+) {
+    use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
+    if event.state != ShortcutState::Pressed {
+        return;
+    }
+    let workspace = shortcut.matches(Modifiers::empty(), Code::F3);
+    let toggle_group = shortcut.matches(Modifiers::SHIFT, Code::F3);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = if toggle_group {
+            crate::capture_editor::toggle_pin_group(&app).await
+        } else if workspace {
+            crate::capture_editor::open_workspace(&app)
+        } else if crate::capture_editor::cancel_start(&app, None).unwrap_or(false) {
+            Ok(())
+        } else {
+            crate::capture_editor::start(&app, None, None)
+                .await
+                .map(|_| ())
+        };
+        if let Err(error) = result {
+            if error != "capture_cancelled" {
+                eprintln!("[CaptureShortcut] {error}");
+            }
+        }
+    });
+}
+
+pub fn register_workspace(app: &AppHandle) -> Result<(), String> {
+    for shortcut in ["F3", "Shift+F3"] {
+        if !app.global_shortcut().is_registered(shortcut) {
+            app.global_shortcut()
+                .register(shortcut)
+                .map_err(|error| format!("注册贴图管理快捷键 {shortcut} 失败: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{native_capture_shortcut, replace_registered_shortcut};
 
     #[test]
     fn capture_shortcut_labels_convert_to_native_hotkeys() {
+        assert_eq!(native_capture_shortcut("F1").unwrap(), "F1");
+        assert_eq!(native_capture_shortcut("Ctrl+F12").unwrap(), "Control+F12");
         assert_eq!(
             native_capture_shortcut("Ctrl/⌘ ⇧ A").unwrap(),
             "CommandOrControl+Shift+A"

@@ -43,6 +43,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_sql::Builder::default().build());
 
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new()
+        .with_handler(capture_shortcut::handle_shortcut).build());
+
     #[cfg(any(target_os = "macos", target_os = "android"))]
     let builder = builder.plugin(tauri_plugin_notification::init());
 
@@ -151,6 +155,20 @@ pub fn run() {
             commands::set_pinned_capture_shadow,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::close_pinned_capture,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            commands::update_pinned_capture,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            commands::list_pinned_captures,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            commands::set_capture_pin_group,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            commands::set_capture_preferences,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            commands::cancel_capture_start,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            commands::read_capture_clipboard,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            commands::write_capture_text,
             commands::stage_image_attachment,
             commands::discard_staged_attachment,
             commands::read_workspace_media,
@@ -181,6 +199,14 @@ pub fn run() {
                 println!("[Lib] 服务端口: {}", port);
 
                 handle.manage(db::DbState { pool: pool.clone() });
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                {
+                    handle.manage(capture_shortcut::CaptureShortcutState::default());
+                    let shortcut = db::get_setting(&pool, "capture_shortcut").await.ok().flatten()
+                        .filter(|value| !value.is_empty()).unwrap_or_else(|| "Ctrl/⌘ ⇧ A".to_string());
+                    if let Err(error) = capture_shortcut::register(&handle, &shortcut) { eprintln!("[CaptureShortcut] {error}"); }
+                    if let Err(error) = capture_shortcut::register_workspace(&handle) { eprintln!("[CaptureShortcut] {error}"); }
+                }
                 println!("[Lib] 我的用户名: {}", my_name);
                 println!("[Lib] 我的 ID: {}", my_id);
 

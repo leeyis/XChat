@@ -1,13 +1,21 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import App from "./App.jsx";
+import CaptureEditor from "./CaptureEditor.jsx";
 import { createXChatModule } from "./xchat.js";
 import "./styles.css";
 
 const workspace = createXChatModule();
-
-createRoot(document.getElementById("root")).render(
+const root = createRoot(document.getElementById("root"));
+const requestedView = new URLSearchParams(globalThis.location?.search || "").get("view");
+const render = (View, props = {}) => root.render(
   <StrictMode>
-    <App workspace={workspace} />
+    <View workspace={workspace} {...props} />
   </StrictMode>,
 );
+
+// Screenshot windows can render without loading the chat UI and its dependencies.
+if (requestedView === "capture-editor" || requestedView === "capture-pin") {
+  render(CaptureEditor, { mode: requestedView === "capture-pin" ? "pin" : "editor" });
+} else {
+  import("./App.jsx").then(({ default: App }) => render(App));
+}

@@ -52,17 +52,7 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state != tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        return;
-                    }
-                    let app = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(error) = lanchat::capture_editor::start(&app, None).await {
-                            eprintln!("[CaptureShortcut] {error}");
-                        }
-                    });
-                })
+                .with_handler(lanchat::capture_shortcut::handle_shortcut)
                 .build(),
         );
 
@@ -161,6 +151,13 @@ fn main() {
             lanchat::commands::resize_pinned_capture,
             lanchat::commands::set_pinned_capture_shadow,
             lanchat::commands::close_pinned_capture,
+            lanchat::commands::update_pinned_capture,
+            lanchat::commands::list_pinned_captures,
+            lanchat::commands::set_capture_pin_group,
+            lanchat::commands::set_capture_preferences,
+            lanchat::commands::cancel_capture_start,
+            lanchat::commands::read_capture_clipboard,
+            lanchat::commands::write_capture_text,
             lanchat::commands::stage_image_attachment,
             lanchat::commands::discard_staged_attachment,
             lanchat::commands::read_workspace_media,
@@ -236,6 +233,9 @@ fn main() {
             if let Err(error) =
                 lanchat::capture_shortcut::register(&handle, &capture_shortcut)
             {
+                eprintln!("[CaptureShortcut] {error}");
+            }
+            if let Err(error) = lanchat::capture_shortcut::register_workspace(&handle) {
                 eprintln!("[CaptureShortcut] {error}");
             }
             println!("[Main] 我的用户名: {}", my_name);

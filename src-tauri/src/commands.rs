@@ -2214,8 +2214,9 @@ pub fn stop_tray_flash(
 pub async fn start_capture_editor(
     app: AppHandle,
     conversation_id: Option<String>,
+    delay: Option<u64>,
 ) -> Result<crate::capture_editor::CaptureSessionSummary, String> {
-    crate::capture_editor::start(&app, conversation_id).await
+    crate::capture_editor::start(&app, conversation_id, delay).await
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -2230,71 +2231,171 @@ pub async fn get_pending_capture(
 #[tauri::command]
 pub async fn finish_capture_editor(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     data_url: String,
 ) -> Result<crate::managed_image::ManagedAttachment, String> {
-    crate::capture_editor::finish(&app, data_url).await
+    crate::capture_editor::finish(&app, window.label(), data_url).await
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn save_capture_editor(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     data_url: String,
 ) -> Result<Option<crate::capture_editor::SavedCapture>, String> {
-    crate::capture_editor::save(&app, data_url).await
+    crate::capture_editor::save(&app, window.label(), data_url).await
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
-pub fn copy_capture_editor(app: AppHandle, data_url: String) -> Result<(), String> {
-    crate::capture_editor::copy_editor(&app, data_url)
+pub async fn copy_capture_editor(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    data_url: String,
+) -> Result<(), String> {
+    crate::capture_editor::copy_editor(&app, window.label(), data_url).await
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
-pub fn cancel_capture_editor(app: AppHandle) -> Result<(), String> {
-    crate::capture_editor::cancel(&app)
+pub fn cancel_capture_editor(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    crate::capture_editor::cancel(&app, window.label())
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn pin_capture(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     data_url: String,
+    pin_id: Option<String>,
+    view: Option<crate::capture_editor::PinView>,
+    conversation_id: Option<String>,
 ) -> Result<crate::capture_editor::CaptureSessionSummary, String> {
-    crate::capture_editor::pin(&app, data_url).await
+    crate::capture_editor::pin(
+        &app,
+        window.label(),
+        data_url,
+        pin_id.as_deref(),
+        view,
+        conversation_id,
+    )
+    .await
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
-pub fn copy_pinned_capture(scale: Option<f64>) -> Result<(), String> {
-    crate::capture_editor::copy_pin(scale)
+pub async fn copy_pinned_capture(
+    window: tauri::WebviewWindow,
+    scale: Option<f64>,
+    data_url: Option<String>,
+    pin_id: Option<String>,
+) -> Result<(), String> {
+    crate::capture_editor::copy_pin(window.label(), pin_id.as_deref(), scale, data_url).await
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn save_pinned_capture(
     app: AppHandle,
+    window: tauri::WebviewWindow,
+    data_url: Option<String>,
+    pin_id: Option<String>,
 ) -> Result<Option<crate::capture_editor::SavedCapture>, String> {
-    crate::capture_editor::save_pin(&app).await
+    crate::capture_editor::save_pin(&app, window.label(), pin_id.as_deref(), data_url).await
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
-pub fn resize_pinned_capture(app: AppHandle, scale: f64) -> Result<f64, String> {
-    crate::capture_editor::resize_pin(&app, scale)
+pub async fn update_pinned_capture(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    view: crate::capture_editor::PinView,
+    pin_id: Option<String>,
+    overlay: Option<bool>,
+) -> Result<crate::capture_editor::PinView, String> {
+    crate::capture_editor::update_pin(&app, window.label(), pin_id.as_deref(), view, overlay).await
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
-pub fn set_pinned_capture_shadow(app: AppHandle, enabled: bool) -> Result<(), String> {
-    crate::capture_editor::set_pin_shadow(&app, enabled)
+pub fn list_pinned_captures(
+    window: tauri::WebviewWindow,
+) -> Result<Vec<crate::capture_editor::CaptureSessionSummary>, String> {
+    crate::capture_editor::list_pins(window.label())
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
-pub fn close_pinned_capture(app: AppHandle, destroy: bool) -> Result<(), String> {
-    crate::capture_editor::close_pin(&app, destroy)
+pub async fn resize_pinned_capture(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    scale: f64,
+    pin_id: Option<String>,
+) -> Result<f64, String> {
+    crate::capture_editor::resize_pin(&app, window.label(), pin_id.as_deref(), scale).await
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+pub async fn set_pinned_capture_shadow(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    enabled: bool,
+    pin_id: Option<String>,
+) -> Result<(), String> {
+    crate::capture_editor::set_pin_shadow(&app, window.label(), pin_id.as_deref(), enabled).await
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+pub async fn close_pinned_capture(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    destroy: bool,
+    pin_id: Option<String>,
+) -> Result<(), String> {
+    crate::capture_editor::close_pin(&app, window.label(), pin_id.as_deref(), destroy).await
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+pub async fn read_capture_clipboard() -> Result<crate::capture_editor::CaptureClipboard, String> {
+    crate::capture_editor::read_clipboard().await
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+pub async fn write_capture_text(text: String) -> Result<(), String> {
+    crate::capture_editor::write_clipboard_text(text).await
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+pub async fn set_capture_pin_group(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    group: String,
+) -> Result<String, String> {
+    crate::capture_editor::set_pin_group(&app, window.label(), group).await
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+pub fn set_capture_preferences(
+    window: tauri::WebviewWindow,
+    delay_seconds: Option<u64>,
+    capture_cursor: Option<bool>,
+) -> Result<crate::capture_editor::CapturePreferences, String> {
+    crate::capture_editor::set_preferences(window.label(), delay_seconds, capture_cursor)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+pub fn cancel_capture_start(app: AppHandle, window: tauri::WebviewWindow, session_id: Option<String>) -> Result<bool, String> {
+    if window.label() != "main" { return Err("当前窗口无权取消截图倒计时".to_string()); }
+    crate::capture_editor::cancel_start(&app, session_id.as_deref())
 }
 
 #[tauri::command]

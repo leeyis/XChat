@@ -1362,7 +1362,7 @@ test("Tauri capture starts without a discovered conversation", async () => {
     assert.equal(result.ok, true);
     assert.deepEqual(
       calls.find(([command]) => command === "start_capture_editor"),
-      ["start_capture_editor", { conversationId: null }],
+      ["start_capture_editor", { conversationId: null, delay: 0 }],
     );
   });
 });

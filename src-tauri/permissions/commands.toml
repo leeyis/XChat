@@ -392,7 +392,7 @@ commands.allow = ["cancel_capture_editor"]
 
 [[permission]]
 identifier = "allow-pin-capture"
-description = "Allows replacing the singleton pinned screenshot window"
+description = "Allows replacing the selected pinned screenshot window"
 commands.allow = ["pin_capture"]
 
 [[permission]]
@@ -407,7 +407,7 @@ commands.allow = ["save_pinned_capture"]
 
 [[permission]]
 identifier = "allow-resize-pinned-capture"
-description = "Allows resizing the singleton pinned screenshot window"
+description = "Allows resizing the selected pinned screenshot window"
 commands.allow = ["resize_pinned_capture"]
 
 [[permission]]
@@ -417,7 +417,7 @@ commands.allow = ["set_pinned_capture_shadow"]
 
 [[permission]]
 identifier = "allow-close-pinned-capture"
-description = "Allows hiding or destroying the singleton pinned screenshot window"
+description = "Allows hiding or destroying the selected pinned screenshot window"
 commands.allow = ["close_pinned_capture"]
 
 [[permission]]
@@ -454,3 +454,38 @@ commands.allow = ["get_all_local_ips"]
 identifier = "allow-set-local-ip"
 description = "Allows setting the active local IP address from the available list"
 commands.allow = ["set_local_ip"]
+
+[[permission]]
+identifier = "allow-update-pinned-capture"
+description = "Allows updating a scoped native pin view"
+commands.allow = ["update_pinned_capture"]
+
+[[permission]]
+identifier = "allow-list-pinned-captures"
+description = "Allows the main window to manage live pinned images"
+commands.allow = ["list_pinned_captures"]
+
+[[permission]]
+identifier = "allow-read-capture-clipboard"
+description = "Allows reading an image or plain text for the capture workspace"
+commands.allow = ["read_capture_clipboard"]
+
+[[permission]]
+identifier = "allow-write-capture-text"
+description = "Allows copying capture text or sampled color to the clipboard"
+commands.allow = ["write_capture_text"]
+
+[[permission]]
+identifier = "allow-set-capture-pin-group"
+description = "Allows the main window to switch native pin groups without changing per-pin hidden state"
+commands.allow = ["set_capture_pin_group"]
+
+[[permission]]
+identifier = "allow-set-capture-preferences"
+description = "Allows the main window to synchronize native screenshot preferences"
+commands.allow = ["set_capture_preferences"]
+
+[[permission]]
+identifier = "allow-cancel-capture-start"
+description = "Allows cancelling a pending capture countdown without closing an existing editor"
+commands.allow = ["cancel_capture_start"]

@@ -1,6 +1,6 @@
 # Xchat
 
-Xchat `0.1.7` 是一款基于 Tauri 2、React 和 Rust 的局域网聊天客户端。每台设备只需安装并运行客户端；客户端自身负责局域网发现、消息、文件传输和本地 SQLite 存储，不需要单独部署服务端。
+Xchat `0.1.11` 是一款基于 Tauri 2、React 和 Rust 的局域网聊天客户端。每台设备只需安装并运行客户端；客户端自身负责局域网发现、消息、文件传输和本地 SQLite 存储，不需要单独部署服务端。
 
 ## 功能
 
@@ -9,9 +9,12 @@ Xchat `0.1.7` 是一款基于 Tauri 2、React 和 Rust 的局域网聊天客户�
 - 分块文件传输、取消、重试和文件中心
 - 图片粘贴、拖放、输入区预览与消息内联显示
 - 对话内音视频播放与 GIF、动态 WebP、APNG 展示，支持暂停和原文件操作
-- 桌面端截图编辑（macOS、Windows、Linux）：矩形、椭圆、箭头、画笔、马赛克、文本、回退和钉图
+- Web/桌面共用截图编辑器：选区调整、多行文字编辑与边框拖动、形状与画笔、马赛克、模糊、橡皮、撤销重做，以及鼠标滚轮调节参数
+- 可编辑截图历史与多贴图：缩放、旋转、透明度、窗口阴影、分组和隐藏恢复；Web贴图保留在当前页面内
 - 中英文、主题、通知、下载目录和网络参数设置
 - 可选的 headless Web 运行模式
+
+截图文字编辑时，Enter直接换行，点击编辑框外部完成编辑；拖动边框可移动文字，Delete删除当前激活的标注。鼠标滚轮调整当前工具的大小。贴图右键打开操作菜单，关闭窗口阴影时也会移除贴图边框。
 
 ## 开发
 
@@ -59,7 +62,7 @@ macOS 产物通常位于：
 
 ```text
 src-tauri/target/release/bundle/macos/Xchat.app
-src-tauri/target/release/bundle/dmg/Xchat_0.1.7_*.dmg
+src-tauri/target/release/bundle/dmg/Xchat_0.1.11_*.dmg
 ```
 
 指定架构：
@@ -95,7 +98,7 @@ cargo run --manifest-path src-tauri/Cargo.toml \
   -- --port 8888 --db-path /tmp/xchat-web
 ```
 
-内部 Rust 包和兼容二进制仍使用 `lanchat` / `lanchat-web` 名称；应用界面、安装包、版本和 bundle identifier 分别为 `Xchat`、`0.1.7` 和 `com.xchat.app`。
+内部 Rust 包和兼容二进制仍使用 `lanchat` / `lanchat-web` 名称；应用界面、安装包、版本和 bundle identifier 分别为 `Xchat`、`0.1.11` 和 `com.xchat.app`。
 
 ## 验证
 

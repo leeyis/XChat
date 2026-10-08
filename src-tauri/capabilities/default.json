@@ -47,16 +47,16 @@
     "allow-save-file-message",
     "allow-read-clipboard-files",
     "allow-delete-messages",
-		"allow-clear-chat-history",
-		"allow-delete-user-complete",
-		"allow-get-custom-peers",
-		"allow-test-custom-peer",
-		"allow-add-custom-peer",
-		"allow-remove-custom-peer",
-		"allow-request-file",
-		"allow-get-language",
-		"allow-set-language",
-		"allow-request-permission-on-android",
+    "allow-clear-chat-history",
+    "allow-delete-user-complete",
+    "allow-get-custom-peers",
+    "allow-test-custom-peer",
+    "allow-add-custom-peer",
+    "allow-remove-custom-peer",
+    "allow-request-file",
+    "allow-get-language",
+    "allow-set-language",
+    "allow-request-permission-on-android",
     "allow-get-workspace-snapshot",
     "allow-create-group",
     "allow-update-group",
@@ -96,9 +96,28 @@
     {
       "identifier": "fs:scope",
       "allow": [
-        { "path": "$TEMP/**" },
-        { "path": "**" }
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "**"
+        }
       ]
-    }
+    },
+    "allow-read-capture-clipboard",
+    "allow-write-capture-text",
+    "allow-update-pinned-capture",
+    "allow-list-pinned-captures",
+    "allow-pin-capture",
+    "allow-copy-pinned-capture",
+    "allow-save-pinned-capture",
+    "allow-resize-pinned-capture",
+    "allow-set-pinned-capture-shadow",
+    "allow-close-pinned-capture",
+    "allow-copy-capture-editor",
+    "allow-save-capture-editor",
+    "allow-set-capture-pin-group",
+    "allow-set-capture-preferences",
+    "allow-cancel-capture-start"
   ]
 }

@@ -1,6 +1,6 @@
 # Xchat
 
-Xchat `0.1.10` is a LAN chat client built with Tauri 2, React, and Rust. Install and run the client on each device; discovery, messaging, file transfer, and SQLite storage are built in, so normal desktop use does not require a separate server.
+Xchat `0.1.11` is a LAN chat client built with Tauri 2, React, and Rust. Install and run the client on each device; discovery, messaging, file transfer, and SQLite storage are built in, so normal desktop use does not require a separate server.
 
 ## Features
 
@@ -9,9 +9,12 @@ Xchat `0.1.10` is a LAN chat client built with Tauri 2, React, and Rust. Install
 - Four-way parallel transfer for large files, with resume, cancellation, retry, and a file center
 - Pasted, selected, and dropped image drafts with inline message rendering
 - Inline audio/video playback and GIF, animated WebP, and APNG previews, with pause controls and original-file actions
-- Desktop capture editor (macOS, Windows, Linux) with rectangle, ellipse, arrow, pen, mosaic, text, undo, and pin
+- Shared Web/desktop capture editor with adjustable selections, multiline text editing and dragging, shape and brush tools, mosaic, blur, eraser, undo/redo, and mouse-wheel sizing
+- Editable capture history and multiple pins, with zoom, rotation, opacity, window-shadow controls, grouping, and hide/recover actions; Web pins stay inside the page
 - Chinese/English UI, themes, notifications, download, network, and local IP/MAC identity settings
 - Optional headless Web mode
+
+In the capture editor, Enter inserts a new text line and clicking outside commits the edit. Drag a text box by its border; Delete removes the active annotation. The mouse wheel adjusts the current tool size. Pin menus are available with a right click, and disabling the window shadow also removes the pin border.
 
 ## Development
 
@@ -59,7 +62,7 @@ Typical macOS outputs:
 
 ```text
 src-tauri/target/release/bundle/macos/Xchat.app
-src-tauri/target/release/bundle/dmg/Xchat_0.1.10_*.dmg
+src-tauri/target/release/bundle/dmg/Xchat_0.1.11_*.dmg
 ```
 
 Build a specific macOS architecture:
@@ -95,7 +98,7 @@ cargo run --manifest-path src-tauri/Cargo.toml \
   -- --port 8888 --db-path /tmp/xchat-web
 ```
 
-The internal Rust package and compatibility binaries remain named `lanchat` / `lanchat-web`. The visible app name, version, and bundle identifier are `Xchat`, `0.1.10`, and `com.xchat.app`.
+The internal Rust package and compatibility binaries remain named `lanchat` / `lanchat-web`. The visible app name, version, and bundle identifier are `Xchat`, `0.1.11`, and `com.xchat.app`.
 
 ## Verification
 

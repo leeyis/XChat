@@ -1540,5 +1540,8 @@ applyPrototypeTheme(committedSettings.theme);renderConnectionState();
   if(new URLSearchParams(location.search).get('review')==='header-refresh'){select.value='header-refresh';enable();}
 })();
 </script>
+<!-- Capture interaction review: isolated from the production app and other review scenarios. -->
+<link rel="stylesheet" href="assets/snipaste-review.css">
+<script src="assets/snipaste-review.js"></script>
 </body>
 </html>
