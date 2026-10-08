@@ -2229,6 +2229,53 @@ pub async fn get_pending_capture(
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
+pub async fn open_pinned_capture_overlay(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    pin_id: Option<String>,
+    mode: String,
+    x: Option<f64>,
+    y: Option<f64>,
+) -> Result<(), String> {
+    crate::capture_editor::open_pin_overlay(
+        &app,
+        window.label(),
+        pin_id.as_deref(),
+        &mode,
+        x.unwrap_or(0.0),
+        y.unwrap_or(0.0),
+    )
+    .await
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+pub async fn ready_pinned_capture_overlay(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    crate::capture_editor::ready_pin_overlay(&app, window.label()).await
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+pub async fn close_pinned_capture_overlay(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    pin_id: Option<String>,
+    mode: Option<String>,
+) -> Result<(), String> {
+    crate::capture_editor::close_pin_overlay(
+        &app,
+        window.label(),
+        pin_id.as_deref(),
+        mode.as_deref(),
+    )
+    .await
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
 pub async fn finish_capture_editor(
     app: AppHandle,
     window: tauri::WebviewWindow,
@@ -2324,6 +2371,18 @@ pub fn list_pinned_captures(
     window: tauri::WebviewWindow,
 ) -> Result<Vec<crate::capture_editor::CaptureSessionSummary>, String> {
     crate::capture_editor::list_pins(window.label())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+pub async fn recover_pinned_captures(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<usize, String> {
+    if window.label() != "main" {
+        return Err("当前窗口无权恢复全部贴图".to_string());
+    }
+    crate::capture_editor::recover_pins(&app).await
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]

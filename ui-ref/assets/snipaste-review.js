@@ -1,6 +1,7 @@
 /* Standalone review surface. All application state is simulated and namespaced. */
 (() => {
   'use strict';
+  const directFlow = true;
   const icons = {
     capture:'<path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4M8 8h8v8H8z"/>',
     select:'<path d="M4.5 3.5 10 20l3.2-6.5L20 11Z"/>',
@@ -42,7 +43,7 @@
   function sizeOptions(tool){return tool==='text'?{min:10,max:96,step:2,label:'字号'}:tool==='mosaic'?{min:4,max:48,step:2,label:'颗粒'}:tool==='blur'?{min:2,max:32,step:1,label:'模糊'}:['marker','eraser'].includes(tool)?{min:4,max:80,step:2,label:'笔触'}:{min:1,max:32,step:1,label:'线宽'};}
   const button = (action, label, icon, extra) => '<button type="button" data-sr-action="'+action+'" class="sr-button '+(extra||'')+'">'+(icon?svg(icon):'')+label+'</button>';
   const root = document.createElement('section');
-  root.id = 'snipasteReview'; root.className = 'sr-root'; root.hidden = true;
+  root.id = 'snipasteReview'; root.className = 'sr-root' + (directFlow ? ' sr-direct' : ''); root.hidden = true;
   root.setAttribute('aria-label','截图与贴图交互原型');
   root.innerHTML = [
     '<header class="sr-header"><div class="sr-brand"><span class="sr-brand-mark">'+svg('capture')+'</span><div><strong>XChat <span style="font-weight:400">截图</span></strong><small>CAPTURE & KEEP</small></div></div><span class="sr-review-tag">基础功能 · 交互原型</span><div class="sr-header-spacer"></div>',
@@ -120,8 +121,23 @@
     return {baseline:baselineCache.get(key),lineHeight:size*1.35,width,height:lines.length*size*1.35,lines};
   }
   function scenePoint(x,y){const m=state.sceneMap;return {x:m.x+x*m.scale,y:m.y+y*m.scale};}
-  function view(){const w=desktop.clientWidth,h=desktop.clientHeight,s=Math.min(w/canvas.width,h/canvas.height),ox=(w-canvas.width*s)/2,oy=(h-canvas.height*s)/2;Object.assign(canvas.style,{width:canvas.width*s+'px',height:canvas.height*s+'px',left:ox+'px',top:oy+'px'});return {sx:s,sy:s,ox,oy,w,h};}
-  function point(event){const b=canvas.getBoundingClientRect();return {x:clamp((event.clientX-b.left)*canvas.width/b.width,0,canvas.width),y:clamp((event.clientY-b.top)*canvas.height/b.height,0,canvas.height)};}
+  function view(){
+    const w=desktop.clientWidth,h=desktop.clientHeight,p=state.pins.find(p=>p.id===state.editPin),r=state.editRegion;
+    if(p&&r){
+      const dim=pinDimensions(p),s=dim.scale,angle=p.rotation*Math.PI/180,c=Math.round(Math.cos(angle)),n=Math.round(Math.sin(angle));
+      const a=c*p.flipX*s,b=n*p.flipX*s,cc=-n*p.flipY*s,d=c*p.flipY*s,cx=r.x+r.w/2,cy=r.y+r.h/2;
+      const e=p.x+dim.w/2-a*cx-cc*cy,f=p.y+dim.h/2-b*cx-d*cy,matrix=[a,b,cc,d,e,f];
+      Object.assign(canvas.style,{width:canvas.width+'px',height:canvas.height+'px',left:'0px',top:'0px',transform:'matrix('+matrix.join(',')+')',transformOrigin:'top left',opacity:p.opacity,clipPath:'inset('+r.y+'px '+(canvas.width-r.x-r.w)+'px '+(canvas.height-r.y-r.h)+'px '+r.x+'px)'});
+      return {sx:s,sy:s,ox:e,oy:f,w,h,matrix};
+    }
+    const s=Math.min(w/canvas.width,h/canvas.height),ox=(w-canvas.width*s)/2,oy=(h-canvas.height*s)/2;
+    Object.assign(canvas.style,{width:canvas.width*s+'px',height:canvas.height*s+'px',left:ox+'px',top:oy+'px',transform:'none',opacity:1,clipPath:'none'});
+    return {sx:s,sy:s,ox,oy,w,h};
+  }
+  function displayPoint(p,d=view()){if(d.matrix){const [a,b,c,e,x,y]=d.matrix;return {x:a*p.x+c*p.y+x,y:b*p.x+e*p.y+y};}return {x:d.ox+p.x*d.sx,y:d.oy+p.y*d.sy};}
+  function displayBox(r,d=view()){const corners=[[r.x,r.y],[r.x+r.w,r.y],[r.x,r.y+r.h],[r.x+r.w,r.y+r.h]].map(([x,y])=>displayPoint({x,y},d)),xs=corners.map(p=>p.x),ys=corners.map(p=>p.y);return {x:Math.min(...xs),y:Math.min(...ys),w:Math.max(...xs)-Math.min(...xs),h:Math.max(...ys)-Math.min(...ys)};}
+
+  function point(event){const d=view(),bounds=desktop.getBoundingClientRect(),x=event.clientX-bounds.left,y=event.clientY-bounds.top;if(d.matrix){const [a,b,c,e,tx,ty]=d.matrix,det=a*e-b*c;return {x:clamp((e*(x-tx)-c*(y-ty))/det,0,canvas.width),y:clamp((-b*(x-tx)+a*(y-ty))/det,0,canvas.height)};}return {x:clamp((x-d.ox)/d.sx,0,canvas.width),y:clamp((y-d.oy)/d.sy,0,canvas.height)};}
   const inside=(p,r)=>r&&p.x>=r.x&&p.y>=r.y&&p.x<=r.x+r.w&&p.y<=r.y+r.h;
   const rectBetween=(a,b)=>({x:Math.min(a.x,b.x),y:Math.min(a.y,b.y),w:Math.abs(b.x-a.x),h:Math.abs(b.y-a.y)});
   function normalized(r){const x=clamp(r.x,0,canvas.width-1),y=clamp(r.y,0,canvas.height-1);return {x,y,w:clamp(r.x+r.w,x+1,canvas.width)-x,h:clamp(r.y+r.h,y+1,canvas.height)-y};}
@@ -148,7 +164,7 @@
       else {g.beginPath();g.moveTo(a.x,a.y);g.lineTo(b.x,b.y);g.stroke();if(o.tool==='arrow'){const angle=Math.atan2(b.y-a.y,b.x-a.x),head=Math.max(12*state.density,o.size*3);g.beginPath();g.moveTo(b.x,b.y);g.lineTo(b.x-head*Math.cos(angle-.4),b.y-head*Math.sin(angle-.4));g.moveTo(b.x,b.y);g.lineTo(b.x-head*Math.cos(angle+.4),b.y-head*Math.sin(angle+.4));g.stroke();}}
     }g.restore();
   }
-  function positionBox(el,r){const d=view();Object.assign(el.style,{left:d.ox+r.x*d.sx+'px',top:d.oy+r.y*d.sy+'px',width:r.w*d.sx+'px',height:r.h*d.sy+'px'});}
+  function positionBox(el,r){const b=displayBox(r);Object.assign(el.style,{left:b.x+'px',top:b.y+'px',width:b.w+'px',height:b.h+'px'});}
   function paint(){
     if(!state.capturing)return;view();
     ctx.clearRect(0,0,canvas.width,canvas.height);ctx.drawImage(state.base,0,0);ctx.fillStyle='#11231b80';ctx.fillRect(0,0,canvas.width,canvas.height);
@@ -157,7 +173,7 @@
       state.ops.forEach(o=>{if(o.id!==state.edit?.id&&o.id!==state.draft?.id)drawOperation(ctx,o);});
       if(state.draft)drawOperation(ctx,state.draft);
       if(state.edit?.relocated)drawOperation(ctx,{...state.edit,text:editor.value});
-      ctx.restore();positionBox(sel,r);sel.classList.toggle('near-top',r.y*view().sy+view().oy<33);
+      ctx.restore();positionBox(sel,r);const bounds=displayBox(r);[...sel.querySelectorAll('.sr-handle')].forEach((el,i)=>{const points=[[0,0],[.5,0],[1,0],[1,.5],[1,1],[.5,1],[0,1],[0,.5]],p=displayPoint({x:r.x+r.w*points[i][0],y:r.y+r.h*points[i][1]});el.style.left=p.x-bounds.x+'px';el.style.top=p.y-bounds.y+'px';});sel.classList.toggle('near-top',displayBox(r).y<33);
       sel.querySelector('.sr-dimensions').textContent=Math.round(r.w)+' × '+Math.round(r.h)+' px';
       sel.dataset.x=String(r.x);sel.dataset.y=String(r.y);sel.dataset.width=String(r.w);sel.dataset.height=String(r.h);
     }
@@ -165,8 +181,8 @@
     $('srCaptureHint').innerHTML='拖动框选 · 单击识别区域 <kbd>Tab</kbd> '+(state.detectMode==='window'?'窗口':'元素')+'识别 · <kbd>Esc</kbd> 取消';
     const bar=$('srTools');bar.hidden=!r||!state.showTools||!!state.gesture&&state.gesture.kind==='select';
     if(!bar.hidden){
-      const d=view(),bw=bar.offsetWidth,bh=bar.offsetHeight;let left=clamp(d.ox+(r.x+r.w)*d.sx-bw,12,d.w-bw-12),top=d.oy+(r.y+r.h)*d.sy+12;
-      if(top+bh>d.h-12)top=d.oy+r.y*d.sy-bh-12;if(top<12)top=clamp(d.oy+(r.y+r.h)*d.sy-bh-12,12,d.h-bh-12);
+      const d=view(),box=displayBox(r,d),bw=bar.offsetWidth,bh=bar.offsetHeight;let left=clamp(box.x+box.w-bw,12,d.w-bw-12),top=box.y+box.h+12;
+      if(top+bh>d.h-12)top=box.y-bh-12;if(top<12)top=clamp(box.y+box.h-bh-12,12,d.h-bh-12);
       bar.style.left=left+'px';bar.style.top=top+'px';
     }
     root.querySelector('[data-sr-action="undo"]').disabled=!state.undo.length;
@@ -195,17 +211,17 @@
   }
   function positionText(){
     if(!state.edit)return;const o=state.edit,d=view(),l=textLayout({...o,text:editor.value||'输入文字'}),wanted=Math.max(o.fontSize*5,l.width+8/d.sx),width=Math.min(wanted,(d.w-32)/d.sx),height=Math.min(Math.max(l.height,o.fontSize*1.35),Math.max(o.fontSize*1.35,(d.h-150)/d.sy));
-    const actualX=d.ox+o.x*d.sx,actualY=d.oy+o.y*d.sy,left=clamp(actualX,14,d.w-width*d.sx-14),top=clamp(actualY,14,d.h-height*d.sy-14);
+    const box=displayBox({x:o.x,y:o.y,w:width,h:height},d),anchor=displayPoint(o,d),actualX=box.x,actualY=box.y,left=clamp(actualX,14,d.w-box.w-14),top=clamp(actualY,14,d.h-box.h-14),transform=d.matrix?'matrix('+[...d.matrix.slice(0,4),anchor.x-box.x,anchor.y-box.y].join(',')+')':'scale('+d.sx+','+d.sy+')';
     o.relocated=Math.abs(left-actualX)>1||Math.abs(top-actualY)>1;
-    Object.assign(editor.style,{left:left+'px',top:top+'px',width:width+'px',height:height+'px',fontFamily:'"'+o.font+'"',fontSize:o.fontSize+'px',fontWeight:'400',lineHeight:l.lineHeight+'px',color:o.color,transform:'scale('+d.sx+','+d.sy+')',transformOrigin:'top left'});
-    const frame=$('srTextFrame');Object.assign(frame.style,{left:left-5+'px',top:top-4+'px',width:width*d.sx+10+'px',height:height*d.sy+8+'px'});frame.classList.toggle('relocated',o.relocated);
+    Object.assign(editor.style,{left:left+'px',top:top+'px',width:width+'px',height:height+'px',fontFamily:'"'+o.font+'"',fontSize:o.fontSize+'px',fontWeight:'400',lineHeight:l.lineHeight+'px',color:o.color,transform,transformOrigin:'top left'});
+    const frame=$('srTextFrame');Object.assign(frame.style,{left:left-5+'px',top:top-4+'px',width:box.w+10+'px',height:box.h+8+'px'});frame.classList.toggle('relocated',o.relocated);
     editor.classList.toggle('relocated',o.relocated);
     editor.dataset.anchorX=String(o.x);editor.dataset.anchorY=String(o.y);editor.dataset.fontPixels=String(o.fontSize);
     const bar=$('srTools');
     if(!bar.hidden){
-      const x=parseFloat(bar.style.left),y=parseFloat(bar.style.top),editTop=top-8,editRight=left+width*d.sx+8;
-      if(x<editRight+10&&x+bar.offsetWidth>left-10&&y<top+height*d.sy+10&&y+bar.offsetHeight>editTop-10){
-        const above=editTop-bar.offsetHeight-12,below=top+height*d.sy+12;
+      const x=parseFloat(bar.style.left),y=parseFloat(bar.style.top),editTop=top-8,editRight=left+box.w+8;
+      if(x<editRight+10&&x+bar.offsetWidth>left-10&&y<top+box.h+10&&y+bar.offsetHeight>editTop-10){
+        const above=editTop-bar.offsetHeight-12,below=top+box.h+12;
         bar.style.top=(above>=7?above:Math.min(below,d.h-bar.offsetHeight-7))+'px';
       }
     }
@@ -236,7 +252,7 @@
     };
     if(state.settings.delay&&mode==='normal'){let left=Number(state.settings.delay);$('srCountdown').hidden=false;$('srCountdown').querySelector('strong').textContent=left;state.delayTimer=setInterval(()=>{left--;if(left<=0){clearInterval(state.delayTimer);state.delayTimer=null;$('srCountdown').hidden=true;run();}else $('srCountdown').querySelector('strong').textContent=left;},1000);}else run();
   }
-  function cancelCapture(){if(state.delayTimer){clearInterval(state.delayTimer);state.delayTimer=null;}$('srCountdown').hidden=true;state.capturing=false;state.gesture=null;state.edit=null;state.draft=null;layer.hidden=true;editor.hidden=true;$('srTextFrame').hidden=true;$('srMagnifier').hidden=true;$('srSizePreview').hidden=true;state.editPin=null;root.classList.remove('sr-is-capturing');if(state.active){drawScene();renderPins();}}
+  function cancelCapture(){if(state.delayTimer){clearInterval(state.delayTimer);state.delayTimer=null;}$('srCountdown').hidden=true;state.capturing=false;state.gesture=null;state.edit=null;state.draft=null;layer.hidden=true;editor.hidden=true;$('srTextFrame').hidden=true;$('srMagnifier').hidden=true;$('srSizePreview').hidden=true;state.editPin=null;state.editRegion=null;root.classList.remove('sr-is-capturing','sr-edit-pin');if(state.active){drawScene();renderPins();}}
   function changeDensity(density){
     if(state.busy||density===state.density)return;
     const ratio=density/state.density,editId=state.edit?.id,caret=editor.selectionStart;
@@ -281,7 +297,7 @@
       if(action==='pin'){
         const existing=state.pins.find(p=>p.id===pinId);
         if(existing){Object.assign(existing,sourceFromCanvas(c,existing.title),{document:doc});persist();renderPins();}
-        else addPin({...item,document:doc});
+        else {const d=view(),r=state.selection;addPin({...item,document:doc},true,{x:d.ox+r.x*d.sx,y:d.oy+r.y*d.sy,scale:d.sx});}
       }
       cancelCapture();
       if(action==='draft'){showDialog('已加入聊天草稿','<p>设计讨论群 · 图片附件</p><img class="sr-draft-preview" src="'+item.src+'" alt="截图草稿预览"><div class="sr-note">截图已放入模拟草稿，尚未发送。实际应用会绑定发起截图时的会话。</div>',button('dialog-close','继续编辑聊天',null,'primary'));}
@@ -295,12 +311,12 @@
   }
   function pinDimensions(p){const scale=p.thumbnail?Math.min(150/p.w,95/p.h):p.scale,swap=Math.abs(p.rotation%180)===90;return {scale,w:(swap?p.h:p.w)*scale,h:(swap?p.w:p.h)*scale};}
   function renderPins(){
-    const visible=state.pins.filter(p=>!p.hidden&&p.group===state.group);
+    const visible=state.pins.filter(p=>!p.hidden&&p.group===state.group&&p.id!==state.editPin);
     $('srPins').innerHTML=visible.map(p=>{
       const d=pinDimensions(p),left=clamp(Number(p.x)||0,-d.w+40,desktop.clientWidth-40),top=clamp(Number(p.y)||0,0,desktop.clientHeight-35);p.x=left;p.y=top;
-      return '<div class="sr-pin '+(state.selected===p.id?'selected ':'')+(p.shadow===false?'no-shadow ':'')+(p.through?'through':'')+'" data-pin-id="'+p.id+'" style="left:'+left+'px;top:'+top+'px;width:'+d.w+'px;height:'+d.h+'px;z-index:'+(state.selected===p.id?30:3)+'" tabindex="0" aria-label="贴图 '+esc(p.title)+'"><img class="sr-pin-image" src="'+p.src+'" alt="'+esc(p.title)+'" draggable="false" style="position:absolute;width:'+p.w*d.scale+'px;height:'+p.h*d.scale+'px;left:'+(d.w-p.w*d.scale)/2+'px;top:'+(d.h-p.h*d.scale)/2+'px;opacity:'+p.opacity+';transform:rotate('+p.rotation+'deg) scale('+p.flipX+','+p.flipY+')"><span class="sr-pin-label">'+Math.round(p.scale*100)+'% · '+Math.round(p.opacity*100)+'%'+(p.through?' · 穿透模拟':p.thumbnail?' · 缩略图':' · 右键操作')+'</span></div>';
+      return '<div class="sr-pin '+(state.selected===p.id?'selected ':'')+(p.shadow===false?'no-shadow ':'')+(p.through?'through':'')+'" data-pin-id="'+p.id+'" style="left:'+left+'px;top:'+top+'px;width:'+d.w+'px;height:'+d.h+'px;z-index:'+(state.selected===p.id?30:3)+'" tabindex="0" aria-label="贴图 '+esc(p.title)+'"><img class="sr-pin-image" src="'+p.src+'" alt="'+esc(p.title)+'" draggable="false" style="position:absolute;width:'+p.w*d.scale+'px;height:'+p.h*d.scale+'px;left:'+(d.w-p.w*d.scale)/2+'px;top:'+(d.h-p.h*d.scale)/2+'px;opacity:'+p.opacity+';transform:rotate('+p.rotation+'deg) scale('+p.flipX+','+p.flipY+')"><span class="sr-pin-label">'+Math.round(p.scale*100)+'% · '+Math.round(p.opacity*100)+'%'+(p.through?' · 鼠标穿透':p.thumbnail?' · 缩略图':' · 右键操作')+'</span></div>';
     }).join('');
-    const n=state.pins.filter(p=>p.through&&!p.hidden&&p.group===state.group).length;$('srRescue').hidden=!n;$('srRescue').querySelector('span').textContent=n+' 张贴图正在模拟鼠标穿透';
+    const n=state.pins.filter(p=>p.through&&!p.hidden&&p.group===state.group).length;$('srRescue').hidden=!n;$('srRescue').querySelector('span').textContent=n+' 张贴图正在使用鼠标穿透';
     $('srPinCount').textContent=visible.length+' 张贴图';
     const hidden=state.pins.filter(p=>p.hidden).length;root.querySelector('[data-sr-action="manager"] span').textContent=hidden?'贴图 · '+hidden+' 张已收起':'历史与贴图';
     if(state.panel==='manager')renderManager();
@@ -311,7 +327,7 @@
       '<button data-pin-menu="edit">标注图片 <kbd>Space</kbd></button><button data-pin-menu="copy">复制当前图像 <kbd>Ctrl+C</kbd></button><button data-pin-menu="original">复制原始图像</button><button data-pin-menu="save">保存图像 <kbd>Ctrl+S</kbd></button><hr>',
       '<button data-pin-menu="reset">原始大小 <kbd>100%</kbd></button><button data-pin-menu="rotate">顺时针旋转 <kbd>1</kbd></button><button data-pin-menu="flip">水平翻转 <kbd>3</kbd></button><button data-pin-menu="thumbnail">'+(p.thumbnail?'恢复完整图片':'切换缩略图')+'</button>',
       '<label>透明度<input type="range" min="15" max="100" value="'+Math.round(p.opacity*100)+'" data-pin-opacity aria-label="贴图透明度"><output>'+Math.round(p.opacity*100)+'%</output></label><button data-pin-menu="shadow" role="menuitemcheckbox" aria-checked="'+(p.shadow!==false)+'"><span>窗口阴影</span><svg class="sr-menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg></button><hr>',
-      '<button data-pin-menu="through">'+(p.through?'关闭':'启用')+'鼠标穿透 <kbd>模拟</kbd></button><label>所属分组<select data-pin-group aria-label="贴图分组"><option'+(p.group==='默认'?' selected':'')+'>默认</option><option'+(p.group==='设计参考'?' selected':'')+'>设计参考</option></select></label><hr><button data-pin-menu="hide">隐藏 <kbd>Esc</kbd></button><button class="danger" data-pin-menu="destroy">销毁 <kbd>Shift+Esc</kbd></button>'
+      '<button data-pin-menu="through">'+(p.through?'关闭':'启用')+'鼠标穿透 <kbd>Ctrl+Shift+P</kbd></button><div class="sr-menu-hint"><kbd>F3</kbd> 恢复鼠标交互</div><hr><button data-pin-menu="hide">隐藏 <kbd>Esc</kbd></button><button class="danger" data-pin-menu="destroy">销毁 <kbd>Shift+Esc</kbd></button>'
     ].join('');menu.hidden=false;menu.style.left=clamp(x,8,desktop.clientWidth-menu.offsetWidth-8)+'px';menu.style.top=clamp(y,8,desktop.clientHeight-menu.offsetHeight-8)+'px';
   }
   async function imageCanvas(p,original=false){
@@ -322,7 +338,7 @@
   }
   async function editSource(item,pinId=null){
     const img=new Image();img.src=item.document?.baseSrc||item.src;
-    try{await img.decode();const base=makeCanvas(img.naturalWidth,img.naturalHeight);base.getContext('2d').drawImage(img,0,0);if(item.document){state.density=item.document.density||1;root.querySelectorAll('[data-sr-density]').forEach(b=>b.classList.toggle('active',Number(b.dataset.srDensity)===state.density));}beginCapture(base,item.document?clone(item.document.region):{x:0,y:0,w:base.width,h:base.height});state.ops=clone(item.document?.ops||[]);state.editPin=pinId;state.tool='text';updateTool();paint();}
+    try{await img.decode();const base=makeCanvas(img.naturalWidth,img.naturalHeight);base.getContext('2d').drawImage(img,0,0);if(item.document){state.density=item.document.density||1;root.querySelectorAll('[data-sr-density]').forEach(b=>b.classList.toggle('active',Number(b.dataset.srDensity)===state.density));}state.editPin=pinId;state.editRegion=item.document?clone(item.document.region):{x:0,y:0,w:base.width,h:base.height};root.classList.toggle('sr-edit-pin',!!pinId);beginCapture(base,clone(state.editRegion));state.ops=clone(item.document?.ops||[]);renderPins();state.tool='text';updateTool();paint();}
     catch{toast('无法读取该图片，其他记录仍保留。',true);}
   }
   async function pinAction(action,p){
@@ -338,7 +354,7 @@
     if(action==='reset'){p.scale=1;p.thumbnail=false;}
     if(action==='thumbnail')p.thumbnail=!p.thumbnail;
     if(action==='shadow')p.shadow=p.shadow===false;
-    if(action==='through'){p.through=!p.through;toast('仅模拟当前网页内穿透；可从右上角恢复鼠标交互。');}
+    if(action==='through'){p.through=!p.through;toast(p.through?'鼠标穿透已开启，按 F3 恢复鼠标交互':'鼠标交互已恢复');}
     persist();renderPins();
   }
   function paste(){if(!state.clipboard){toast('演示剪贴板为空，请先截图或选择更多来源。',true);return;}cancelCapture();addPin(state.clipboard);toast('已从演示剪贴板创建一张独立贴图');}
@@ -357,7 +373,7 @@
     const rgb=state.base.getContext('2d').getImageData(clamp(Math.floor(p.x),0,canvas.width-1),clamp(Math.floor(p.y),0,canvas.height-1),1,1).data;
     state.pixelColor=state.rgb?'rgb('+Array.from(rgb).slice(0,3).join(', ')+')':'#'+Array.from(rgb).slice(0,3).map(n=>n.toString(16).padStart(2,'0')).join('').toUpperCase();
     el.querySelector('p').innerHTML='X '+Math.round(p.x)+' · Y '+Math.round(p.y)+'<br>'+state.pixelColor+' · C 复制';
-    let x=d.ox+p.x*d.sx+24,y=d.oy+p.y*d.sy+24;if(x+132>d.w)x=d.ox+p.x*d.sx-148;if(y+146>d.h)y=d.oy+p.y*d.sy-153;
+    const screenPoint=displayPoint(p,d);let x=screenPoint.x+24,y=screenPoint.y+24;if(x+132>d.w)x=screenPoint.x-148;if(y+146>d.h)y=screenPoint.y-153;
     el.style.left=clamp(x,5,d.w-135)+'px';el.style.top=clamp(y,5,d.h-145)+'px';el.hidden=false;
   }
   canvas.addEventListener('pointerdown',e=>{
@@ -589,7 +605,8 @@
       else if(state.capturing){if(state.draft){state.draft=null;state.gesture=null;paint();}else cancelCapture();}
       else if(p)pinAction(e.shiftKey?'destroy':'hide',p);
     }else if(state.settings.preset==='snipaste'&&e.key==='F1'||state.settings.preset==='xchat'&&mod&&e.shiftKey&&key==='a'){startCapture();}
-    else if(e.key==='F3')paste();
+    else if(mod&&e.shiftKey&&key==='p'&&p&&!state.capturing)pinAction('through',p);
+    else if(e.key==='F3'){state.pins.forEach(p=>{p.through=false;p.hidden=false;});persist();renderPins();toast('已恢复贴图与鼠标交互');}
     else if(state.capturing){
       if(mod&&key==='z'){if(e.shiftKey){cancelText();state.ops=[];state.undo=[];state.redo=[];state.draft=null;paint();}else commands.undo();}
       else if(mod&&key==='y')commands.redo();
@@ -635,5 +652,5 @@
   const captureEntry=document.getElementById('captureBtn');
   if(captureEntry)captureEntry.onclick=()=>{if(scenario)scenario.value='snipaste';enter();startCapture();};
   const params=new URLSearchParams(location.search);
-  if(['capture','snipaste'].includes(params.get('review'))){if(scenario)scenario.value='snipaste';enter();if(params.get('focus')==='text')startCapture('text-demo');}
+  if(['capture','snipaste'].includes(params.get('review'))){if(scenario)scenario.value='snipaste';enter();if(params.get('focus')==='pin'){const p=state.pins.find(p=>!p.hidden&&p.group===state.group);if(p)showPinMenu(p,p.x+pinDimensions(p).w+12,p.y);}else if(params.get('focus')==='text')startCapture('text-demo');else if(directFlow)startCapture();}
 })();

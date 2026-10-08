@@ -1595,7 +1595,7 @@ export class TauriAdapter {
 
   async finishCapture(dataUrl, { conversationId } = {}) {
     const view = new URLSearchParams(globalThis.location?.search || "").get("view");
-    if (view === "capture-editor" || view === "capture-pin") {
+    if (view === "capture-editor" || view?.startsWith("capture-pin")) {
       return this.invoke("finish_capture_editor", { dataUrl });
     }
     if (!conversationId) throw new TransportError(uiCopy("这张截图没有关联会话", "This capture has no conversation"), "capture_conversation_required", 0, false);
@@ -3055,10 +3055,10 @@ export function createXChatModule() {
     const pending = Object.hasOwn(action, "conversationId") ? null : await Promise.resolve(adapter.pendingCapture()).catch(() => null);
     const width = Number(action.width) || previous?.width || pending?.width || 1;
     const height = Number(action.height) || previous?.height || pending?.height || 1;
-    const view = previous?.view || normalizePinView({
+    const view = previous?.view || (action.view ? normalizePinView(action.view) : normalizePinView({
       scale: Math.min(1, Math.max(.1, ((globalThis.innerWidth || width + 120) - 120) / width), Math.max(.1, ((globalThis.innerHeight || height + 160) - 160) / height)),
       group: captureSettings().group,
-    });
+    }));
     const content = { data_url: action.dataUrl, width, height, document: action.document || previous?.document,
       conversation_id: Object.hasOwn(action, "conversationId") ? action.conversationId : previous?.conversation_id ?? pending?.conversation_id ?? null,
       source_session_id: action.sourceSessionId || previous?.source_session_id,
@@ -3075,7 +3075,7 @@ export function createXChatModule() {
     // Persist the editable document first so the new window can load it immediately.
     const { record, previous } = await storePinOutput(action);
     try {
-      const result = await adapter.pinCapture(record.data_url, record.id, adapter.runtime === "tauri" && !previous ? undefined : record.view, record.conversation_id, action.sourceSessionId);
+      const result = await adapter.pinCapture(record.data_url, record.id, adapter.runtime === "tauri" && !previous && !action.view ? undefined : record.view, record.conversation_id, action.sourceSessionId);
       return { ...result, pin_id: record.id, record };
     } catch (error) {
       if (previous) await patchCaptureRecord(record.id, { data_url: previous.data_url, document: previous.document, width: previous.width, height: previous.height, conversation_id: previous.conversation_id, source_session_id: previous.source_session_id });
@@ -3087,7 +3087,7 @@ export function createXChatModule() {
   const nativePinExists = async (id) => {
     if (adapter.runtime !== "tauri") return true;
     const requested = new URLSearchParams(globalThis.location?.search || "").get("view");
-    if (requested === "capture-pin") return true;
+    if (requested?.startsWith("capture-pin")) return true;
     return (await adapter.listPinnedCaptures()).some(item => (item.pin_id || item.session_id) === id);
   };
 
@@ -3593,8 +3593,16 @@ export function createXChatModule() {
         return openStoredPin(action);
       case "capture.pin.update":
         return updateStoredPin(action);
-      case "capture.pin.list":
-        return adapter.listPinnedCaptures();
+      case "capture.pin.overlay.open":
+        return adapter.invoke("open_pinned_capture_overlay", { pinId: action.pinId, mode: action.mode, x: action.x, y: action.y });
+      case "capture.pin.overlay.ready":
+        return adapter.invoke("ready_pinned_capture_overlay");
+      case "capture.pin.overlay.close":
+        return adapter.invoke("close_pinned_capture_overlay", { pinId: action.pinId, mode: action.mode });
+        case "capture.pin.list":
+          return adapter.listPinnedCaptures();
+        case "capture.pin.recover":
+          return adapter.invoke("recover_pinned_captures");
       case "capture.pin.restore": {
         const record = await requiredPin(action.pinId);
         const live = adapter.runtime === "tauri"
@@ -3638,9 +3646,6 @@ export function createXChatModule() {
         return adapter.readCaptureClipboard();
       case "capture.color.copy":
         return adapter.writeCaptureText(String(action.text || ""));
-      case "capture.workspace":
-        globalThis.dispatchEvent?.(new CustomEvent("xchat-capture-workspace", { detail: { panel: action.panel || "pins" } }));
-        return;
       case "attention.clear":
         return adapter.stopAttention();
       case "strongReminder.dismiss":

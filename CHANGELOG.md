@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.12 - 2026-10-08
+
+### Changes
+
+- Open region selection directly from the capture button and shortcut, removing the capture workspace page.
+- Remove the pin menu's group selector and green focus outline; show click-through and recovery shortcuts in the menu.
+
+### Fixes
+
+- Pin captured regions at their original screen position and size, accounting for display scaling and native window borders.
+- Preserve position, zoom, rotation, flips, and crop when annotating an existing pin.
+- Keep pin windows stable when opening or dismissing menus, avoiding flicker, movement, and extra transparent height.
+- Restore hidden or click-through pins with F3; reopening the app also restores mouse interaction with click-through pins.
+
+### Performance
+
+- Preload and reuse pin menu windows, refreshing view settings without reloading image or annotation data on each right click.
+
+### Tests
+
+- Add coordinate regressions for scaled displays, rotated and cropped pins, flips, and negative monitor origins.
+- Verify native Windows pin placement, annotation round trips, repeated menu interactions, recovery, and menu reuse.
+
 ## 0.1.11 - 2026-10-08
 
 ### Features

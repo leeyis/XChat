@@ -22,13 +22,55 @@ export function captureView(image, viewport) {
   return { scale, x: (viewport.width - image.width * scale) / 2, y: (viewport.height - image.height * scale) / 2 };
 }
 export function capturePoint(point, view) {
+  if (view.matrix) {
+    const [a, b, c, d, x, y] = view.matrix, determinant = a * d - b * c;
+    return { x: (d * (point.x - x) - c * (point.y - y)) / determinant, y: (a * (point.y - y) - b * (point.x - x)) / determinant };
+  }
   return { x: (point.x - view.x) / view.scale, y: (point.y - view.y) / view.scale };
 }
+export function captureDisplayPoint(point, view) {
+  if (view.matrix) {
+    const [a, b, c, d, x, y] = view.matrix;
+    return { x: a * point.x + c * point.y + x, y: b * point.x + d * point.y + y };
+  }
+  return { x: view.x + point.x * view.scale, y: view.y + point.y * view.scale };
+}
 export function captureDisplayRect(rect, view) {
+  if (view.matrix) {
+    const points = [[0, 0], [1, 0], [1, 1], [0, 1]].map(([x, y]) => captureDisplayPoint({ x: rect.x + rect.width * x, y: rect.y + rect.height * y }, view));
+    const x = Math.min(...points.map(point => point.x)), y = Math.min(...points.map(point => point.y));
+    return { x, y, width: Math.max(...points.map(point => point.x)) - x, height: Math.max(...points.map(point => point.y)) - y };
+  }
   return { x: view.x + rect.x * view.scale, y: view.y + rect.y * view.scale, width: rect.width * view.scale, height: rect.height * view.scale };
+}
+// Keep an existing pin anchored when its annotation tools open on another surface.
+// The document can contain a crop of a much larger, original screenshot.
+export function pinnedCaptureView(region, suppliedView, bounds) {
+  const pin = normalizePinView(suppliedView), ratio = Number(bounds.pixelRatio) || 1;
+  const swap = pin.rotation % 180 === 90, width = swap ? region.height : region.width, height = swap ? region.width : region.height;
+  const scale = pin.thumbnail ? Math.min(160 / width, 120 / height, pin.scale / ratio) : pin.scale / ratio;
+  const [cos, sin] = [[1, 0], [0, 1], [-1, 0], [0, -1]][pin.rotation / 90];
+  const a = cos * scale * pin.flipX, b = sin * scale * pin.flipX, c = -sin * scale * pin.flipY, d = cos * scale * pin.flipY;
+  const centerX = region.x + region.width / 2, centerY = region.y + region.height / 2;
+  const x = bounds.x + width * scale / 2 - a * centerX - c * centerY;
+  const y = bounds.y + height * scale / 2 - b * centerX - d * centerY;
+  return { scale, x, y, matrix: [a, b, c, d, x, y] };
+}
+export function captureSelectionPinView(region, image, view, origin = { x: 0, y: 0 }, pixelRatio = 1, group = "默认") {
+  const display = captureDisplayRect(captureCrop(region, image), view);
+  return normalizePinView({ x: Math.round(origin.x + display.x * pixelRatio), y: Math.round(origin.y + display.y * pixelRatio), scale: view.scale * pixelRatio, group });
 }
 export function captureTextEditorPlacement(anchor, layout, view, viewport) {
   const margin = 14, scale = view.scale;
+  if (view.matrix) {
+    const [a, b, c, d] = view.matrix, swap = Math.abs(b) > Math.abs(a);
+    const sourceWidth = Math.min(Math.max(layout.size * 5, layout.width + 8 / scale), Math.max(1, (swap ? viewport.height : viewport.width) - margin * 2) / scale);
+    const sourceHeight = Math.min(Math.max(layout.lineHeight, layout.height), Math.max(layout.lineHeight, ((swap ? viewport.width : viewport.height) - margin * 2) / scale));
+    const bounds = captureDisplayRect({ ...anchor, width: sourceWidth, height: sourceHeight }, view), point = captureDisplayPoint(anchor, view);
+    const left = clampCapture(bounds.x, margin, Math.max(margin, viewport.width - bounds.width - margin));
+    const top = clampCapture(bounds.y, margin, Math.max(margin, viewport.height - bounds.height - margin));
+    return { left, top, width: bounds.width, height: bounds.height, sourceWidth, sourceHeight, transform: `matrix(${a},${b},${c},${d},${point.x - bounds.x},${point.y - bounds.y})`, relocated: Math.abs(left - bounds.x) > 1 || Math.abs(top - bounds.y) > 1 };
+  }
   const width = Math.min(Math.max(layout.size * 5, layout.width + 8 / scale), Math.max(1, viewport.width - margin * 2) / scale);
   const height = Math.min(Math.max(layout.lineHeight, layout.height), Math.max(layout.lineHeight, (viewport.height - 150) / scale));
   const actualX = view.x + anchor.x * scale, actualY = view.y + anchor.y * scale;

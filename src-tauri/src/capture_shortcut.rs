@@ -85,7 +85,7 @@ fn replace_registered_shortcut(
 pub fn register(app: &AppHandle, label: &str) -> Result<(), String> {
     let next = native_capture_shortcut(label)?;
     if next == "F3" || next == "Shift+F3" {
-        return Err("F3 已用于贴图管理，请选择其他截图快捷键".to_string());
+        return Err("F3 已用于恢复贴图，请选择其他截图快捷键".to_string());
     }
     let state = app.state::<CaptureShortcutState>();
     let mut current = state
@@ -117,14 +117,14 @@ pub fn handle_shortcut(
     if event.state != ShortcutState::Pressed {
         return;
     }
-    let workspace = shortcut.matches(Modifiers::empty(), Code::F3);
+    let recover = shortcut.matches(Modifiers::empty(), Code::F3);
     let toggle_group = shortcut.matches(Modifiers::SHIFT, Code::F3);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let result = if toggle_group {
             crate::capture_editor::toggle_pin_group(&app).await
-        } else if workspace {
-            crate::capture_editor::open_workspace(&app)
+        } else if recover {
+            crate::capture_editor::recover_pins(&app).await.map(|_| ())
         } else if crate::capture_editor::cancel_start(&app, None).unwrap_or(false) {
             Ok(())
         } else {

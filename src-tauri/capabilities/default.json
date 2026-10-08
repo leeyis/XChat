@@ -108,6 +108,7 @@
     "allow-write-capture-text",
     "allow-update-pinned-capture",
     "allow-list-pinned-captures",
+    "allow-recover-pinned-captures",
     "allow-pin-capture",
     "allow-copy-pinned-capture",
     "allow-save-pinned-capture",

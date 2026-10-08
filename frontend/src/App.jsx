@@ -1214,7 +1214,7 @@ function formatTime(timestamp, locale) {
 function appVersion() {
   return typeof globalThis.__XCHAT_VERSION__ === "string" && globalThis.__XCHAT_VERSION__
     ? globalThis.__XCHAT_VERSION__
-    : "0.1.11";
+    : "0.1.12";
 }
 
 function formatSize(bytes) {
@@ -3029,9 +3029,8 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
               <button
                 className="icon-button composer-tool"
                 onClick={() => workspace.dispatch({ type: "capture.start" })}
-                onContextMenu={(event) => { event.preventDefault(); workspace.dispatch({ type: "capture.workspace" }); }}
                 aria-label={labels.capture}
-                title={`${labels.capture} · ${labels.capture === copy["zh-CN"].capture ? "右键打开截图工作台" : "Right-click for capture workspace"}`}
+                title={labels.capture}
               >
                 <Icon name="capture" />
               </button>
@@ -5580,8 +5579,8 @@ function ConfirmModal({ confirm, labels, onClose }) {
 
 export default function App({ workspace }) {
   const requestedView = new URLSearchParams(globalThis.location?.search || "").get("view");
-  if (requestedView === "capture-editor" || requestedView === "capture-pin") {
-    return <CaptureEditor workspace={workspace} mode={requestedView === "capture-pin" ? "pin" : "editor"} />;
+  if (["capture-editor", "capture-pin", "capture-pin-menu", "capture-pin-edit"].includes(requestedView)) {
+    return <CaptureEditor workspace={workspace} mode={requestedView.replace("capture-", "")} />;
   }
   if (requestedView === "strong-reminder") return <StrongReminderWindow />;
   const state = useSyncExternalStore(workspace.subscribe, workspace.getSnapshot);

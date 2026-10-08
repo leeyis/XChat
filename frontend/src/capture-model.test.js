@@ -1,6 +1,31 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { captureView, capturePoint, captureDisplayRect, captureCrop, captureSizeOptions, captureTextEditorPlacement, stepCaptureSize, moveCaptureAnchor, normalizePinView } from "./capture-model.js";
+import { captureView, capturePoint, captureDisplayPoint, captureDisplayRect, captureCrop, captureSelectionPinView, captureSizeOptions, captureTextEditorPlacement, stepCaptureSize, moveCaptureAnchor, normalizePinView, pinnedCaptureView } from "./capture-model.js";
+
+test("pin annotation keeps its on-screen crop and pointer coordinates at every rotation and display density", () => {
+  const region = { x: 713, y: 321, width: 1280, height: 460 };
+  const point = { x: 821, y: 401 };
+  for (const pixelRatio of [1, 1.25, 1.5, 2]) for (const scale of [.375, 1, 2]) for (const rotation of [0, 90, 180, 270]) for (const flipX of [1, -1]) {
+    const view = pinnedCaptureView(region, { scale, rotation, flipX, flipY: -1 }, { x: 87.2, y: 146.4, pixelRatio });
+    const display = captureDisplayRect(region, view), recovered = capturePoint(captureDisplayPoint(point, view), view);
+    const swap = rotation % 180 === 90;
+    assert.ok(Math.abs(display.x - 87.2) < 1e-8);
+    assert.ok(Math.abs(display.y - 146.4) < 1e-8);
+    assert.ok(Math.abs(display.width - (swap ? 460 : 1280) * scale / pixelRatio) < 1e-8);
+    assert.ok(Math.abs(display.height - (swap ? 1280 : 460) * scale / pixelRatio) < 1e-8);
+    assert.ok(Math.abs(recovered.x - point.x) < 1e-8);
+    assert.ok(Math.abs(recovered.y - point.y) < 1e-8);
+  }
+});
+
+test("selection pin placement retains rounded crop pixels, letterboxing, and a negative monitor origin", () => {
+  const image = { width: 2880, height: 1800 }, view = captureView(image, { width: 1440, height: 1000 });
+  const pin = captureSelectionPinView({ x: 632.6, y: 299.6, width: 501.4, height: 230.8 }, image, view, { x: -1920, y: -120 }, 1.25, "设计参考");
+  assert.equal(pin.x, -1524);
+  assert.equal(pin.y, 130);
+  assert.equal(pin.scale, .625);
+  assert.equal(pin.group, "设计参考");
+});
 
 test("capture coordinates round trip under mixed scaling and letterboxing", () => {
   const image = { width: 2880, height: 2000 }, anchor = { x: 712.5, y: 843.75, width: 600, height: 90 };

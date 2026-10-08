@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { addCaptureOperation, createCaptureHistory, moveCaptureSelection, normalizeCaptureSelection, placeCaptureToolbar, redoCaptureOperation, removeCaptureOperation, replaceCaptureOperation, resizeCaptureSelection, undoCaptureOperation } from "./capture-drawing.js";
-import { CAPTURE_COLORS, CAPTURE_FONTS, CAPTURE_TOOLS, DEFAULT_TOOL_SIZES, captureDisplayRect, captureId, capturePoint, captureSizeOptions, captureTextEditorPlacement, captureView, clampCapture, constrainCapturePoint, insideCapture, moveCaptureAnchor, stepCaptureSize } from "./capture-model.js";
+import { CAPTURE_COLORS, CAPTURE_FONTS, CAPTURE_TOOLS, DEFAULT_TOOL_SIZES, captureCrop, captureDisplayPoint, captureDisplayRect, captureId, capturePoint, captureSelectionPinView, captureSizeOptions, captureTextEditorPlacement, captureView, clampCapture, constrainCapturePoint, insideCapture, moveCaptureAnchor, pinnedCaptureView, stepCaptureSize } from "./capture-model.js";
 import { captureCanvas, captureImage, captureTextAt, captureTextLayout, exportCapture, paintCaptureOperation, renderCaptureAnnotations } from "./capture-renderer.js";
 import { captureSettings, saveCaptureRecord, saveCaptureSettings } from "./capture-library.js";
 import { CAPTURE_ICONS } from "./capture-icons.js";
@@ -11,15 +11,16 @@ export function CaptureIcon({ name }) {
 }
 const handles = [["nw", 0, 0], ["n", .5, 0], ["ne", 1, 0], ["e", 1, .5], ["se", 1, 1], ["s", .5, 1], ["sw", 0, 1], ["w", 0, .5]];
 const clone = value => JSON.parse(JSON.stringify(value));
-export default function CaptureSurface({ workspace, pending: supplied, onClose, onPinUpdated, english = false }) {
+export default function CaptureSurface({ workspace, pending: supplied, onClose, onPinUpdated, onReady, english = false }) {
   const t = (zh, en) => english ? en : zh;
   const [state, setState] = useState(() => ({ pending: null, base: null, region: null, history: createCaptureHistory(), draft: null, editing: null, tool: "select", sizes: { ...DEFAULT_TOOL_SIZES }, color: CAPTURE_COLORS[0], fontFamily: CAPTURE_FONTS[0][0], busy: false, error: "", cursor: null, hover: null, toolsVisible: true, preview: false, alt: false, rgb: false, viewport: { width: innerWidth, height: innerHeight }, settings: captureSettings() }));
   const live = useRef(state), stage = useRef(null), canvas = useRef(null), textElement = useRef(null), toolbar = useRef(null), magnifier = useRef(null), gesture = useRef(null), wheel = useRef(0), previewTimer = useRef(null), composing = useRef(false), insertion = useRef(null), sourceRequest = useRef(null);
   const [toolbarSize, setToolbarSize] = useState({ width: 644, height: 82 });
   const update = patch => { live.current = { ...live.current, ...patch }; setState(live.current); };
   const history = next => update({ history: typeof next === "function" ? next(live.current.history) : next });
-  const view = state.base ? captureView(state.base, state.viewport) : { scale: 1, x: 0, y: 0 };
-  const sourcePoint = event => capturePoint({ x: event.clientX, y: event.clientY }, captureView(live.current.base, live.current.viewport));
+  const displayView = s => s.base ? s.pending?.edit_viewport ? pinnedCaptureView(s.pending.edit_region, s.pending.view, s.pending.edit_viewport) : captureView(s.base, s.viewport) : { scale: 1, x: 0, y: 0 };
+  const view = displayView(state);
+  const sourcePoint = event => capturePoint({ x: event.clientX, y: event.clientY }, displayView(live.current));
   const add = operation => history(current => addCaptureOperation(current, operation));
 
   function commitText() {
@@ -83,8 +84,14 @@ export default function CaptureSurface({ workspace, pending: supplied, onClose, 
       // Persist the editable snapshot before native output closes its window.
       await saveCaptureRecord(record);
       const pinId = s.pending.pin_id || captureId();
+      let pinView;
+      if (action === "pin" && !s.pending.pin_id) {
+        const current = globalThis.__TAURI__?.window?.getCurrentWindow?.();
+        const [origin, ratio] = current ? await Promise.all([current.innerPosition(), current.scaleFactor()]) : [{ x: 0, y: 0 }, 1];
+        pinView = captureSelectionPinView(s.region, s.base, displayView(s), origin, Number(ratio) || 1, s.settings.group);
+      }
       saveCaptureSettings({ lastRegion: { ...s.region, imageWidth: s.base.width, imageHeight: s.base.height } });
-      const result = await workspace.dispatch({ type: `capture.${action}`, dataUrl, document, pinId: action === "pin" ? pinId : s.pending.pin_id, conversationId: s.pending.conversation_id, sourceSessionId: s.pending.session_id, width: rendered.width, height: rendered.height });
+      const result = await workspace.dispatch({ type: `capture.${action}`, dataUrl, document, pinId: action === "pin" ? pinId : s.pending.pin_id, conversationId: s.pending.conversation_id, sourceSessionId: s.pending.session_id, width: rendered.width, height: rendered.height, view: pinView });
       if (!result.ok) throw new Error(result.error.message);
       if (action === "save" && result.data === null) { saveCaptureSettings({ lastRegion: previousRegion }); update({ busy: false }); return; }
       if (action === "finish" && result.data) {
@@ -122,8 +129,9 @@ export default function CaptureSurface({ workspace, pending: supplied, onClose, 
         base.getContext("2d").drawImage(image, 0, 0);
         const settings = captureSettings();
         let region = document?.region || (pending.pin_id ? { x: 0, y: 0, width: base.width, height: base.height } : null);
+        if (pending.edit_viewport && region) region = captureCrop(region, base);
         if (!region && settings.presetW > 0 && settings.presetH > 0) region = { x: 0, y: 0, width: Math.min(base.width, settings.presetW), height: Math.min(base.height, settings.presetH) };
-        update({ pending, base, region, history: { operations: document?.operations || [], undo: [], redo: [] }, settings });
+        update({ pending: pending.edit_viewport ? { ...pending, edit_region: clone(region) } : pending, base, region, history: { operations: document?.operations || [], undo: [], redo: [] }, settings });
       } catch (error) { if (!disposed) update({ error: error.message }); }
     })();
     const resize = () => update({ viewport: { width: innerWidth, height: innerHeight } });
@@ -150,7 +158,7 @@ export default function CaptureSurface({ workspace, pending: supplied, onClose, 
     } else context.drawImage(annotations.current, 0, 0);
     if (state.editing) {
       const layout = captureTextLayout(state.editing, context);
-      const placement = captureTextEditorPlacement(state.editing.start, layout, captureView(state.base, state.viewport), state.viewport);
+      const placement = captureTextEditorPlacement(state.editing.start, layout, view, state.viewport);
       if (placement.relocated) paintCaptureOperation(context, state.editing, state.base);
     }
     const r = state.region || state.hover;
@@ -163,6 +171,11 @@ export default function CaptureSurface({ workspace, pending: supplied, onClose, 
       context.fillRect(r.x + r.width, r.y, target.width - r.x - r.width, r.height);
     }
   }, [state.base, state.region, state.hover, state.history, state.draft, state.editing, state.viewport]);
+  useEffect(() => {
+    if (!state.base || !onReady) return undefined;
+    const frame = requestAnimationFrame(onReady), timer = setTimeout(onReady, 50);
+    return () => { cancelAnimationFrame(frame); clearTimeout(timer); };
+  }, [state.base, onReady]);
   useEffect(() => {
     const element = toolbar.current;
     if (!element) return;
@@ -343,13 +356,15 @@ export default function CaptureSurface({ workspace, pending: supplied, onClose, 
     placement.top = above >= 8 ? above : Math.min(editRect.top + editRect.height + 12, state.viewport.height - toolbarSize.height - 8);
   }
   const actionButton = (action, icon, label, disabled = false, className = "") => <button type="button" className={`cap-tool ${className}`} data-capture-action={action} title={label} aria-label={label} disabled={disabled || state.busy} onClick={() => action === "undo" || action === "redo" ? (commitText(), history(action === "undo" ? undoCaptureOperation(live.current.history) : redoCaptureOperation(live.current.history))) : action === "cancel" ? void close() : void output(action)}><CaptureIcon name={icon} /></button>;
-  return <section className="cap-root cap-is-capturing capture-production" aria-label={t("截图编辑器", "Capture editor")}>
+  const editRegion = state.pending?.edit_region;
+  const textStyle = editRect && { left: editRect.left, top: editRect.top, width: editRect.sourceWidth ?? editRect.width / view.scale, height: editRect.sourceHeight ?? editRect.height / view.scale, transform: editRect.transform || `scale(${view.scale})`, transformOrigin: "top left" };
+  return <section className={`cap-root cap-is-capturing capture-production${supplied?.edit_viewport ? " cap-pin-edit" : ""}`} aria-label={t("截图编辑器", "Capture editor")}>
     <div className="cap-desktop" ref={stage} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onContextMenu={contextMenu} onDoubleClick={event => { if (event.target === canvas.current && !live.current.editing && live.current.tool === "select") void output("copy"); }}>
       <div className="cap-capture">
-        <canvas ref={canvas} aria-label={t("截图画布", "Capture canvas")} style={state.base ? { left: view.x, top: view.y, width: state.base.width * view.scale, height: state.base.height * view.scale } : undefined} />
+        <canvas ref={canvas} aria-label={t("截图画布", "Capture canvas")} style={state.base ? view.matrix ? { left: 0, top: 0, width: state.base.width, height: state.base.height, transform: `matrix(${view.matrix.join(",")})`, transformOrigin: "top left", opacity: state.pending.view.opacity, clipPath: `inset(${editRegion.y}px ${state.base.width - editRegion.x - editRegion.width}px ${state.base.height - editRegion.y - editRegion.height}px ${editRegion.x}px)` } : { left: view.x, top: view.y, width: state.base.width * view.scale, height: state.base.height * view.scale } : undefined} />
         {display && <div className={`cap-selection${display.y < 30 ? " near-top" : ""}`} style={{ left: display.x, top: display.y, width: display.width, height: display.height }}>
           <span className="cap-dimensions">{Math.round(state.region.width)} × {Math.round(state.region.height)} px</span>
-          {handles.map(([handle, x, y]) => <i key={handle} className="cap-handle" data-handle={handle} style={{ left: `${x * 100}%`, top: `${y * 100}%`, cursor: `${handle}-resize` }} />)}
+          {handles.map(([handle, x, y]) => { const point = captureDisplayPoint({ x: state.region.x + state.region.width * x, y: state.region.y + state.region.height * y }, view); return <i key={handle} className="cap-handle" data-handle={handle} style={{ left: point.x - display.x, top: point.y - display.y, cursor: `${handle}-resize` }} />; })}
         </div>}
         {!display && <div className="cap-capture-hint">{state.base ? t("拖动框选 · 单击选择识别区域 · Ctrl+A 全选 · Esc 取消", "Drag to select · Click a detected region · Ctrl+A select all · Esc cancel") : t("正在读取截图…", "Loading capture…")}</div>}
         {display && state.toolsVisible && <div ref={toolbar} className="cap-tools" style={{ left: placement.left, top: placement.top }} role="toolbar" aria-label={t("截图工具", "Capture tools")}>
@@ -367,7 +382,7 @@ export default function CaptureSurface({ workspace, pending: supplied, onClose, 
               <span className="cap-wheel-hint">{t("滚轮调节", "Scroll to adjust")}</span></div>}
             <button type="button" className="cap-selection-reset" onClick={() => { commitText(); finishPolyline(); update({ region: null, tool: "select" }); }}>{t("重新框选", "Select again")}</button>
           </div></div>}
-        {editLayout && <><textarea ref={textElement} className={`cap-text-editor${editRect.relocated ? " relocated" : ""}`} data-anchor-x={state.editing.start.x} data-anchor-y={state.editing.start.y} aria-label={t("编辑标注文字，回车换行，点击外部完成，Delete 删除标注", "Edit annotation; Enter for new line; click outside to finish; Delete removes annotation")} spellCheck={false} wrap="off" value={state.editing.text} style={{ left: editRect.left, top: editRect.top, width: editRect.width / view.scale, height: editRect.height / view.scale, transform: `scale(${view.scale})`, transformOrigin: "top left", font: editLayout.font, lineHeight: `${editLayout.lineHeight}px`, color: state.editing.color }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onSelect={event => { insertion.current = [event.target.selectionStart, event.target.selectionEnd, event.target.selectionDirection]; }} onChange={event => update({ editing: { ...live.current.editing, text: event.target.value } })} /><div className={`cap-text-frame${gesture.current?.kind === "text" && gesture.current.moved ? " dragging" : ""}`} style={{ left: editRect.left, top: editRect.top, width: editRect.width, height: editRect.height }}>{["top", "right", "bottom", "left"].map(edge => <span key={edge} className={`cap-text-edge ${edge}`} data-text-edge={edge} title={t("拖动边框移动文字", "Drag border to move text")} />)}</div></>}
+        {editLayout && <><textarea ref={textElement} className={`cap-text-editor${editRect.relocated ? " relocated" : ""}`} data-anchor-x={state.editing.start.x} data-anchor-y={state.editing.start.y} aria-label={t("编辑标注文字，回车换行，点击外部完成，Delete 删除标注", "Edit annotation; Enter for new line; click outside to finish; Delete removes annotation")} spellCheck={false} wrap="off" value={state.editing.text} style={{ ...textStyle, font: editLayout.font, lineHeight: `${editLayout.lineHeight}px`, color: state.editing.color }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onSelect={event => { insertion.current = [event.target.selectionStart, event.target.selectionEnd, event.target.selectionDirection]; }} onChange={event => update({ editing: { ...live.current.editing, text: event.target.value } })} /><div className={`cap-text-frame${gesture.current?.kind === "text" && gesture.current.moved ? " dragging" : ""}`} style={textStyle}>{["top", "right", "bottom", "left"].map(edge => <span key={edge} className={`cap-text-edge ${edge}`} data-text-edge={edge} title={t("拖动边框移动文字", "Drag border to move text")} />)}</div></>}
         {(state.settings.magnifier || state.alt) && state.cursor && (!state.region || state.tool === "select" || state.alt) && !state.editing && <div className="cap-magnifier" style={{ left: clampCapture(state.cursor.x + 20, 8, state.viewport.width - 138), top: clampCapture(state.cursor.y + 20, 8, state.viewport.height - 155) }}><canvas ref={magnifier} width="128" height="96" /><p>{state.cursor.source.x}, {state.cursor.source.y}<br />{state.rgb ? state.cursor.rgb : state.cursor.color.toUpperCase()} · C {t("复制色值", "copy color")}</p></div>}
         {state.preview && state.cursor && <div className="cap-size-preview" style={{ left: clampCapture(state.cursor.x + 16, 8, state.viewport.width - 145), top: clampCapture(state.cursor.y + 20, 8, state.viewport.height - 48) }}><i style={{ width: Math.min(size, 28), height: Math.min(size, 28), background: state.color }} /><span>{t(range.zh, range.en)} {size} px</span></div>}
         {state.error && <div className="cap-error" role="alert"><span>{state.error}</span><button type="button" onClick={() => update({ error: "" })}>{t("关闭提示", "Dismiss")}</button>{!state.base && <button type="button" onClick={() => void close()}>{t("退出截图", "Cancel capture")}</button>}</div>}

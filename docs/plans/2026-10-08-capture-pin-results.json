@@ -1,0 +1,101 @@
+{
+  "environment": {
+    "platform": "Windows",
+    "scaleFactor": 1.25,
+    "appIdentifier": "com.xchat.pinqa20261008"
+  },
+  "menus": [
+    {
+      "case": "20 cached menu open/blank-dismiss cycles",
+      "nativeEvents": [],
+      "latenciesMs": [
+        56,
+        42,
+        42,
+        45,
+        49,
+        36,
+        31,
+        29,
+        31,
+        30,
+        28,
+        27,
+        28,
+        27,
+        28,
+        29,
+        26,
+        31,
+        30,
+        29
+      ],
+      "min": 26,
+      "max": 56,
+      "median": 30,
+      "sameWindow": true,
+      "noGreenOutline": true,
+      "noGroupOption": true
+    }
+  ],
+  "actions": [
+    {
+      "case": "mouse-through menu and F3 recovery handler",
+      "recovered": 1,
+      "sameGeometry": true
+    },
+    {
+      "case": "cached menu refreshes current shadow setting",
+      "checked": "false"
+    },
+    {
+      "case": "annotate existing crop and save in place",
+      "sameGeometry": true,
+      "operations": 1
+    },
+    {
+      "case": "cached menu destroys its own pin",
+      "allClosed": true
+    }
+  ],
+  "final": [
+    {
+      "case": "hide and F3 restore keeps cached menu",
+      "sameMenu": true,
+      "sameGeometry": true
+    },
+    {
+      "case": "capture cancellation never reopens old context menu",
+      "menuHidden": true,
+      "sameGeometry": true
+    },
+    {
+      "case": "final native selection placement",
+      "expected": {
+        "x": 700,
+        "y": 400,
+        "width": 500,
+        "height": 300
+      },
+      "actual": {
+        "position": {
+          "type": "Physical",
+          "x": 700,
+          "y": 400
+        },
+        "outer": {
+          "type": "Physical",
+          "x": 691,
+          "y": 399
+        },
+        "size": {
+          "type": "Physical",
+          "width": 500,
+          "height": 300
+        },
+        "ratio": 1.25
+      },
+      "exact": true
+    }
+  ]
+}

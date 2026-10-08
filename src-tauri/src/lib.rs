@@ -158,7 +158,15 @@ pub fn run() {
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::update_pinned_capture,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            commands::open_pinned_capture_overlay,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            commands::ready_pinned_capture_overlay,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            commands::close_pinned_capture_overlay,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::list_pinned_captures,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            commands::recover_pinned_captures,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::set_capture_pin_group,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]

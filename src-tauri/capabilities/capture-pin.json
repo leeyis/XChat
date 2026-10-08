@@ -26,6 +26,8 @@
     "allow-read-capture-clipboard",
     "allow-write-capture-text",
     "allow-update-pinned-capture",
+    "allow-open-pinned-capture-overlay",
+    "allow-close-pinned-capture-overlay",
     "allow-finish-capture-editor",
     "allow-save-capture-editor",
     "core:window:allow-current-monitor",

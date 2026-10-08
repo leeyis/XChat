@@ -12,6 +12,8 @@ use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 
 const PIN_PREFIX: &str = "capture-pin-";
+const PIN_MENU_PREFIX: &str = "capture-menu-";
+const PIN_EDIT_PREFIX: &str = "capture-edit-";
 
 struct CaptureTrace {
     scope: &'static str,
@@ -151,6 +153,7 @@ struct CaptureReturnState {
 struct CaptureState {
     editor: Option<CaptureFile>,
     pins: BTreeMap<String, PinnedCapture>,
+    pin_overlays: BTreeMap<String, PinOverlay>,
     restore: Option<CaptureReturnState>,
     starting: bool,
     starting_id: Option<String>,
@@ -328,6 +331,24 @@ pub struct PendingCapture {
     pub pin_id: Option<String>,
     pub view: Option<PinView>,
     pub regions: Vec<CaptureRegion>,
+    pub edit_viewport: Option<PinEditViewport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PinEditViewport {
+    x: f64,
+    y: f64,
+    pixel_ratio: f64,
+}
+
+#[derive(Clone)]
+struct PinOverlay {
+    pin_id: String,
+    mode: String,
+    edit_viewport: Option<PinEditViewport>,
+    ready: bool,
+    requested: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -382,7 +403,13 @@ fn validated_pin_id(id: &str) -> Result<String, String> {
 }
 /// A pin window can never address another pin, even when a caller supplies an ID.
 fn scoped_pin_id(caller: &str, requested: Option<&str>) -> Result<String, String> {
-    if let Some(own_id) = caller.strip_prefix(PIN_PREFIX) {
+    let own_id = caller.strip_prefix(PIN_PREFIX).or_else(|| {
+        caller
+            .strip_prefix(PIN_MENU_PREFIX)
+            .or_else(|| caller.strip_prefix(PIN_EDIT_PREFIX))
+            .and_then(|suffix| suffix.get(..36))
+    });
+    if let Some(own_id) = own_id {
         let own_id = validated_pin_id(own_id)?;
         if requested.is_some_and(|id| id != own_id) {
             return Err("当前窗口无权操作其他贴图".to_string());
@@ -460,6 +487,10 @@ fn restore_capture_windows(app: &tauri::AppHandle, session_id: &str) -> Result<(
         return Ok(());
     };
     for label in &restore.tools {
+        // A context menu dismissed for capture must stay dismissed afterwards.
+        if label.starts_with(PIN_MENU_PREFIX) {
+            continue;
+        }
         let should_show = if let Some(id) = label.strip_prefix(PIN_PREFIX) {
             let state = lock_state()?;
             state.pins.get(id).is_some_and(|pin| {
@@ -511,13 +542,6 @@ fn show_main(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
     main.set_focus()
         .map_err(|error| format!("聚焦主窗口失败: {error}"))?;
     Ok(main)
-}
-
-/// F3 always offers a reachable management surface, including for click-through pins.
-pub fn open_workspace(app: &tauri::AppHandle) -> Result<(), String> {
-    show_main(app)?
-        .emit("capture-workspace", serde_json::json!({"panel": "pins"}))
-        .map_err(|error| format!("打开贴图管理失败: {error}"))
 }
 
 #[cfg(target_os = "macos")]
@@ -1381,15 +1405,30 @@ pub async fn pending_for_window(caller: &str) -> Result<PendingCapture, String> 
         let pin = pinned(caller, None)?;
         (pin.capture, Some(pin.view))
     };
+    let edit_viewport = lock_state()?
+        .pin_overlays
+        .get(caller)
+        .and_then(|overlay| overlay.edit_viewport.clone());
     trace.mark("state");
-    let bytes = tokio::fs::read(&capture.path)
-        .await
-        .map_err(|error| format!("截图已不可用: {error}"))?;
+    // A menu only needs the view settings, never the PNG or editable document.
+    let bytes = if caller.starts_with(PIN_MENU_PREFIX) {
+        Vec::new()
+    } else {
+        tokio::fs::read(&capture.path)
+            .await
+            .map_err(|error| format!("截图已不可用: {error}"))?
+    };
     trace.mark("read_png");
     tokio::task::spawn_blocking(move || {
-        png_dimensions(&bytes)?;
+        if !bytes.is_empty() {
+            png_dimensions(&bytes)?;
+        }
         trace.mark("png_header");
-        let data_url = data_url(PNG_MIME, &bytes);
+        let data_url = if bytes.is_empty() {
+            String::new()
+        } else {
+            data_url(PNG_MIME, &bytes)
+        };
         trace.mark("base64");
         Ok(PendingCapture {
             pin_id: view.as_ref().map(|_| capture.session_id.clone()),
@@ -1403,6 +1442,7 @@ pub async fn pending_for_window(caller: &str) -> Result<PendingCapture, String> 
             width: capture.width,
             height: capture.height,
             regions: capture.regions,
+            edit_viewport,
         })
     })
     .await
@@ -1418,6 +1458,366 @@ pub fn list_pins(caller: &str) -> Result<Vec<CaptureSessionSummary>, String> {
         .values()
         .map(|pin| capture_summary(&pin.capture, Some(pin.view.clone())))
         .collect())
+}
+
+/// Menus and annotation tools get their own surface; the image window never
+/// changes its frame, position, or size merely to make room for controls.
+pub async fn open_pin_overlay(
+    app: &tauri::AppHandle,
+    caller: &str,
+    pin_id: Option<&str>,
+    mode: &str,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    prepare_pin_overlay(app, caller, pin_id, mode, x, y, true).await
+}
+
+fn preload_pin_menu(app: &tauri::AppHandle, id: &str) {
+    let app = app.clone();
+    let id = id.to_string();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) =
+            prepare_pin_overlay(&app, "main", Some(&id), "menu", 0.0, 0.0, false).await
+        {
+            eprintln!("[CapturePin] 预加载菜单失败: {error}");
+        }
+    });
+}
+
+async fn prepare_pin_overlay(
+    app: &tauri::AppHandle,
+    caller: &str,
+    pin_id: Option<&str>,
+    mode: &str,
+    x: f64,
+    y: f64,
+    requested: bool,
+) -> Result<(), String> {
+    if !matches!(mode, "menu" | "edit") || !x.is_finite() || !y.is_finite() {
+        return Err("贴图浮层参数无效".to_string());
+    }
+    let id = scoped_pin_id(caller, pin_id)?;
+    let _operation = pin_operations().lock().await;
+    let pin = pinned(caller, Some(&id))?;
+    let parent = app
+        .get_webview_window(&format!("{PIN_PREFIX}{id}"))
+        .ok_or_else(|| "贴图窗口不可用".to_string())?;
+    let old = lock_state()?
+        .pin_overlays
+        .iter()
+        .filter(|(_, overlay)| overlay.pin_id == id)
+        .map(|(label, overlay)| (label.clone(), overlay.mode.clone()))
+        .collect::<Vec<_>>();
+    let mut cached_menu = None;
+    for (label, previous_mode) in old {
+        if previous_mode == "edit" {
+            if let Some(window) = app.get_webview_window(&label).filter(|_| requested) {
+                window.set_focus().map_err(|error| error.to_string())?;
+            }
+            return Ok(());
+        }
+        if mode == "menu" {
+            if !requested {
+                return Ok(());
+            }
+            cached_menu = app.get_webview_window(&label);
+        } else {
+            close_pin_overlay_window_locked(app, &label).await?;
+        }
+    }
+    let position = parent.inner_position().map_err(|error| error.to_string())?;
+    let monitor = parent
+        .current_monitor()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "当前显示器不可用".to_string())?;
+    let factor = monitor.scale_factor();
+    let (left, top, width, height, edit_viewport) = if mode == "edit" {
+        (
+            monitor.position().x,
+            monitor.position().y,
+            monitor.size().width,
+            monitor.size().height,
+            Some(PinEditViewport {
+                x: (position.x - monitor.position().x) as f64 / factor,
+                y: (position.y - monitor.position().y) as f64 / factor,
+                pixel_ratio: factor,
+            }),
+        )
+    } else {
+        let width = (268.0 * factor).round() as u32;
+        let height = (530.0 * factor).round() as u32;
+        let left = (position.x as f64 + x * factor).round() as i32;
+        let top = (position.y as f64 + y * factor).round() as i32;
+        (
+            left.clamp(
+                monitor.position().x,
+                (monitor.position().x + monitor.size().width as i32 - width as i32)
+                    .max(monitor.position().x),
+            ),
+            top.clamp(
+                monitor.position().y,
+                (monitor.position().y + monitor.size().height as i32 - height as i32)
+                    .max(monitor.position().y),
+            ),
+            width.min(monitor.size().width),
+            height.min(monitor.size().height),
+            None,
+        )
+    };
+    if let Some(window) = cached_menu {
+        window
+            .set_position(tauri::PhysicalPosition::new(left, top))
+            .and_then(|_| window.set_size(tauri::PhysicalSize::new(width, height)))
+            .map_err(|error| error.to_string())?;
+        if let Some(overlay) = lock_state()?.pin_overlays.get_mut(window.label()) {
+            overlay.requested = true;
+        }
+        // The existing renderer acknowledges the updated controls before showing.
+        // No new WebView, image decoding or document load is on the click path.
+        window
+            .emit(
+                "capture-pin-menu-open",
+                capture_summary(&pin.capture, Some(pin.view)),
+            )
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    let prefix = if mode == "menu" {
+        PIN_MENU_PREFIX
+    } else {
+        PIN_EDIT_PREFIX
+    };
+    let label = format!("{prefix}{id}-{}", uuid::Uuid::new_v4());
+    let window = WebviewWindowBuilder::new(
+        app,
+        &label,
+        WebviewUrl::App(format!("index.html?view=capture-pin-{mode}&pinId={id}").into()),
+    )
+    .title(if mode == "menu" {
+        "XChat 贴图操作"
+    } else {
+        "XChat 贴图标注"
+    })
+    .inner_size(width as f64 / factor, height as f64 / factor)
+    .decorations(false)
+    .transparent(true)
+    .resizable(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .shadow(false)
+    .visible(false)
+    .focused(false)
+    .build()
+    .map_err(|error| format!("打开贴图浮层失败: {error}"))?;
+    let prepared = window
+        .set_position(tauri::PhysicalPosition::new(left, top))
+        .and_then(|_| window.set_size(tauri::PhysicalSize::new(width, height)));
+    if let Err(error) = prepared {
+        let _ = window.destroy();
+        return Err(error.to_string());
+    }
+    lock_state()?.pin_overlays.insert(
+        label.clone(),
+        PinOverlay {
+            pin_id: id.clone(),
+            mode: mode.to_string(),
+            edit_viewport,
+            ready: false,
+            requested,
+        },
+    );
+    if mode == "edit" {
+        lock_state()?
+            .pins
+            .get_mut(&id)
+            .ok_or_else(|| "贴图已不存在".to_string())?
+            .overlay = true;
+        if let Err(error) = parent.set_ignore_cursor_events(true) {
+            lock_state()?.pin_overlays.remove(&label);
+            if let Some(pin) = lock_state()?.pins.get_mut(&id) {
+                pin.overlay = false;
+            }
+            let _ = window.destroy();
+            return Err(error.to_string());
+        }
+    }
+    let handle = app.clone();
+    let event_label = label.clone();
+    let menu = mode == "menu";
+    window.on_window_event(move |event| {
+        let dismiss = menu
+            && matches!(event, tauri::WindowEvent::Focused(false))
+            && lock_state()
+                .ok()
+                .and_then(|state| {
+                    state
+                        .pin_overlays
+                        .get(&event_label)
+                        .map(|overlay| overlay.ready && overlay.requested)
+                })
+                .unwrap_or(false);
+        if matches!(event, tauri::WindowEvent::Destroyed) || dismiss {
+            let handle = handle.clone();
+            let label = event_label.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = close_pin_overlay_window(&handle, &label).await {
+                    eprintln!("关闭贴图浮层失败: {error}");
+                }
+            });
+        }
+    });
+    // A failed WebView load must not leave the original pin unreachable.
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        let failed = lock_state()
+            .ok()
+            .and_then(|state| state.pin_overlays.get(&label).map(|overlay| !overlay.ready))
+            .unwrap_or(false);
+        if failed {
+            let _ = close_pin_overlay_window(&handle, &label).await;
+            if let Ok(mut state) = lock_state() {
+                state.pin_overlays.remove(&label);
+            }
+            if let Some(window) = handle.get_webview_window(&label) {
+                let _ = window.destroy();
+            }
+        }
+    });
+    Ok(())
+}
+
+pub async fn ready_pin_overlay(app: &tauri::AppHandle, caller: &str) -> Result<(), String> {
+    let _operation = pin_operations().lock().await;
+    let overlay = lock_state()?
+        .pin_overlays
+        .get(caller)
+        .cloned()
+        .ok_or_else(|| "贴图浮层已关闭".to_string())?;
+    if !overlay.requested {
+        if let Some(overlay) = lock_state()?.pin_overlays.get_mut(caller) {
+            overlay.ready = true;
+        }
+        return Ok(());
+    }
+    let window = app
+        .get_webview_window(caller)
+        .ok_or_else(|| "贴图浮层不可用".to_string())?;
+    let parent = app.get_webview_window(&format!("{PIN_PREFIX}{}", overlay.pin_id));
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move || {
+        let result = (|| {
+            window.show().map_err(|error| error.to_string())?;
+            if overlay.mode == "edit" {
+                if let Some(parent) = parent {
+                    parent.hide().map_err(|error| error.to_string())?;
+                }
+            }
+            window.set_focus().map_err(|error| error.to_string())
+        })();
+        let _ = sender.send(result);
+    })
+    .map_err(|error| error.to_string())?;
+    receiver.await.map_err(|error| error.to_string())??;
+    if let Some(overlay) = lock_state()?.pin_overlays.get_mut(caller) {
+        overlay.ready = true;
+    }
+    Ok(())
+}
+
+async fn close_pin_overlay_window(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
+    let _operation = pin_operations().lock().await;
+    close_pin_overlay_window_locked(app, label).await
+}
+
+async fn close_pin_overlay_window_locked(
+    app: &tauri::AppHandle,
+    label: &str,
+) -> Result<(), String> {
+    let Some(overlay) = lock_state()?.pin_overlays.get(label).cloned() else {
+        return Ok(());
+    };
+    let pin = lock_state()?.pins.get(&overlay.pin_id).cloned();
+    let parent = app.get_webview_window(&format!("{PIN_PREFIX}{}", overlay.pin_id));
+    if overlay.mode == "menu" {
+        if let Some(current) = lock_state()?.pin_overlays.get_mut(label) {
+            current.requested = false;
+        }
+        if let Some(window) = app.get_webview_window(label) {
+            window.hide().map_err(|error| error.to_string())?;
+        } else {
+            lock_state()?.pin_overlays.remove(label);
+        }
+        if let Some(parent) = parent {
+            let _ = parent.emit("capture-pin-menu-closed", ());
+        }
+        return Ok(());
+    }
+    if overlay.mode == "edit" {
+        if let (Some(pin), Some(parent)) = (&pin, &parent) {
+            // Apply an intentional crop change while the original window is hidden.
+            apply_pin_geometry(parent, &pin.capture, &pin.view, false)?;
+        }
+    }
+    lock_state()?.pin_overlays.remove(label);
+    if overlay.mode == "menu" {
+        if let Some(parent) = &parent {
+            let _ = parent.emit("capture-pin-menu-closed", ());
+        }
+    }
+    if overlay.mode == "edit" {
+        if let Some(pin) = lock_state()?.pins.get_mut(&overlay.pin_id) {
+            pin.overlay = false;
+        }
+    }
+    let window = app.get_webview_window(label);
+    let visible = pin.as_ref().is_some_and(|pin| {
+        pin_is_visible(&pin.view, &active_group().unwrap_or_else(|_| "默认".into()))
+    });
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move || {
+        let result = (|| {
+            if overlay.mode == "edit" && visible {
+                if let Some(parent) = parent {
+                    parent.show().map_err(|error| error.to_string())?;
+                    parent.set_focus().map_err(|error| error.to_string())?;
+                }
+            }
+            if let Some(window) = window {
+                window.destroy().map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        })();
+        let _ = sender.send(result);
+    })
+    .map_err(|error| error.to_string())?;
+    receiver.await.map_err(|error| error.to_string())?
+}
+
+pub async fn close_pin_overlay(
+    app: &tauri::AppHandle,
+    caller: &str,
+    pin_id: Option<&str>,
+    mode: Option<&str>,
+) -> Result<(), String> {
+    let id = scoped_pin_id(caller, pin_id)?;
+    let _operation = pin_operations().lock().await;
+    let labels = lock_state()?
+        .pin_overlays
+        .iter()
+        .filter(|(label, overlay)| {
+            overlay.pin_id == id
+                && (label.as_str() == caller
+                    || mode == Some(overlay.mode.as_str())
+                        && (caller == "main" || caller.starts_with(PIN_PREFIX)))
+        })
+        .map(|(label, _)| label.clone())
+        .collect::<Vec<_>>();
+    for label in labels {
+        close_pin_overlay_window_locked(app, &label).await?;
+    }
+    Ok(())
 }
 
 fn current_capture(caller: &str) -> Result<CaptureFile, String> {
@@ -1737,34 +2137,63 @@ fn keep_pin_visible(
     Ok(view)
 }
 
+fn apply_pin_geometry(
+    window: &tauri::WebviewWindow,
+    capture: &CaptureFile,
+    view: &PinView,
+    update_shadow: bool,
+) -> Result<(), String> {
+    let factor = pin_scale_factor(window, view);
+    let (width, height) = pin_dimensions(capture, view, factor);
+    // Windows shadows change the non-client frame. Restore them before setting
+    // the client bounds, otherwise a dismissed menu leaves a different size.
+    if update_shadow {
+        window
+            .set_shadow(view.shadow)
+            .map_err(|error| format!("设置贴图阴影失败: {error}"))?;
+    }
+    let position = tauri::PhysicalPosition::new(view.x.round() as i32, view.y.round() as i32);
+    if window.outer_position().map_err(|error| error.to_string())? != position {
+        window
+            .set_position(position)
+            .map_err(|error| format!("移动贴图失败: {error}"))?;
+    }
+    let size = tauri::PhysicalSize::new(width as u32, height as u32);
+    if window.inner_size().map_err(|error| error.to_string())? != size {
+        window
+            .set_size(size)
+            .map_err(|error| format!("调整贴图大小失败: {error}"))?;
+    }
+    window
+        .set_ignore_cursor_events(view.through)
+        .map_err(|error| format!("设置鼠标穿透失败: {error}"))?;
+    Ok(())
+}
+
 fn apply_pin_view(
     window: &tauri::WebviewWindow,
     capture: &CaptureFile,
     view: &PinView,
 ) -> Result<(), String> {
-    let factor = pin_scale_factor(window, view);
-    let (width, height) = pin_dimensions(capture, view, factor);
-    window
-        .set_position(tauri::PhysicalPosition::new(
-            view.x.round() as i32,
-            view.y.round() as i32,
-        ))
-        .map_err(|error| format!("移动贴图失败: {error}"))?;
-    window
-        .set_size(tauri::PhysicalSize::new(width as u32, height as u32))
-        .map_err(|error| format!("调整贴图大小失败: {error}"))?;
-    window
-        .set_shadow(view.shadow)
-        .map_err(|error| format!("设置贴图阴影失败: {error}"))?;
-    window
-        .set_ignore_cursor_events(view.through)
-        .map_err(|error| format!("设置鼠标穿透失败: {error}"))?;
-    if pin_is_visible(view, &active_group()?) {
-        window.show()
-    } else {
-        window.hide()
+    apply_pin_view_changes(window, capture, view, true)
+}
+
+fn apply_pin_view_changes(
+    window: &tauri::WebviewWindow,
+    capture: &CaptureFile,
+    view: &PinView,
+    update_shadow: bool,
+) -> Result<(), String> {
+    apply_pin_geometry(window, capture, view, update_shadow)?;
+    let visible = pin_is_visible(view, &active_group()?);
+    if window.is_visible().map_err(|error| error.to_string())? != visible {
+        if visible {
+            window.show()
+        } else {
+            window.hide()
+        }
+        .map_err(|error| format!("设置贴图可见性失败: {error}"))?;
     }
-    .map_err(|error| format!("设置贴图可见性失败: {error}"))?;
     Ok(())
 }
 
@@ -1822,7 +2251,7 @@ pub async fn toggle_pin_group(app: &tauri::AppHandle) -> Result<(), String> {
         .cloned()
         .collect::<Vec<_>>();
     if pins.is_empty() {
-        return open_workspace(app);
+        return Ok(());
     }
     let hide = pins.iter().any(|pin| !pin.view.hidden && !pin.view.through);
     for pin in pins {
@@ -1834,6 +2263,44 @@ pub async fn toggle_pin_group(app: &tauri::AppHandle) -> Result<(), String> {
         update_pin_view(app, &pin.capture.session_id, view, Some(false))?;
     }
     Ok(())
+}
+
+/// Opening the app also unlocks click-through pins if F3 is unavailable.
+pub async fn restore_pin_interaction(app: &tauri::AppHandle) -> Result<usize, String> {
+    restore_pins(app, false).await
+}
+
+/// F3 restores input and hidden pins in place without opening another page.
+pub async fn recover_pins(app: &tauri::AppHandle) -> Result<usize, String> {
+    let restored = restore_pins(app, true).await?;
+    app.emit_to("main", "capture-pin-recover", ())
+        .map_err(|error| error.to_string())?;
+    Ok(restored)
+}
+
+async fn restore_pins(app: &tauri::AppHandle, restore_hidden: bool) -> Result<usize, String> {
+    let _operation = pin_operations().lock().await;
+    let group = active_group()?;
+    let pins = lock_state()?
+        .pins
+        .values()
+        .filter(|pin| {
+            !pin.overlay
+                && (pin.view.through
+                    || restore_hidden && pin.view.hidden && pin.view.group == group)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let restored = pins.len();
+    for pin in pins {
+        let mut view = pin.view;
+        view.through = false;
+        if restore_hidden && view.group == group {
+            view.hidden = false;
+        }
+        update_pin_view(app, &pin.capture.session_id, view, Some(false))?;
+    }
+    Ok(restored)
 }
 
 fn emit_pin_view(app: &tauri::AppHandle, id: &str, view: &PinView) -> Result<(), String> {
@@ -1892,7 +2359,12 @@ fn update_pin_view(
         .get_mut(id)
         .ok_or_else(|| "贴图已不存在".to_string())?
         .applying = true;
-    let result = apply_pin_view(&window, &previous.capture, &view);
+    let result = apply_pin_view_changes(
+        &window,
+        &previous.capture,
+        &view,
+        previous.overlay || previous.view.shadow != view.shadow,
+    );
     if let Err(error) = result {
         let rollback = apply_pin_view(&window, &previous.capture, &previous.view);
         if let Some(pin) = lock_state()?.pins.get_mut(id) {
@@ -1976,6 +2448,41 @@ pub async fn close_pin(
         let mut view = previous.view;
         view.hidden = true;
         update_pin_view(app, &id, view, Some(false))?;
+    }
+    if destroy {
+        discard_pin_overlays(app, &id)?;
+    } else {
+        let labels = lock_state()?
+            .pin_overlays
+            .iter()
+            .filter(|(_, overlay)| overlay.pin_id == id)
+            .map(|(label, _)| label.clone())
+            .collect::<Vec<_>>();
+        for label in labels {
+            close_pin_overlay_window_locked(app, &label).await?;
+        }
+    }
+    Ok(())
+}
+
+fn discard_pin_overlays(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+    let labels = {
+        let mut state = lock_state()?;
+        let labels = state
+            .pin_overlays
+            .iter()
+            .filter(|(_, overlay)| overlay.pin_id == id)
+            .map(|(label, _)| label.clone())
+            .collect::<Vec<_>>();
+        for label in &labels {
+            state.pin_overlays.remove(label);
+        }
+        labels
+    };
+    for label in labels {
+        if let Some(window) = app.get_webview_window(&label) {
+            window.destroy().map_err(|error| error.to_string())?;
+        }
     }
     Ok(())
 }
@@ -2235,6 +2742,20 @@ pub async fn pin(
             return Err(error);
         }
     };
+    let selection_origin = if created && has_initial_view && matches!(origin, PinOrigin::Editor(_))
+    {
+        Some((view.x.round(), view.y.round()))
+    } else {
+        None
+    };
+    if selection_origin.is_some() {
+        // A screenshot selection is positioned by its visible client pixels.
+        // Saved pin positions still use the native outer-window coordinates.
+        if let (Ok(inner), Ok(outer)) = (window.inner_position(), window.outer_position()) {
+            view.x -= (inner.x - outer.x) as f64;
+            view.y -= (inner.y - outer.y) as f64;
+        }
+    }
     if created && !has_initial_view {
         let monitor = window
             .cursor_position()
@@ -2259,6 +2780,17 @@ pub async fn pin(
             view = visible_view;
             if overlay {
                 Ok(())
+            } else if let Some((x, y)) = selection_origin {
+                (|| {
+                    // Re-read the frame after reaching the destination monitor:
+                    // mixed DPI screens can use different non-client offsets.
+                    // Align while hidden so the initial show never jumps.
+                    apply_pin_geometry(&window, &capture, &view, true)?;
+                    let inner = window.inner_position().map_err(|error| error.to_string())?;
+                    view.x += x - inner.x as f64;
+                    view.y += y - inner.y as f64;
+                    apply_pin_view_changes(&window, &capture, &view, false)
+                })()
             } else {
                 apply_pin_view(&window, &capture, &view)
             }
@@ -2294,6 +2826,7 @@ pub async fn pin(
         let event_label = label.clone();
         window.on_window_event(move |event| match event {
             tauri::WindowEvent::Destroyed => {
+                let _ = discard_pin_overlays(&event_app, &event_id);
                 clear_pin(&event_id);
                 if let Some(main) = event_app.get_webview_window("main") {
                     let _ = main.emit(
@@ -2350,10 +2883,13 @@ pub async fn pin(
             close_editor_session(app, source)?;
         }
     }
-    if pin_is_visible(&view, &active_group()?) && !view.through {
+    if !overlay && pin_is_visible(&view, &active_group()?) && !view.through {
         window
             .set_focus()
             .map_err(|error| format!("聚焦贴图失败: {error}"))?;
+    }
+    if created {
+        preload_pin_menu(app, &id);
     }
     Ok(summary)
 }
@@ -2579,6 +3115,12 @@ mod tests {
         assert!(scoped_pin_id("capture-editor", Some(FIRST)).is_err());
         assert!(scoped_pin_id("main", None).is_err());
         assert!(scoped_pin_id("capture-pin-../../main", None).is_err());
+        for prefix in [PIN_MENU_PREFIX, PIN_EDIT_PREFIX] {
+            let caller = format!("{prefix}{FIRST}-{SECOND}");
+            assert_eq!(scoped_pin_id(&caller, None).unwrap(), FIRST);
+            assert!(scoped_pin_id(&caller, Some(SECOND)).is_err());
+            assert!(scoped_pin_id(&format!("{prefix}../../main"), None).is_err());
+        }
     }
     #[test]
     fn editing_a_pin_preserves_its_id_view_and_unrelated_editor() {

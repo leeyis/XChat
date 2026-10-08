@@ -26,6 +26,13 @@ fn show_main_window(app: &tauri::AppHandle) {
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
+    // The existing tray/show action is a recovery path even if another app owns F3.
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = lanchat::capture_editor::restore_pin_interaction(&app).await {
+            eprintln!("[CapturePin] 恢复鼠标交互失败: {error}");
+        }
+    });
 }
 
 fn main() {
@@ -152,7 +159,11 @@ fn main() {
             lanchat::commands::set_pinned_capture_shadow,
             lanchat::commands::close_pinned_capture,
             lanchat::commands::update_pinned_capture,
+            lanchat::commands::open_pinned_capture_overlay,
+            lanchat::commands::ready_pinned_capture_overlay,
+            lanchat::commands::close_pinned_capture_overlay,
             lanchat::commands::list_pinned_captures,
+            lanchat::commands::recover_pinned_captures,
             lanchat::commands::set_capture_pin_group,
             lanchat::commands::set_capture_preferences,
             lanchat::commands::cancel_capture_start,

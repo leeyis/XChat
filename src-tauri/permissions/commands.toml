@@ -461,9 +461,29 @@ description = "Allows updating a scoped native pin view"
 commands.allow = ["update_pinned_capture"]
 
 [[permission]]
+identifier = "allow-open-pinned-capture-overlay"
+description = "Allows opening controls for the caller's own pinned image"
+commands.allow = ["open_pinned_capture_overlay"]
+
+[[permission]]
+identifier = "allow-ready-pinned-capture-overlay"
+description = "Allows displaying a prepared pinned image control surface"
+commands.allow = ["ready_pinned_capture_overlay"]
+
+[[permission]]
+identifier = "allow-close-pinned-capture-overlay"
+description = "Allows closing the caller's own pinned image control surface"
+commands.allow = ["close_pinned_capture_overlay"]
+
+[[permission]]
 identifier = "allow-list-pinned-captures"
 description = "Allows the main window to manage live pinned images"
 commands.allow = ["list_pinned_captures"]
+
+[[permission]]
+identifier = "allow-recover-pinned-captures"
+description = "Restore hidden and click-through pins in place."
+commands.allow = ["recover_pinned_captures"]
 
 [[permission]]
 identifier = "allow-read-capture-clipboard"

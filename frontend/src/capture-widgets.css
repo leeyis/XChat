@@ -14,7 +14,7 @@
 .cap-live-pin-menu{position:fixed;max-height:calc(100vh - 16px);overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;z-index:500}
 .cap-live-pin-menu .cap-menu-check{display:grid;place-items:center}
 .cap-live-pin-menu .cap-menu-check svg{width:16px;height:16px}
-.cap-live-pin-menu button:focus-visible{outline-offset:-2px}
+.cap-root .cap-live-pin-menu button:focus-visible{outline:none;box-shadow:none;background:#edf2ee}
 .cap-pin-feedback{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);max-width:calc(100% - 20px);background:#253b31ed;color:white;padding:8px 12px;border-radius:6px;font-size:11px;z-index:600;text-align:center;pointer-events:none!important}
 .cap-workspace{z-index:4000}
 .cap-workspace .cap-desktop{background:var(--cap-bg);background-image:radial-gradient(var(--cap-line) .7px,transparent .7px);background-size:18px 18px}
@@ -43,3 +43,4 @@
 @media(max-width:900px){.cap-workspace-intro{padding-left:20px;padding-right:390px}.cap-workspace-intro h2{font-size:17px}.cap-workspace .cap-header{padding-inline:16px}.cap-workspace .cap-brand{min-width:180px}}
 @media(max-width:720px){.cap-workspace-intro{display:none}.cap-workspace .cap-panel{width:100%;max-width:100%;border:0}.cap-workspace .cap-brand{min-width:0}.cap-workspace .cap-header .cap-close-review{font-size:11px;padding-left:10px}.cap-workspace .cap-workbar{padding-inline:12px}.cap-workspace .cap-workbar .cap-button kbd{display:none}.cap-workspace .cap-bottom{padding-inline:14px}.cap-workspace .cap-desktop{margin-inline:10px}}
 @media(prefers-reduced-motion:reduce){.cap-root *{transition:none!important;animation:none!important}}
+.cap-menu-recovery { display: flex; align-items: center; gap: 8px; padding: 2px 10px 7px; color: #63766b; font-size: 11px; }
