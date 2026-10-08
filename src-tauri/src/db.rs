@@ -3785,8 +3785,70 @@ pub async fn set_setting(
 }
 
 #[cfg(test)]
+pub(crate) async fn remove_test_database(pool: &SqlitePool, app_dir: &std::path::Path) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    // SQLx 0.8.6 can return from close() with a connection still queued for return.
+    // Drain those connections as well, without changing the production pool.
+    // https://github.com/transact-rs/sqlx/issues/3217
+    while pool.size() > 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "test database still has {} connections after the cleanup deadline",
+            pool.size()
+        );
+        tokio::time::timeout_at(deadline, pool.close())
+            .await
+            .expect("test database connections did not close before the cleanup deadline");
+        tokio::task::yield_now().await;
+    }
+    loop {
+        match tokio::fs::remove_dir_all(app_dir).await {
+            Ok(()) => return,
+            // Windows can retain a transient file lock after pool.close().await.
+            // Retry only sharing/lock violations; all other errors still fail.
+            Err(error)
+                if cfg!(windows)
+                    && matches!(error.raw_os_error(), Some(32 | 33))
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            Err(error) => panic!("failed to remove test database {}: {error}", app_dir.display()),
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_database_teardown_waits_for_returned_connections() {
+        for _ in 0..8 {
+            let app_dir =
+                std::env::temp_dir().join(format!("xchat-db-close-{}", uuid::Uuid::new_v4()));
+            tokio::fs::create_dir_all(&app_dir).await.unwrap();
+            let options = sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(app_dir.join("test.db"))
+                .create_if_missing(true)
+                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(4)
+                .connect_with(options)
+                .await
+                .unwrap();
+            let mut connections = Vec::new();
+            for _ in 0..4 {
+                connections.push(pool.acquire().await.unwrap());
+            }
+            // Returning pooled connections runs asynchronously and can race close().
+            drop(connections);
+            pool.close().await;
+            remove_test_database(&pool, &app_dir).await;
+            assert_eq!(pool.size(), 0);
+            assert!(!app_dir.exists());
+        }
+    }
 
     #[tokio::test]
     async fn delivery_outbox_survives_restart_deduplicates_leases_and_preserves_late_ack() {
@@ -3929,7 +3991,7 @@ mod tests {
             .unwrap()
             .is_empty());
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -4044,7 +4106,7 @@ mod tests {
         assert_eq!(contents, vec!["旧管线消息"]);
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -4277,7 +4339,7 @@ mod tests {
             .unwrap();
         assert_eq!(get_username(&pool).await.unwrap(), "Bob");
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        remove_test_database(&pool, &app_dir).await;
     }
 
     #[test]
@@ -4832,6 +4894,6 @@ mod tests {
         assert_eq!(peer.app_version.as_deref(), Some("0.1.5"));
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        remove_test_database(&pool, &app_dir).await;
     }
 }

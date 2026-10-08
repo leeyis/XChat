@@ -2879,10 +2879,12 @@ mod tests {
                 .unwrap(),
             7,
         );
-        let error = bounded_resolution(Duration::from_millis(1), async {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            9
-        })
+        // A second timer can become ready alongside the deadline on a busy host.
+        // A stalled resolver exercises the timeout without depending on scheduling.
+        let error = bounded_resolution(
+            Duration::from_millis(1),
+            std::future::pending::<i32>(),
+        )
         .await
         .unwrap_err();
         assert_eq!(error, "resolution timed out");

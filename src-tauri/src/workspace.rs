@@ -2036,7 +2036,7 @@ mod tests {
             crate::network::transfer::DEFAULT_MAX_PARALLEL_CHANNELS
         );
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -2092,7 +2092,7 @@ mod tests {
         assert_eq!(attempts[0].state, "waiting_connection");
         drop(busy_controls);
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -2204,7 +2204,7 @@ mod tests {
         );
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[test]
@@ -2367,7 +2367,7 @@ mod tests {
         assert_eq!(mentioned, 1);
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -2445,7 +2445,7 @@ mod tests {
             .is_empty());
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -2520,7 +2520,7 @@ mod tests {
             .is_empty());
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[test]

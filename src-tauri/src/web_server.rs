@@ -6644,7 +6644,7 @@ mod websocket_protocol_tests {
             b"3456"
         );
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[test]
@@ -6713,7 +6713,7 @@ mod websocket_protocol_tests {
         );
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -6802,7 +6802,7 @@ mod websocket_protocol_tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[test]
@@ -6870,7 +6870,7 @@ mod websocket_protocol_tests {
         assert_eq!(remaining, vec!["text"]);
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -6975,7 +6975,7 @@ mod websocket_protocol_tests {
         assert_eq!(views[0].mention_ids, vec![my_id]);
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -7063,7 +7063,7 @@ mod websocket_protocol_tests {
         );
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -7183,7 +7183,7 @@ mod websocket_protocol_tests {
         );
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -7254,7 +7254,7 @@ mod websocket_protocol_tests {
         assert_eq!(size, 6);
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -7339,7 +7339,7 @@ mod websocket_protocol_tests {
         assert_eq!(bytes.as_ref(), png);
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -7512,7 +7512,7 @@ mod websocket_protocol_tests {
         .exists());
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -7603,7 +7603,7 @@ mod websocket_protocol_tests {
         assert_eq!(message.file_status.as_deref(), Some("failed"));
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -7828,7 +7828,7 @@ mod websocket_protocol_tests {
             data
         );
         pool.close().await;
-        tokio::fs::remove_dir_all(app_dir).await.unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -7928,7 +7928,7 @@ mod websocket_protocol_tests {
         assert_eq!(final_files, 1);
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -8154,7 +8154,7 @@ mod websocket_protocol_tests {
         );
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -8267,7 +8267,7 @@ mod websocket_protocol_tests {
         );
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -8321,7 +8321,7 @@ mod websocket_protocol_tests {
         sync.await.unwrap();
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[test]

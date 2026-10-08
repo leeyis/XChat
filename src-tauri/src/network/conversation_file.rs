@@ -3417,7 +3417,7 @@ mod tests {
         }
 
         pool.close().await;
-        tokio::fs::remove_dir_all(app_dir).await.unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -3607,7 +3607,7 @@ mod tests {
         server.abort();
         let _ = server.await;
         pool.close().await;
-        tokio::fs::remove_dir_all(app_dir).await.unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -3803,7 +3803,7 @@ mod tests {
 
         server.abort();
         pool.close().await;
-        tokio::fs::remove_dir_all(app_dir).await.unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -3968,7 +3968,7 @@ mod tests {
 
         server.abort();
         pool.close().await;
-        tokio::fs::remove_dir_all(app_dir).await.unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -4067,7 +4067,7 @@ mod tests {
 
         server.abort();
         pool.close().await;
-        tokio::fs::remove_dir_all(app_dir).await.unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[tokio::test]
@@ -4219,7 +4219,7 @@ mod tests {
 
         server.abort();
         pool.close().await;
-        tokio::fs::remove_dir_all(app_dir).await.unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
     #[test]
@@ -4334,7 +4334,7 @@ mod tests {
 
         server.abort();
         pool.close().await;
-        tokio::fs::remove_dir_all(app_dir).await.unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
         assert!(
             result.is_ok(),
             "send must return without scanning the 6 GiB source"
@@ -4388,7 +4388,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         pool.close().await;
-        tokio::fs::remove_dir_all(app_dir).await.unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
 
         assert_eq!(message_status.as_deref(), Some("pending"));
         assert_eq!(file_status.as_deref(), Some("waiting_peer"));
@@ -4573,7 +4573,7 @@ mod tests {
         );
 
         pool.close().await;
-        std::fs::remove_dir_all(app_dir).unwrap();
+        crate::db::remove_test_database(&pool, &app_dir).await;
         if managed_source_dir.exists() {
             std::fs::remove_dir_all(managed_source_dir).unwrap();
         }
