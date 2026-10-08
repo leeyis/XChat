@@ -269,6 +269,8 @@ export function runtimeCapabilities(runtime, supplied = {}, legacy = false) {
     nativeVoiceRecorder: runtime === "tauri" && platform === "android",
   };
   const capabilities = { ...defaults, ...supplied };
+  // This native WebView integration is implemented only by the Android host.
+  capabilities.nativeVideoFullscreen = runtime === "tauri" && platform === "android";
   capabilities.nativeFileOpen = runtime === "tauri";
   if (runtime === "tauri" && platform === "android") capabilities.saveFileAs = false;
   if (runtime === "web") {

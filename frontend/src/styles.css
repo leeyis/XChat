@@ -1149,6 +1149,17 @@ time,
 .chat-media-video { width: 380px; }
 .chat-media video { display: block; width: 100%; aspect-ratio: 16 / 9; max-height: 300px; background: #12392d; object-fit: contain; }
 .chat-media-foot { display: flex; align-items: center; gap: 12px; padding: 10px 12px; }
+.chat-video-viewport { width: 100%; aspect-ratio: 16 / 9; max-height: 300px; }
+.chat-video-stage { position: relative; width: 100%; height: 100%; background: #000; }
+.chat-video-stage > video { height: 100%; }
+.chat-video-expand, .chat-video-restore { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex-shrink: 0; min-width: 44px; min-height: 44px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; color: var(--accent); font: inherit; font-size: 12px; touch-action: manipulation; }
+.chat-video-expand svg, .chat-video-restore svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.chat-video-expand:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.chat-video-restore { display: none; }
+.chat-video-stage:fullscreen { width: 100%; height: 100%; background: #000; }
+.chat-video-stage:fullscreen > video, .chat-video-stage > video:fullscreen { width: 100%; height: 100%; max-height: none; aspect-ratio: auto; object-fit: contain; }
+.chat-video-stage:fullscreen > .chat-video-restore { position: absolute; top: max(14px, env(safe-area-inset-top)); left: max(14px, env(safe-area-inset-left)); z-index: 1; display: inline-flex; padding: 0 16px; border-radius: 22px; background: #242724dc; color: #fff; }
+.chat-video-error { margin: 0; padding: 0 12px 10px; color: var(--muted); font-size: 12px; }
 .chat-media-download { display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 30px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); text-decoration: none; }
 .chat-media-download:hover { background: color-mix(in oklch, var(--fg) 6%, transparent); color: var(--fg); }
 .chat-media-motion { position: relative; width: 280px; }

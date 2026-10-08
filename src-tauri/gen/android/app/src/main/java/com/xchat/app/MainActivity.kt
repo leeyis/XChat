@@ -58,6 +58,7 @@ class MainActivity : TauriActivity() {
 
     private var pendingSharedFiles: List<SharedFileInfo>? = null
     private var webView: WebView? = null
+    private var videoFullscreenController: VideoFullscreenController? = null
     private var shareReceiver: BroadcastReceiver? = null
     private var lastNotificationFromId: String? = null
     private var discoveryMulticastLock: WifiManager.MulticastLock? = null
@@ -121,9 +122,10 @@ class MainActivity : TauriActivity() {
         // native content instead, including cutouts, gesture navigation and IME.
         val content = findViewById<android.view.View>(android.R.id.content)
         ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
-            val safe = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            val fullscreen = videoFullscreenController?.isShowing == true
+            val safe = insets.getInsets((if (fullscreen) 0 else WindowInsetsCompat.Type.systemBars()) or WindowInsetsCompat.Type.displayCutout())
             val keyboard = insets.getInsets(WindowInsetsCompat.Type.ime())
-            view.setPadding(safe.left, safe.top, safe.right, maxOf(safe.bottom, keyboard.bottom))
+            view.setPadding(safe.left, safe.top, safe.right, if (fullscreen) safe.bottom else maxOf(safe.bottom, keyboard.bottom))
             WindowInsetsCompat.CONSUMED
         }
         ViewCompat.requestApplyInsets(content)
@@ -132,6 +134,7 @@ class MainActivity : TauriActivity() {
         // 前端用 window.__xchatHandleBack() 回答「我处理了没有」，
         // 返回 "true" 表示已消化这次返回，否则交回系统默认行为（退出）。
         onBackPressedDispatcher.addCallback(this) {
+            if (videoFullscreenController?.exit() == true) return@addCallback
             val view = webView ?: findWebView(window.decorView)?.also { webView = it }
             if (view == null) {
                 isEnabled = false
@@ -157,6 +160,29 @@ class MainActivity : TauriActivity() {
         
         // 检测冷启动是否来自通知点击
         checkNotificationLaunch(intent)
+    }
+
+    override fun onWebViewCreate(webView: WebView) {
+        super.onWebViewCreate(webView)
+        this.webView = webView
+        // Wry assigns its Chrome client after this callback. Install after that
+        // task completes so we wrap the real client instead of being overwritten.
+        webView.post {
+            if (!isFinishing && !isDestroyed && this.webView === webView) {
+                videoFullscreenController?.dispose()
+                videoFullscreenController = VideoFullscreenController.install(this, webView)
+            }
+        }
+    }
+
+    override fun onPause() {
+        videoFullscreenController?.pauseForBackground()
+        super.onPause()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) videoFullscreenController?.pauseForBackground()
     }
 
     override fun onStart() {
@@ -582,6 +608,8 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onDestroy() {
+        videoFullscreenController?.dispose()
+        videoFullscreenController = null
         // 录音中途被销毁（旋转 / 退出）时释放麦克风，避免占用音频资源
         runCatching {
             mediaRecorder?.let { recorder ->

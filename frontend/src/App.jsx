@@ -49,6 +49,7 @@ import {
 import CaptureEditor from "./CaptureEditor.jsx";
 import CaptureWorkspace from "./CaptureWorkspace.jsx";
 import { createChatScrollController } from "./chat-scroll.js";
+import { androidVideoOwnsFocus, createVideoFullscreenController } from "./video-fullscreen.js";
 import {
   createMediaPlaybackController,
   detectImageAnimation,
@@ -1214,7 +1215,7 @@ function formatTime(timestamp, locale) {
 function appVersion() {
   return typeof globalThis.__XCHAT_VERSION__ === "string" && globalThis.__XCHAT_VERSION__
     ? globalThis.__XCHAT_VERSION__
-    : "0.1.12";
+    : "0.1.13";
 }
 
 function formatSize(bytes) {
@@ -1968,6 +1969,11 @@ function MediaTransferProgress({ transfer, message, state, workspace, labels }) 
 
 function MessagePlayer({ kind, source, message, transfer, state, workspace, labels, onError }) {
   const player = useRef(null);
+  const videoStage = useRef(null);
+  const fullscreenTrigger = useRef(null);
+  const fullscreen = useRef(null);
+  const [fullscreenError, setFullscreenError] = useState(false);
+  const nativeFullscreen = kind === "video" && state.capabilities.nativeVideoFullscreen;
   const [duration, setDuration] = useState(Number(message.duration_ms) > 0 ? Number(message.duration_ms) / 1000 : NaN);
   const playback = mediaPlaybackFor(workspace);
   const key = mediaPositionKey(state.activeConversationId, message);
@@ -1976,14 +1982,23 @@ function MessagePlayer({ kind, source, message, transfer, state, workspace, labe
     if (!element) return undefined;
     return playback.register(element, key);
   }, [key, playback]);
+  useLayoutEffect(() => {
+    if (!nativeFullscreen || !videoStage.current) return undefined;
+    const controller = createVideoFullscreenController(videoStage.current, {
+      trigger: fullscreenTrigger.current,
+      onError: () => setFullscreenError(true),
+    });
+    fullscreen.current = controller;
+    return () => { controller.destroy(); fullscreen.current = null; };
+  }, [nativeFullscreen, key]);
   const Player = kind === "audio" ? "audio" : "video";
   const details = <MediaFileDetails message={message} source={source} duration={duration} labels={labels} />;
   const download = <MediaDownload message={message} state={state} workspace={workspace} labels={labels} />;
-  return <div className={`chat-media chat-media-${kind}`} data-media-kind={kind}>
-    {kind === "audio" && <div className="chat-media-head"><span className="chat-media-icon"><Icon name="audio" size={20} /></span>{details}{download}</div>}
-    <Player
+  const media = <Player
       ref={player}
       controls
+      controlsList={nativeFullscreen ? "nofullscreen" : undefined}
+      disablePictureInPicture={nativeFullscreen ? true : undefined}
       playsInline={kind === "video" ? true : undefined}
       preload="metadata"
       src={source.url}
@@ -1994,8 +2009,19 @@ function MessagePlayer({ kind, source, message, transfer, state, workspace, labe
       onTimeUpdate={(event) => playback.remember(event.currentTarget)}
       onEnded={(event) => playback.remember(event.currentTarget)}
       onError={onError}
-    />
-    {kind === "video" && <div className="chat-media-foot">{details}{download}</div>}
+    />;
+  return <div className={`chat-media chat-media-${kind}`} data-media-kind={kind}>
+    {kind === "audio" && <div className="chat-media-head"><span className="chat-media-icon"><Icon name="audio" size={20} /></span>{details}{download}</div>}
+    {nativeFullscreen ? <div className="chat-video-viewport"><div ref={videoStage} className="chat-video-stage" data-android-video-stage>
+      {media}
+      <button type="button" className="chat-video-restore" data-media-control aria-label={labels.locale === "en" ? "Restore video to conversation" : "还原视频，返回对话"} onClick={(event) => { event.stopPropagation(); void fullscreen.current?.exit(); }}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8h5V3m8 0v5h5M8 21v-5H3m18 0h-5v5" /></svg>{labels.locale === "en" ? "Restore" : "还原"}
+      </button>
+    </div></div> : media}
+    {kind === "video" && <div className="chat-media-foot">{details}{nativeFullscreen && <button ref={fullscreenTrigger} type="button" className="chat-video-expand" data-media-control aria-label={labels.locale === "en" ? "Play video fullscreen" : "全屏播放视频"} onClick={(event) => { event.stopPropagation(); setFullscreenError(false); void fullscreen.current?.enter(); }}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5" /></svg>{labels.locale === "en" ? "Fullscreen" : "全屏"}
+    </button>}{download}</div>}
+    {nativeFullscreen && fullscreenError && <p className="chat-video-error" role="status">{labels.locale === "en" ? "Unable to enter fullscreen. Please try again." : "暂时无法全屏，请重试。"}</p>}
     <MediaTransferProgress transfer={transfer} message={message} state={state} workspace={workspace} labels={labels} />
   </div>;
 }
@@ -3289,11 +3315,16 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
   useLayoutEffect(() => () => mediaPlaybackFor(workspace).pauseAll(), [workspace, state.activeConversationId]);
   useEffect(() => {
     const visibilityChange = () => { if (document.hidden) mediaPlaybackFor(workspace).pauseAll(); };
-    const blur = () => mediaPlaybackFor(workspace).pauseAll();
+    const blur = () => {
+      // Android's custom fullscreen View can take WebView focus in the same
+      // Activity. The native host pauses playback when the Activity loses focus.
+      if (state.capabilities.nativeVideoFullscreen && androidVideoOwnsFocus(document)) return;
+      mediaPlaybackFor(workspace).pauseAll();
+    };
     document.addEventListener("visibilitychange", visibilityChange);
     globalThis.addEventListener("blur", blur);
     return () => { document.removeEventListener("visibilitychange", visibilityChange); globalThis.removeEventListener("blur", blur); mediaPlaybackFor(workspace).pauseAll(); };
-  }, [workspace]);
+  }, [workspace, state.capabilities.nativeVideoFullscreen]);
   const scroll = useRef(null);
   const scrollController = useRef(null);
   if (!scrollController.current) scrollController.current = createChatScrollController();

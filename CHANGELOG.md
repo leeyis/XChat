@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.13 - 2026-10-08
+
+### Features
+
+- Add fullscreen and restore controls to Android conversation videos. Android Back restores the current conversation before navigating away.
+- Preserve the same video element, playback position, playing or paused state, and chat scroll position when entering and leaving fullscreen.
+- Hide system bars during fullscreen, follow device orientation, and restore the original insets and system bars afterward.
+
+### Fixes
+
+- Handle Android WebView custom fullscreen views while preserving the existing file chooser, permission, and JavaScript callbacks.
+- Keep foreground fullscreen transitions playing and pause video when the app moves to the background.
+- Enable the new controls only in the Android app; desktop and web players retain their existing behavior.
+
+### Tests
+
+- Cover rejected and repeated fullscreen requests, cleanup during an outstanding request, Android capability isolation, and scroll restoration after native insets settle.
+
 ## 0.1.12 - 2026-10-08
 
 ### Changes

@@ -1,0 +1,61 @@
+#video-fullscreen-review{position:fixed;inset:0;z-index:10000;overflow:auto;background:#eef0ec;color:#28372e;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+#video-fullscreen-review *,#video-fullscreen-review *:before,#video-fullscreen-review *:after{box-sizing:border-box}
+.vf-review-head{max-width:1140px;margin:0 auto;padding:28px 24px 22px}
+.vf-platform{display:inline-flex;align-items:center;gap:6px;font-size:11px;letter-spacing:.06em;font-weight:700;color:#367258}
+.vf-review-head h1{font-size:27px;line-height:1.25;font-weight:650;letter-spacing:-.03em;margin:8px 0}
+.vf-review-head p{margin:0;color:#6e7a71;font-size:13px}
+.vf-board{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:28px;max-width:1140px;margin:auto;padding:0 24px 28px}
+.vf-panel{min-width:0}
+.vf-panel-head{display:flex;align-items:center;gap:9px;margin:0 0 12px}
+.vf-step{display:grid;place-items:center;width:24px;height:24px;border:1px solid #cbd4cd;border-radius:50%;font-size:11px;color:#4b6555}
+.vf-panel h2{font-size:14px;font-weight:650;margin:0}
+.vf-phone{position:relative;display:flex;flex-direction:column;width:100%;height:660px;overflow:hidden;border:8px solid #26352d;border-radius:32px;background:#f8f7f5;box-shadow:0 10px 24px #25332817;color:#282622}
+.vf-camera{position:absolute;top:10px;left:calc(50% - 4px);width:8px;height:8px;border-radius:50%;background:#26352d;z-index:8;pointer-events:none}
+.vf-status{display:flex;justify-content:space-between;align-items:center;flex:0 0 30px;padding:0 15px;background:#fff;font-size:10px;font-weight:600}
+.vf-status-icons{display:flex;align-items:center;gap:5px}
+#video-fullscreen-review .vf-status-icons svg{width:13px;height:13px}
+.vf-header{display:flex;align-items:center;gap:10px;flex:0 0 58px;padding:0 12px;border-bottom:1px solid #e5e1dd;background:#fff}
+.vf-header strong{font-size:14px;font-weight:600}
+.vf-header small{display:block;margin-top:2px;color:#87827a;font-size:10px}
+.vf-spacer{flex:1}
+#video-fullscreen-review button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:44px;min-height:44px;border:0;border-radius:8px;padding:0 10px;background:transparent;color:inherit;font:inherit;cursor:pointer;touch-action:manipulation}
+#video-fullscreen-review button:focus-visible{outline:2px solid #258267;outline-offset:2px}
+#video-fullscreen-review svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+.vf-messages{flex:1;min-height:0;overflow:auto;padding:16px 10px}
+.vf-time{text-align:center;color:#928b83;font-size:10px;margin-bottom:20px}
+.vf-row{display:flex;align-items:flex-start;gap:7px;margin-bottom:16px}
+.vf-avatar{display:grid;place-items:center;flex:0 0 28px;width:28px;height:28px;border-radius:7px;background:#dbe9e1;color:#397459;font-size:12px;font-weight:600}
+.vf-stack{min-width:0;flex:1}
+.vf-bubble{width:fit-content;max-width:100%;padding:10px;border:1px solid #e7e2dd;border-radius:10px;background:#fff;font-size:12px;line-height:1.7}
+.vf-timestamp{display:block;margin-top:5px;font-size:9px;color:#928b83}
+.vf-card{overflow:hidden;border:1px solid #e0dbd5;border-radius:10px;background:#fff}
+.vf-stage{position:relative;width:100%;background:#000;color:white;overflow:hidden}
+.vf-stage video{display:block;width:100%;aspect-ratio:16/9;object-fit:contain;background:#000}
+.vf-restore{display:none!important}
+.vf-foot{display:flex;align-items:center;gap:4px;padding:5px 6px 5px 9px}
+.vf-file{flex:1;min-width:0}
+.vf-file b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:600}
+.vf-file small{display:block;margin-top:3px;color:#87827a;font-size:9px}
+.vf-expand{font-size:11px!important;color:#34755c!important}
+.vf-expand:hover{background:#f0f5f2!important}
+.vf-composer{flex:0 0 auto;padding:10px;background:#fff;border-top:1px solid #e4dfd9}
+.vf-input{min-height:56px;border:1px solid #d2dcd6;border-radius:10px;padding:10px;color:#a09b92;font-size:12px}
+.vf-tools{display:flex;align-items:center;justify-content:space-between;margin-top:4px;color:#87827a}
+.vf-tools span{padding:0 5px;font-size:13px}
+.vf-send{background:#edf3ee!important;color:#5b8e76!important;font-size:11px!important;cursor:default!important}
+.vf-nav{flex:0 0 21px;display:grid;place-items:center;background:#fff}
+.vf-nav:after{content:'';width:96px;height:4px;border-radius:4px;background:#414b44}
+.vf-phone.vf-is-fullscreen .vf-messages,.vf-phone.vf-is-fullscreen .vf-card{overflow:visible}
+.vf-stage.vf-expanded{position:absolute;inset:0;z-index:5;width:100%;height:100%;background:#000}
+.vf-stage.vf-expanded video{width:100%;height:100%;max-height:none;aspect-ratio:auto;object-fit:contain}
+.vf-stage.vf-expanded .vf-restore{display:inline-flex!important;position:absolute;z-index:6;top:18px;left:10px;height:44px;background:#242724dc!important;color:#fff;font-size:12px!important;border-radius:22px!important;padding:0 14px!important}
+.vf-stage.vf-expanded .vf-restore:focus-visible{outline-color:#fff!important}
+.vf-panel-note{min-height:42px;margin:12px 0 0;color:#6e7a71;font-size:12px;line-height:1.7}
+.vf-review-actions{display:flex;align-items:center;gap:12px;margin-top:2px}
+#video-fullscreen-review .vf-review-actions button{font-size:11px;min-height:32px;padding:0;color:#49715b;text-decoration:underline;text-underline-offset:3px}
+.vf-status-message{font-size:11px;color:#856028;margin:8px 0 0}
+.vf-review-foot{max-width:1140px;margin:0 auto;padding:0 24px 28px;color:#7a857c;font-size:11px}
+.vf-current-state{display:block;margin-top:4px;color:#377456}
+#android-video-review-entry{position:fixed;right:18px;bottom:18px;z-index:9998;display:block;padding:12px 18px;border:1px solid #b9cdc0;border-radius:10px;background:#fff;color:#2a6247;font:13px/1.5 "Microsoft YaHei",sans-serif;text-decoration:none;box-shadow:0 5px 20px #2533281a}
+@media(max-width:900px){.vf-board{grid-template-columns:repeat(3,300px);overflow-x:auto;scroll-snap-type:x proximity;gap:20px}.vf-panel{scroll-snap-align:start}.vf-phone{height:640px}}
+@media(max-width:520px){.vf-review-head{padding:22px 20px 18px}.vf-review-head h1{font-size:23px}.vf-board{grid-template-columns:minmax(0,1fr);max-width:390px;gap:26px;padding:0 20px 24px;overflow:visible}.vf-phone{height:680px}.vf-review-foot{padding:0 20px 24px}.vf-panel-note{min-height:0}}

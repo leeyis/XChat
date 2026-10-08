@@ -827,6 +827,7 @@ test("web-only APIs are decided by the browser, not server platform flags", () =
     assert.equal(capabilities.notifications, true);
     assert.equal(capabilities.revealFile, false);
     assert.equal(capabilities.nativeFilePicker, false);
+    assert.equal(runtimeCapabilities("web", { nativeVideoFullscreen: true }).nativeVideoFullscreen, false);
   } finally {
     if (navigatorDescriptor) {
       Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
@@ -859,6 +860,8 @@ test("desktop capture is available on every desktop platform but not Android", (
       const expected = platform !== "android";
       assert.equal(capabilities.capture, expected, `capture on ${platform}`);
       assert.equal(capabilities.captureShortcut, expected, `shortcut on ${platform}`);
+      assert.equal(capabilities.nativeVideoFullscreen, platform === "android", `video fullscreen on ${platform}`);
+      assert.equal(runtimeCapabilities("tauri", { nativeVideoFullscreen: true }).nativeVideoFullscreen, platform === "android");
     }
   } finally {
     if (descriptor) {
