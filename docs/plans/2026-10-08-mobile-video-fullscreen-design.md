@@ -58,4 +58,10 @@ Activity 接管全屏视图容器、系统栏和返回键。前端通过全屏 A
 - `:app:compileArm64ReleaseKotlin -x :app:rustBuildArm64Release`：通过。初次编译发现 Android 36 已移除旧 AppCache 回调，删除该不可用委托后重新编译通过。
 - 生产界面浏览器验证：暂停 3.25 秒进入和退出后进度不变；聊天 scrollTop 保持 1196；播放中从 1.268 秒连续推进到 1.306 秒，元素未重建、未暂停。
 - `rtk cargo tauri dev --no-watch --config dist/android/qa/tauri-fullscreen.json -- -- --port 18889 --db-path dist/android/qa/desktop-data`：已启动隔离实例。桌面原生 WebView 能播放样例视频，未出现 Android 新增入口，原有媒体控件保留。
-- 用户已连接 OnePlus 6（Android 11）并授权 ADB 测试和覆盖更新。签名 APK 与真机结果在打包后补充；测试数据使用内存中的独立会话，不写入真实聊天记录。
+- `rtk cargo tauri android build --target aarch64 --apk true --aab false --ci`：原生 Release 编译通过（4 分 38 秒）；随后因本机 Windows 符号链接权限限制，Tauri 封装阶段退出。将本次编译的库复制至 JNI 目录后，用 `:app:assembleArm64Release -x :app:rustBuildArm64Release` 完成 Gradle 打包（47 秒），未使用旧库。
+- 正式 APK：`dist/android/Xchat_0.1.13_android-arm64.apk`，16,548,986 字节；应用 ID `com.xchat.app`，versionName `0.1.13`，versionCode `1013`，arm64-v8a，minSdk 24 / targetSdk 36。
+- SHA-256：`62cc0f89626974162973e363d3179144aa027a97b834599d5f7656903cd890be`。签名证书沿用上一版；签名、16 KiB ZIP 对齐、ZIP 完整性、非调试包、原生库及当前前端资源校验均通过。构建源码提交为 `9dc28da34e0ca7cb105f77fefd4a5cde09b37a3d`。
+- `rtk proxy adb -s 30192c63 install -r dist/android/Xchat_0.1.13_android-arm64.apk`：成功覆盖安装到用户连接的 OnePlus 6（Android 11，WebView 92），保留应用数据。
+- 用户随后明确反馈「移动端视频播放测试已经通过」，本次真机验收通过。测试结论来自用户实际操作，不能表述为完整自动化真机回归通过。
+- 自动化真机调试曾遇到测试数据注入时序问题及页面重载后调试连接中断，日志中有一次原生 SIGSEGV；未确定与全屏功能的关系，未完成横竖屏、系统返回键及权限委托的全套自动化设备验证。终止继续操作手机，采用用户本次真机验收结果，并保留调试记录。浏览器验证与 176 项单元测试结果独立有效。
+- 本次只构建 Android arm64 安装包；未构建 iOS 和其他 Android ABI。隔离桌面验证实例已关闭。
