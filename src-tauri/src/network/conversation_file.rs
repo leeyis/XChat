@@ -44,6 +44,7 @@ type FileSha256 = Shared<BoxFuture<'static, Result<String, String>>>;
 static RECEIVE_TRANSFER_LOCKS: OnceLock<Mutex<HashMap<String, Weak<ReceiveTransferLock>>>> =
     OnceLock::new();
 static RESUME_TRANSFER_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+static UPLOAD_START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static RECEIVE_PROCESSING_PHASES: OnceLock<Mutex<HashMap<String, ReceiveProcessingPhase>>> =
     OnceLock::new();
 
@@ -524,7 +525,6 @@ pub async fn resume_waiting_for_peer(
         return Err("peer is not online".to_string());
     };
     let local_limit = super::transfer::load_max_parallel_channels(pool).await?;
-    let upload_plan = negotiate_upload_plan(&peer.capabilities, local_limit);
     let concurrency = super::transfer::concurrency_controller().generation(local_limit)?;
 
     let transfers = sqlx::query_as::<_, TransferRecord>(
@@ -540,6 +540,9 @@ pub async fn resume_waiting_for_peer(
     .map_err(|error| format!("查询待恢复文件传输失败: {error}"))?;
 
     for transfer in transfers {
+        // Recovery must reuse the receiver's persisted manifest while the peer
+        // still supports its layout, just like an explicit manual resume.
+        let upload_plan = upload_plan_for_resume(&transfer.id, &peer.capabilities, local_limit);
         match prepare_waiting_resume_job(
             pool,
             &transfer,
@@ -1122,7 +1125,24 @@ impl Drop for UploadExecutionGuard {
     }
 }
 
+async fn renew_upload_lease(
+    pool: &Pool<Sqlite>,
+    lease: &db::TransferLease,
+    token: &super::transfer::TransferCancellationToken,
+) -> Result<(), String> {
+    match db::renew_transfer_lease(pool, lease).await? {
+        Some(db::TransferLeaseState::Cancelling) => token.store(true, Ordering::Release),
+        Some(db::TransferLeaseState::Active) => {}
+        None => return Err("transfer execution lease expired or replaced".into()),
+    }
+    Ok(())
+}
+
 async fn run_upload(pool: &Pool<Sqlite>, mut job: UploadJob) {
+    // Keep claim order and token replacement order identical within this process.
+    // Otherwise a worker paused after its claim could install a stale token after
+    // a replacement has acquired the expired lease, cancelling the new execution.
+    let startup = UPLOAD_START_LOCK.lock().await;
     let lease = match db::claim_send_transfer(pool, &job.transfer_id).await {
         Ok(Some(lease)) => lease,
         Ok(None) => return,
@@ -1139,21 +1159,20 @@ async fn run_upload(pool: &Pool<Sqlite>, mut job: UploadJob) {
         id: job.transfer_id.clone(),
         token: token.clone(),
     };
+    drop(startup);
     let transfer_id = job.transfer_id.clone();
     eprintln!(
         "[ConversationFile] claimed transfer_id={transfer_id} message_id={} lease={}",
         job.message_id, lease.token
     );
     let work = async {
-        if !db::renew_transfer_lease(pool, &lease).await? {
-            return Err("transfer lease lost before upload".to_string());
-        }
+        // Cancel may have committed between the claim and token registration, or
+        // in another process. Carry the durable state into this execution's token.
+        renew_upload_lease(pool, &lease, &token).await?;
         refresh_file_status(pool, job.message_id).await?;
         let outcome = upload_chunks(pool, &job, &token, &lease).await;
         // A stale worker must not cancel the receiver's newly resumed task either.
-        if !db::renew_transfer_lease(pool, &lease).await? {
-            return Err("transfer lease lost after upload".to_string());
-        }
+        renew_upload_lease(pool, &lease, &token).await?;
         // Drop our digest subscription promptly when preparation fails or is cancelled.
         job.file_sha256 = None;
         let (status, bytes, error) = match outcome {
@@ -1180,9 +1199,7 @@ async fn run_upload(pool: &Pool<Sqlite>, mut job: UploadJob) {
     let heartbeat = async {
         loop {
             tokio::time::sleep(Duration::from_secs(20)).await;
-            if !db::renew_transfer_lease(pool, &lease).await? {
-                return Err::<(), String>("transfer lease expired or execution replaced".into());
-            }
+            renew_upload_lease(pool, &lease, &token).await?;
         }
     };
     let result = tokio::select! {
@@ -2809,6 +2826,181 @@ mod tests {
         sqlx::query("UPDATE transfers SET status = 'queued' WHERE id = ?")
             .bind(id).execute(pool).await.unwrap();
         db::claim_send_transfer(pool, id).await.unwrap().unwrap()
+    }
+
+    #[tokio::test]
+    async fn qa_cancel_between_claim_and_registration_prevents_upload() {
+        use std::sync::atomic::AtomicUsize;
+        let uploaded = Arc::new(AtomicUsize::new(0));
+        let requests = uploaded.clone();
+        let router = axum::Router::new()
+            .route(
+                "/api/peer_identity",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({ "device_id": "peer-a", "name": "Alice" }))
+                }),
+            )
+            .route(
+                "/api/upload",
+                axum::routing::post(move |request: axum::extract::Request| {
+                    let requests = requests.clone();
+                    async move {
+                        let _ = axum::body::to_bytes(request.into_body(), 1024 * 1024)
+                            .await
+                            .unwrap();
+                        requests.fetch_add(1, Ordering::SeqCst);
+                        axum::Json(serde_json::json!({ "status": "completed" }))
+                    }
+                }),
+            )
+            .route(
+                "/api/uploads/{id}/cancel",
+                axum::routing::post(|| async {
+                    axum::Json(serde_json::json!({ "status": "cancelled" }))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-qa-cancel-{}", uuid::Uuid::new_v4()));
+        let pool = db::init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        let conversation = db::ensure_direct_conversation(&pool, "peer-a")
+            .await
+            .unwrap();
+        let source = app_dir.join("payload.bin");
+        tokio::fs::write(&source, b"payload").await.unwrap();
+        let sent = send_path(
+            &pool,
+            &PeerManager::new(),
+            &conversation.id,
+            source.to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+        let job = prepare_resume_job(
+            &pool,
+            &sent.transfers[0],
+            &address.to_string(),
+            UploadPlan::new(UploadProtocol::SequentialV1, 1),
+            super::super::transfer::TransferConcurrencyController::default()
+                .generation(4)
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        // Persist the same state as a cancel arriving after the atomic claim, before
+        // the worker has installed its in-memory cancellation handle.
+        sqlx::query(
+            "CREATE TRIGGER cancel_on_claim AFTER UPDATE OF status ON transfers
+            WHEN NEW.status = 'transferring' AND OLD.status = 'waiting_peer'
+            BEGIN UPDATE transfers SET status = 'cancelling' WHERE id = NEW.id; END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        run_upload(&pool, job).await;
+        let result = db::get_transfer(&pool, &sent.transfers[0].id)
+            .await
+            .unwrap()
+            .unwrap();
+        server.abort();
+        let _ = server.await;
+        pool.close().await;
+        crate::db::remove_test_database(&pool, &app_dir).await;
+        assert_eq!(
+            uploaded.load(Ordering::SeqCst),
+            0,
+            "a persisted cancellation must prevent payload IO"
+        );
+        assert_eq!(result.status, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn qa_automatic_recovery_keeps_compatible_parallel_layout() {
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-qa-layout-{}", uuid::Uuid::new_v4()));
+        let pool = db::init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        let conversation = db::ensure_direct_conversation(&pool, "peer-a")
+            .await
+            .unwrap();
+        let source = app_dir.join("source.bin");
+        tokio::fs::write(&source, b"payload").await.unwrap();
+        let peers = PeerManager::new();
+        let sent = send_path(&pool, &peers, &conversation.id, source.to_str().unwrap())
+            .await
+            .unwrap();
+        let old_plan = UploadPlan::new(UploadProtocol::FlexibleV3, 8);
+        let old_id = new_transfer_id_for_plan(
+            sent.message.client_message_id.as_deref().unwrap(),
+            "peer-a",
+            old_plan,
+            false,
+        );
+        sqlx::query("UPDATE transfers SET id = ?, status = 'transferring', bytes_transferred = 3 WHERE id = ?")
+            .bind(&old_id).bind(&sent.transfers[0].id).execute(&pool).await.unwrap();
+        recover_abandoned_uploads(&pool).await.unwrap();
+        // The receiver still supports eight V3 parts, while current preferences
+        // would negotiate sixteen V4 parts for a brand new upload.
+        super::super::transfer::save_max_parallel_channels(&pool, 16)
+            .await
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, axum::Router::new()).await.unwrap();
+        });
+        peers.add_or_update_with_details(
+            "peer-a".into(),
+            "Alice".into(),
+            address.clone(),
+            0,
+            None,
+            None,
+            None,
+            vec![
+                PARALLEL_FILE_V3_CAPABILITY.into(),
+                PARALLEL_FILE_V4_CAPABILITY.into(),
+            ],
+            None,
+            true,
+        );
+        resume_waiting_for_peer(&pool, &peers, "peer-a", &address)
+            .await
+            .unwrap();
+        let retained = db::get_transfer(&pool, &old_id).await.unwrap();
+        // Let the intentionally identity-less mock reject the worker before cleanup.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let active: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM transfers WHERE status IN ('queued', 'transferring')",
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                let status: Option<String> =
+                    sqlx::query_scalar("SELECT file_status FROM messages WHERE id = ?")
+                        .bind(sent.message.id)
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap();
+                if active == 0 && status.as_deref() == Some("failed") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        server.abort();
+        let _ = server.await;
+        pool.close().await;
+        crate::db::remove_test_database(&pool, &app_dir).await;
+        let retained =
+            retained.expect("automatic recovery must preserve a supported manifest identity");
+        assert_eq!(retained.bytes_transferred, 3);
     }
 
     #[test]

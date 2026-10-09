@@ -2650,6 +2650,9 @@ pub async fn enqueue_outgoing_message(
     } else {
         return Err("旧群消息缺少原始收件人快照，不能安全重试".into());
     };
+    if recipients.is_empty() {
+        return Err("会话没有其他收件人，无法发送消息".into());
+    }
     if recipients
         .iter()
         .any(|id| id.trim().is_empty() || id.trim() != id)
@@ -3805,6 +3808,12 @@ pub struct TransferLease {
     pub token: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferLeaseState {
+    Active,
+    Cancelling,
+}
+
 pub async fn claim_send_transfer(
     pool: &Pool<Sqlite>,
     id: &str,
@@ -3826,20 +3835,23 @@ pub async fn claim_send_transfer(
 pub async fn renew_transfer_lease(
     pool: &Pool<Sqlite>,
     lease: &TransferLease,
-) -> Result<bool, String> {
+) -> Result<Option<TransferLeaseState>, String> {
     let now = unix_timestamp();
-    let result = sqlx::query(
+    let status = sqlx::query_scalar::<_, String>(
         "UPDATE transfers SET lease_until = ? WHERE id = ? AND lease_token = ? AND lease_until > ?
-         AND status IN ('transferring', 'cancelling')",
+         AND status IN ('transferring', 'cancelling') RETURNING status",
     )
     .bind(now + TRANSFER_LEASE_SECONDS)
     .bind(&lease.transfer_id)
     .bind(&lease.token)
     .bind(now)
-    .execute(pool)
+    .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())?;
-    Ok(result.rows_affected() == 1)
+    Ok(status.map(|status| match status.as_str() {
+        "cancelling" => TransferLeaseState::Cancelling,
+        _ => TransferLeaseState::Active,
+    }))
 }
 
 pub async fn update_owned_transfer(
@@ -4356,7 +4368,8 @@ mod tests {
 
     #[tokio::test]
     async fn file_execution_lease_recovers_restart_and_rejects_stale_completion() {
-        let app_dir = std::env::temp_dir().join(format!("xchat-file-lease-{}", uuid::Uuid::new_v4()));
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-file-lease-{}", uuid::Uuid::new_v4()));
         let pool = init_db_standalone(Some(app_dir.clone())).await.unwrap();
         let conversation = ensure_direct_conversation(&pool, "peer").await.unwrap();
         for status in [
@@ -4460,14 +4473,21 @@ mod tests {
         assert_eq!(resumed.status, "waiting_peer");
         assert_eq!(resumed.bytes_transferred, 40);
         let current = claim_send_transfer(&pool, "queued").await.unwrap().unwrap();
-        assert!(!renew_transfer_lease(&pool, &old).await.unwrap());
+        assert_eq!(renew_transfer_lease(&pool, &old).await.unwrap(), None);
         assert!(
             update_owned_transfer(&pool, &old, "failed", 99, Some("late worker"))
                 .await
                 .is_err()
         );
-        assert!(renew_transfer_lease(&pool, &current).await.unwrap());
+        assert_eq!(
+            renew_transfer_lease(&pool, &current).await.unwrap(),
+            Some(TransferLeaseState::Active)
+        );
         cancel_transfer(&pool, "queued").await.unwrap();
+        assert_eq!(
+            renew_transfer_lease(&pool, &current).await.unwrap(),
+            Some(TransferLeaseState::Cancelling)
+        );
         assert!(
             update_owned_transfer(&pool, &current, "transferring", 80, None)
                 .await
@@ -4497,6 +4517,54 @@ mod tests {
             .is_none());
         pool.close().await;
         remove_test_database(&pool, &app_dir).await;
+    }
+
+    #[tokio::test]
+    async fn qa_empty_recipient_enqueue_does_not_leave_an_unretryable_message() {
+        let app_dir = std::env::temp_dir().join(format!("xchat-qa-empty-{}", uuid::Uuid::new_v4()));
+        let pool = init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        let self_id = get_user_id(&pool).await.unwrap();
+        let members = vec![NewConversationMember {
+            peer_id: self_id.clone(),
+            display_name: "Owner".into(),
+            role: "owner".into(),
+        }];
+        let group = apply_group_sync(&pool, "empty-group", "Group", &self_id, 1, &members)
+            .await
+            .unwrap();
+        let result = enqueue_outgoing_message(
+            &pool,
+            OutgoingMessage {
+                conversation_id: &group.id,
+                sender_id: &self_id,
+                receiver_id: None,
+                content: "Nobody else remains",
+                msg_type: "text",
+                timestamp: 100,
+                status: "sent",
+                client_message_id: "empty-targets",
+                recipients: &[],
+                mentions: &[],
+            },
+            None,
+        )
+        .await;
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM messages WHERE client_message_id = 'empty-targets'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+        remove_test_database(&pool, &app_dir).await;
+        assert!(
+            result.is_err(),
+            "accepting a message with no target breaks idempotent retries"
+        );
+        assert_eq!(
+            count, 0,
+            "rejected acceptance must leave no message body behind"
+        );
     }
 
     #[tokio::test]

@@ -15,7 +15,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> std::process::ExitCode {
     let args = Args::parse();
 
     // Step 2: 若 --db-path 没传，读 config.json
@@ -65,13 +65,37 @@ async fn main() {
             app_handle: None,
         },
     );
-    match runtime.wait_ready(Duration::from_secs(20)).await {
-        Ok(_) => println!("[Server Main] ready http://localhost:{port} health=/api/health"),
-        Err(error) => eprintln!("[Server Main] {error}; supervisor will keep retrying"),
+    let shutdown = tokio::signal::ctrl_c();
+    tokio::pin!(shutdown);
+    let stopped_during_startup = tokio::select! {
+        signal = &mut shutdown => {
+            if let Err(error) = signal {
+                eprintln!("[Server Main] shutdown signal failed: {error}");
+            }
+            true
+        }
+        ready = runtime.wait_ready(Duration::from_secs(20)) => {
+            match ready {
+                Ok(_) => println!("[Server Main] ready http://localhost:{port} health=/api/health"),
+                Err(error) if runtime.health().state == "stopped" => {
+                    eprintln!("[Server Main] {error}");
+                }
+                Err(error) => eprintln!("[Server Main] {error}; supervisor will keep retrying"),
+            }
+            runtime.health().state == "stopped"
+        }
+    };
+    if !stopped_during_startup {
+        if let Err(error) = shutdown.await {
+            eprintln!("[Server Main] shutdown signal failed: {error}");
+        }
     }
-    if let Err(error) = tokio::signal::ctrl_c().await {
-        eprintln!("[Server Main] shutdown signal failed: {error}");
-    }
+    let startup_failed = runtime.health().state == "stopped";
     runtime.shutdown().await;
     pool.close().await;
+    if startup_failed {
+        std::process::ExitCode::FAILURE
+    } else {
+        std::process::ExitCode::SUCCESS
+    }
 }

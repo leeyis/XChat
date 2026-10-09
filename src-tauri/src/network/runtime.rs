@@ -95,7 +95,9 @@ impl NetworkRuntime {
                     return Ok(snapshot);
                 }
                 if snapshot.state == "stopped" {
-                    return Err("network runtime stopped".into());
+                    return Err(snapshot
+                        .last_error
+                        .unwrap_or_else(|| "network runtime stopped".into()));
                 }
                 health
                     .changed()
@@ -310,6 +312,17 @@ async fn supervise(
     health: watch::Sender<NetworkHealth>,
     mut stop: watch::Receiver<bool>,
 ) {
+    // TCP and UDP would select unrelated ephemeral ports for zero. Never advertise
+    // an unusable port or report ready for this permanent configuration error.
+    if config.port == 0 {
+        let error = "network port must be between 1 and 65535".to_string();
+        eprintln!("[NetworkRuntime] {error}");
+        health.send_modify(|h| {
+            h.state = "stopped".into();
+            h.last_error = Some(error);
+        });
+        return;
+    }
     let mut failures = 0;
     while !*stop.borrow() {
         health.send_modify(|h| {
@@ -389,6 +402,33 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn qa_zero_port_stops_before_starting_services() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let runtime = NetworkRuntime::start(RuntimeConfig {
+            port: 0,
+            user_id: "self".into(),
+            username: "test".into(),
+            pool: pool.clone(),
+            peer_manager: Arc::new(PeerManager::new()),
+            #[cfg(feature = "desktop")]
+            app_handle: None,
+        });
+        let error = runtime
+            .wait_ready(Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert!(error.contains("port must be between"), "{error}");
+        let health = runtime.health();
+        assert_eq!(health.state, "stopped");
+        assert_eq!(health.generation, 0);
+        assert!(!health.http_ready && !health.discovery_ready && !health.database_ready);
+        runtime.shutdown().await;
+        pool.close().await;
+    }
+
+    #[tokio::test]
     async fn occupied_port_recovers_readiness_and_shutdown_releases_listeners() {
         let occupied = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
         let port = occupied.local_addr().unwrap().port();
@@ -401,6 +441,13 @@ mod tests {
         crate::db::update_download_path(&pool, downloads.to_string_lossy().into_owned())
             .await
             .unwrap();
+        crate::db::set_setting(
+            &pool,
+            "network.discovery.settings.v1",
+            r#"{"local_discovery":false,"vpn_discovery":false,"interface_overrides":{}}"#,
+        )
+        .await
+        .unwrap();
         let config = RuntimeConfig {
             port,
             user_id: crate::db::get_user_id(&pool).await.unwrap(),
@@ -445,8 +492,34 @@ mod tests {
         ))
         .await
         .unwrap();
-        runtime.shutdown().await;
+        // An oversized datagram is a bad packet, not a failed service. In particular,
+        // Windows reports WSAEMSGSIZE instead of returning a truncated datagram.
+        let sender = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        sender
+            .send_to(&[b'x'; 2048], ("127.0.0.1", port))
+            .await
+            .unwrap();
         use futures_util::StreamExt;
+        // Other concurrent tests may publish normal workspace broadcasts. Only
+        // connection closure is a failure; keep consuming unrelated data frames.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), async {
+                while let Some(frame) = socket.next().await {
+                    if matches!(
+                        frame,
+                        Err(_) | Ok(tokio_tungstenite::tungstenite::Message::Close(_))
+                    ) {
+                        return;
+                    }
+                }
+            })
+            .await
+            .is_err(),
+            "a bad UDP packet must not close an established WebSocket"
+        );
+        assert_eq!(runtime.health().state, "ready");
+        assert_eq!(runtime.health().generation, ready.generation);
+        runtime.shutdown().await;
         let closed = tokio::time::timeout(Duration::from_secs(2), socket.next())
             .await
             .unwrap();

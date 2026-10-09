@@ -854,6 +854,12 @@ fn try_recv_discovery_packet(
     if received < 0 {
         return Err(std::io::Error::last_os_error());
     }
+    if message.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "truncated discovery packet",
+        ));
+    }
     if source.ss_family != libc::AF_INET as libc::sa_family_t {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -956,6 +962,22 @@ fn try_recv_discovery_packet(
         source,
         ingress_index,
     })
+}
+
+// These errors consume only one datagram (or report an ICMP response). They do
+// not invalidate the listener and must not restart unrelated HTTP/file traffic.
+fn discardable_receive_error(error: &std::io::Error) -> bool {
+    #[cfg(target_os = "windows")]
+    if error.raw_os_error() == Some(windows_sys::Win32::Networking::WinSock::WSAEMSGSIZE) {
+        return true;
+    }
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::Interrupted
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionRefused
+    )
 }
 
 #[cfg(any(unix, target_os = "windows"))]
@@ -1890,9 +1912,8 @@ pub async fn listen_on(
         let packet = tokio::select! {
             result = recv_discovery_packet(&socket, &mut buf) => match result {
                 Ok(packet) => packet,
-                Err(error) => {
-                    return Err(format!("discovery receive failed: {error}"));
-                }
+                Err(error) if discardable_receive_error(&error) => continue,
+                Err(error) => return Err(format!("discovery receive failed: {error}")),
             },
             _ = tokio::time::sleep_until(next_policy_refresh) => {
                 refresh_listener_policy(
@@ -2138,9 +2159,8 @@ pub async fn listen_on(
         let packet = tokio::select! {
             result = recv_discovery_packet(&socket, &mut buf) => match result {
                 Ok(packet) => packet,
-                Err(error) => {
-                    return Err(format!("discovery receive failed: {error}"));
-                }
+                Err(error) if discardable_receive_error(&error) => continue,
+                Err(error) => return Err(format!("discovery receive failed: {error}")),
             },
             _ = tokio::time::sleep_until(next_policy_refresh) => {
                 refresh_listener_policy(
