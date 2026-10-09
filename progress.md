@@ -1,5 +1,7 @@
 # 2026-10-09 阶段二：开发进度
 
+用户追问截图与 UI 影响：核对阶段一 `6298408..de5e87a`、阶段二 `de5e87a..5d3e5b9` 的文件清单及前端/commands/入口/Cargo 差异，确认截图实现和 UI 布局样式未改；已把保持当前截图功能的要求记入 task_plan.md 和 findings.md。本次仅核对和更新记忆文档，没有修改产品代码。
+
 最新进度：阶段二开发与本机验收完成，最终实现 `9bb49ca`。Web 174 项、Desktop 199 项通过，2 项原有实时截图测试 ignored；前端 179 项与构建、desktop/web/Android arm64 编译均通过（Android 9 个既有警告）。Tauri/Web 原生命令权限、设备新增/删除渲染、空增量和零未捕获异常已归档。release 4 GiB+1 用例 152.289 秒完成且摘要正确；1352 条文本 ACK 无失败、P95 154.673 ms、接收峰值工作集 34.33 MiB。最终空闲工作区 mean 14.632 ms / P95 25.636 ms / 253 bytes。交付报告 `docs/stability-phase-2-implementation.md` 明确未覆盖的多机/慢盘/Wi-Fi/移动实机项目；没有安装或推送。
 
 收尾：配置竞态与控制响应大小修复先通过 Web/Desktop 全量再提交 `9bb49ca`；debug 重建、Android 复验、desktop lib/bin check 成功后，在没有本轮构建并行时运行最终工作区基准。错误夹具的专属临时下载目录及本轮 Python 缓存已校验绝对路径后清理，保留诊断日志/数据库；原有 analysis/ 未动。报告/原始 JSON/规划文件一起归档提交。
