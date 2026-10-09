@@ -4027,6 +4027,7 @@ async fn prepare_parallel_upload_for_version(
         }
         return Json(serde_json::json!({
             "status": if digest_pending { "ready" } else { "already_exists" },
+            "max_parallel_channels": crate::network::transfer::RECEIVE_CHANNELS_PER_PEER,
             "message_id": message.id,
             "transfer_id": payload.transfer_id,
             "received": payload.file_size,
@@ -4208,6 +4209,7 @@ async fn prepare_parallel_upload_for_version(
         "status": "ready",
         "message_id": message.id,
         "transfer_id": manifest.transfer_id,
+        "max_parallel_channels": crate::network::transfer::RECEIVE_CHANNELS_PER_PEER,
         "received": received,
         "missing_chunks": missing_chunks,
     }))
@@ -5052,7 +5054,7 @@ async fn upload_file_http(
 ) -> impl IntoResponse {
     // Legacy multipart sends its identity in the body; take the device budget
     // before parsing/allocating any chunk (new parallel uploads also cap peers).
-    let _receive_permit = match crate::network::transfer::receive_permit("") {
+    let _receive_permit = match crate::network::transfer::receive_permit("").await {
         Ok(permit) => permit,
         Err(error) => return api_error(StatusCode::SERVICE_UNAVAILABLE, error),
     };

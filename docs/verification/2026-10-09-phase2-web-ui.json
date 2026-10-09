@@ -1,0 +1,10 @@
+{
+  "mode": "web",
+  "initial_render": true,
+  "native_command_permission": false,
+  "empty_delta": true,
+  "inserted_device_rendered": true,
+  "deleted_device_removed": true,
+  "uncaught_exceptions": [],
+  "sync_http_requests": 4
+}

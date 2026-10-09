@@ -60,6 +60,14 @@ impl TransferConcurrencyGeneration {
         self.limit
     }
 
+    pub fn set_peer_limit(&self, peer: &str, limit: u8) {
+        self.budget
+            .lock()
+            .peer_limits
+            .insert(peer.to_owned(), usize::from(limit.clamp(1, 16)));
+        self.budget.changed.notify_waiters();
+    }
+
     pub async fn acquire(
         &self,
         cancellation: &TransferCancellationToken,
@@ -141,13 +149,18 @@ struct StreamBudgetState {
     limit: usize,
     active: usize,
     peers: HashMap<String, usize>,
+    peer_limits: HashMap<String, usize>,
     next_ticket: u64,
     waiters: VecDeque<(u64, String)>,
 }
 
 impl StreamBudgetState {
     fn peer_available(&self, peer: &str) -> bool {
-        peer.is_empty() || self.peers.get(peer).copied().unwrap_or(0) < (self.limit / 2).max(4)
+        peer.is_empty()
+            || self.peers.get(peer).copied().unwrap_or(0)
+                < (self.limit / 2)
+                    .max(4)
+                    .min(self.peer_limits.get(peer).copied().unwrap_or(16))
     }
 }
 
@@ -182,6 +195,7 @@ impl StreamBudget {
         }
     }
 
+    #[cfg(test)]
     fn try_acquire(self: &Arc<Self>, peer: &str) -> Result<StreamPermit, String> {
         let mut state = self.lock();
         if state.active >= state.limit || !state.peer_available(peer) {
@@ -226,11 +240,26 @@ impl Drop for StreamPermit {
     }
 }
 
-pub fn receive_permit(peer: &str) -> Result<StreamPermit, String> {
+pub const RECEIVE_CHANNELS_PER_PEER: u8 = 4;
+
+pub async fn receive_permit(peer: &str) -> Result<StreamPermit, String> {
     static BUDGET: OnceLock<Arc<StreamBudget>> = OnceLock::new();
-    BUDGET
-        .get_or_init(|| StreamBudget::new(8))
-        .try_acquire(peer)
+    static WAITERS: Semaphore = Semaphore::const_new(32);
+    let _waiting = WAITERS
+        .try_acquire()
+        .map_err(|_| "文件接收繁忙，请稍后重试".to_string())?;
+    let generation = TransferConcurrencyGeneration {
+        limit: 8,
+        budget: BUDGET.get_or_init(|| StreamBudget::new(8)).clone(),
+    };
+    let token = Arc::new(AtomicBool::new(false));
+    tokio::time::timeout(
+        Duration::from_secs(300),
+        generation.acquire_for_peer(peer, &token),
+    )
+    .await
+    .map_err(|_| "文件接收繁忙，请稍后重试".to_string())?
+    .map_err(|_| "文件接收预算已关闭".to_string())
 }
 
 pub async fn digest_permit() -> Result<OwnedSemaphorePermit, String> {
@@ -593,6 +622,43 @@ mod tests {
             drop(held);
             assert_eq!(generation.budget.lock().active, 0);
         }
+    }
+
+    #[tokio::test]
+    async fn receiver_capacity_limits_existing_generations_and_legacy_requests_wait() {
+        let controller = TransferConcurrencyController::default();
+        let old = controller.generation(16).unwrap();
+        let current = controller.generation(16).unwrap();
+        current.set_peer_limit("receiver", 4);
+        let token = Arc::new(AtomicBool::new(false));
+        let mut held = Vec::new();
+        for _ in 0..4 {
+            held.push(old.acquire_for_peer("receiver", &token).await.unwrap());
+        }
+        assert!(tokio::time::timeout(
+            Duration::from_millis(30),
+            current.acquire_for_peer("receiver", &token)
+        )
+        .await
+        .is_err());
+        let _other = current.acquire_for_peer("other", &token).await.unwrap();
+        let peer = format!("legacy-receive-{}", uuid::Uuid::new_v4());
+        let mut incoming = Vec::new();
+        for _ in 0..4 {
+            incoming.push(receive_permit(&peer).await.unwrap());
+        }
+        let waiting = receive_permit(&peer);
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut waiting)
+                .await
+                .is_err()
+        );
+        incoming.pop();
+        let _received = tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

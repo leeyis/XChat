@@ -292,6 +292,8 @@ struct ParallelPrepareResponse {
     missing_chunks: Vec<usize>,
     #[serde(default)]
     received: u64,
+    #[serde(default)]
+    max_parallel_channels: Option<u8>,
 }
 
 fn advertised_parallel_limit(capabilities: &[String], prefix: &str) -> Option<u8> {
@@ -1627,6 +1629,9 @@ async fn upload_parallel_chunks(
     if let Err(error) = validate_prepared_response(&request, &prepared) {
         return UploadOutcome::Failed(0, error);
     }
+    if let Some(limit) = prepared.max_parallel_channels {
+        job.concurrency.set_peer_limit(&job.peer_id, limit);
+    }
     match prepared.status.as_str() {
         "awaiting_acceptance" => {
             return UploadOutcome::AwaitingAcceptance(prepared.received as i64)
@@ -1777,6 +1782,7 @@ fn validate_prepared_response(
 ) -> Result<(), String> {
     let missing: BTreeSet<_> = response.missing_chunks.iter().copied().collect();
     if missing.len() != response.missing_chunks.len()
+        || response.max_parallel_channels.is_some_and(|limit| limit == 0 || limit > 16)
         || missing.iter().any(|index| *index >= request.chunks.len())
         || response.received > request.file_size
         || (response.status == "ready"
@@ -1830,6 +1836,9 @@ async fn upload_parallel_range(
                     Err(error) => return Err(error.detail),
                 };
                 validate_prepared_response(&prepare, &state)?;
+                if let Some(limit) = state.max_parallel_channels {
+                    concurrency.set_peer_limit(&peer_id, limit);
+                }
                 if matches!(state.status.as_str(), "completed" | "already_exists")
                     || (state.status == "ready" && !state.missing_chunks.contains(&chunk.index))
                 {
@@ -2497,7 +2506,7 @@ pub(crate) async fn receive_parallel_chunk(
         .filter(|chunk| chunk.index == chunk_index)
         .cloned()
         .ok_or_else(|| "并行分块序号无效".to_string())?;
-    let _receive_permit = super::transfer::receive_permit(&manifest.sender_id)?;
+    let _receive_permit = super::transfer::receive_permit(&manifest.sender_id).await?;
     let transfer = db::get_transfer(pool, transfer_id)
         .await?
         .ok_or_else(|| "并行接收传输不存在".to_string())?;
