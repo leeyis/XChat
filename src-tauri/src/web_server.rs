@@ -4413,6 +4413,12 @@ async fn receive_parallel_upload_for_version(
     .await
     {
         Ok(result) => result,
+        Err(error) if error.contains("接收繁忙") => {
+            return api_error(StatusCode::SERVICE_UNAVAILABLE, error)
+        }
+        Err(error) if error.contains("磁盘空间不足") => {
+            return api_error(StatusCode::INSUFFICIENT_STORAGE, error)
+        }
         Err(error) if error.contains("已结束") => {
             return api_error(StatusCode::CONFLICT, error)
         }
@@ -4824,6 +4830,13 @@ async fn receive_conversation_file_chunk(
         return api_error(StatusCode::CONFLICT, "文件分块顺序不正确，请重试");
     }
     if current_size == expected_size {
+        let _disk_reservation = match crate::network::transfer::reserve_disk(
+            &download_root,
+            chunk_data.len() as u64,
+        ).await {
+            Ok(reservation) => reservation,
+            Err(error) => return api_error(StatusCode::INSUFFICIENT_STORAGE, error),
+        };
         let mut file = match tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -5008,6 +5021,12 @@ async fn upload_file_http(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
+    // Legacy multipart sends its identity in the body; take the device budget
+    // before parsing/allocating any chunk (new parallel uploads also cap peers).
+    let _receive_permit = match crate::network::transfer::receive_permit("") {
+        Ok(permit) => permit,
+        Err(error) => return api_error(StatusCode::SERVICE_UNAVAILABLE, error),
+    };
     println!("[Web Server] 收到文件上传请求");
 
     let mut sender_id = String::new();

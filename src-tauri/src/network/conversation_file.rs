@@ -1368,6 +1368,16 @@ async fn upload_chunks(
             return UploadOutcome::Cancelled(bytes_transferred);
         }
 
+        // Reserve the stream before allocating the legacy 4 MiB buffer.
+        let permit = match job.concurrency.acquire_for_peer(&job.peer_id, token).await {
+            Ok(permit) => permit,
+            Err(super::transfer::TransferPermitError::Cancelled) => {
+                return UploadOutcome::Cancelled(bytes_transferred);
+            }
+            Err(super::transfer::TransferPermitError::Closed) => {
+                return UploadOutcome::Failed(bytes_transferred, "文件传输并发控制器已关闭".to_string());
+            }
+        };
         let mut chunk = vec![0; CHUNK_SIZE];
         let mut bytes_read = 0usize;
         while bytes_read < CHUNK_SIZE {
@@ -1432,18 +1442,6 @@ async fn upload_chunks(
             }
         }
 
-        let permit = match job.concurrency.acquire(token).await {
-            Ok(permit) => permit,
-            Err(super::transfer::TransferPermitError::Cancelled) => {
-                return UploadOutcome::Cancelled(bytes_transferred);
-            }
-            Err(super::transfer::TransferPermitError::Closed) => {
-                return UploadOutcome::Failed(
-                    bytes_transferred,
-                    "文件传输并发控制器已关闭".to_string(),
-                );
-            }
-        };
         let response = match await_with_transfer_cancellation(
             client.post(&upload_url).multipart(form).send(),
             token,
@@ -1629,6 +1627,7 @@ async fn upload_parallel_chunks(
             upload_parallel_range(
                 client.clone(),
                 base_url.clone(),
+                job.peer_id.clone(),
                 protocol_version,
                 job.transfer_id.clone(),
                 job.source.path.clone(),
@@ -1749,6 +1748,7 @@ async fn post_parallel_request(
 async fn upload_parallel_range(
     client: reqwest::Client,
     base_url: String,
+    peer_id: String,
     protocol_version: u8,
     transfer_id: String,
     source_path: String,
@@ -1757,12 +1757,13 @@ async fn upload_parallel_range(
     concurrency: super::transfer::TransferConcurrencyGeneration,
     token: super::transfer::TransferCancellationToken,
 ) -> Result<(), String> {
-    let _permit = concurrency.acquire(&token).await.map_err(|error| match error {
-        super::transfer::TransferPermitError::Cancelled => "transfer cancelled".to_string(),
-        super::transfer::TransferPermitError::Closed => {
-            "文件传输并发控制器已关闭".to_string()
-        }
-    })?;
+    let _permit = concurrency
+        .acquire_for_peer(&peer_id, &token)
+        .await
+        .map_err(|error| match error {
+            super::transfer::TransferPermitError::Cancelled => "transfer cancelled".to_string(),
+            super::transfer::TransferPermitError::Closed => "文件传输并发控制器已关闭".to_string(),
+        })?;
     let mut file = tokio::fs::File::open(&source_path)
         .await
         .map_err(|error| format!("打开并行上传源文件失败: {error}"))?;
@@ -2158,10 +2159,12 @@ fn deferred_file_sha256(path: String) -> FileSha256 {
 }
 
 pub(crate) async fn sha256_file(path: &Path) -> Result<String, String> {
+    let permit = super::transfer::digest_permit().await?;
     let path = path.to_path_buf();
     // Dropping the last recipient's future stops the blocking reader between buffers.
     let (_cancel_on_drop, mut cancellation) = tokio::sync::oneshot::channel::<()>();
     tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         use std::io::Read;
 
         let mut file =
@@ -2375,6 +2378,7 @@ pub(crate) async fn receive_parallel_chunk(
         .filter(|chunk| chunk.index == chunk_index)
         .cloned()
         .ok_or_else(|| "并行分块序号无效".to_string())?;
+    let _receive_permit = super::transfer::receive_permit(&manifest.sender_id)?;
     let transfer = db::get_transfer(pool, transfer_id)
         .await?
         .ok_or_else(|| "并行接收传输不存在".to_string())?;
@@ -2403,6 +2407,7 @@ pub(crate) async fn receive_parallel_chunk(
     tokio::fs::create_dir_all(&directory)
         .await
         .map_err(|error| format!("创建并行分块目录失败: {error}"))?;
+    let _disk_reservation = super::transfer::reserve_disk(download_root, chunk.length).await?;
     let temporary = directory.join(format!(
         ".{chunk_index:06}-{}.tmp",
         uuid::Uuid::new_v4()
@@ -2754,12 +2759,16 @@ pub(crate) async fn merge_parallel_parts(
     if !valid_parallel_sha256(&manifest.file_sha256) {
         return Err("并行传输缺少完整文件摘要".to_string());
     }
+    let permit = super::transfer::merge_permit().await?;
+    let disk_reservation = super::transfer::reserve_disk(download_root, manifest.file_size).await?;
     on_phase(ReceiveProcessingPhase::Merging);
     let partial_path = received_partial_path(download_root, &manifest.transfer_id);
     let root = download_root.to_path_buf();
     let job = manifest.clone();
     let (_cancel_on_drop, mut cancellation) = tokio::sync::oneshot::channel::<()>();
     let (pending, digest) = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let _disk_reservation = disk_reservation;
         copy_and_hash_parallel_parts(&root, &job, || {
             cancellation.try_recv() == Err(tokio::sync::oneshot::error::TryRecvError::Closed)
         })
