@@ -37,10 +37,9 @@ pub async fn save_max_parallel_channels(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     value: u8,
 ) -> Result<(), String> {
-    let value = validate_max_parallel_channels(value)?;
-    crate::db::set_setting(pool, MAX_PARALLEL_CHANNELS_SETTING_KEY, &value.to_string()).await?;
-    concurrency_controller().generation(value)?;
-    Ok(())
+    concurrency_controller()
+        .save_configuration(pool, value)
+        .await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,17 +121,41 @@ impl TransferConcurrencyGeneration {
 #[derive(Debug)]
 pub struct TransferConcurrencyController {
     budget: Arc<StreamBudget>,
+    configuration: tokio::sync::Mutex<()>,
 }
 
 impl Default for TransferConcurrencyController {
     fn default() -> Self {
         Self {
             budget: StreamBudget::new(usize::from(DEFAULT_MAX_PARALLEL_CHANNELS)),
+            configuration: tokio::sync::Mutex::new(()),
         }
     }
 }
 
 impl TransferConcurrencyController {
+    pub async fn configured_generation(
+        &self,
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+    ) -> Result<TransferConcurrencyGeneration, String> {
+        // Keep the database read and budget update ordered with settings saves.
+        // A delayed read must never restore the limit that preceded a save.
+        let _configuration = self.configuration.lock().await;
+        self.generation(load_max_parallel_channels(pool).await?)
+    }
+
+    async fn save_configuration(
+        &self,
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        value: u8,
+    ) -> Result<(), String> {
+        let value = validate_max_parallel_channels(value)?;
+        let _configuration = self.configuration.lock().await;
+        crate::db::set_setting(pool, MAX_PARALLEL_CHANNELS_SETTING_KEY, &value.to_string()).await?;
+        self.generation(value)?;
+        Ok(())
+    }
+
     pub fn generation(&self, limit: u8) -> Result<TransferConcurrencyGeneration, String> {
         let limit = validate_max_parallel_channels(limit)?;
         self.budget.lock().limit = usize::from(limit);
@@ -537,6 +560,34 @@ mod tests {
         assert_eq!(
             load_max_parallel_channels(&pool).await.unwrap(),
             DEFAULT_MAX_PARALLEL_CHANNELS
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_save_stays_ordered_after_a_blocked_generation_read() {
+        let pool = settings_pool().await;
+        let controller = TransferConcurrencyController::default();
+        controller.save_configuration(&pool, 16).await.unwrap();
+        let connection = pool.acquire().await.unwrap();
+        let reading = controller.configured_generation(&pool);
+        tokio::pin!(reading);
+        assert!(futures_util::poll!(&mut reading).is_pending());
+        let saving = controller.save_configuration(&pool, 4);
+        tokio::pin!(saving);
+        assert!(futures_util::poll!(&mut saving).is_pending());
+        drop(connection);
+        let old = reading.await.unwrap();
+        assert_eq!(old.limit(), 16);
+        saving.await.unwrap();
+        assert_eq!(old.budget.lock().limit, 4);
+        assert_eq!(load_max_parallel_channels(&pool).await.unwrap(), 4);
+        assert_eq!(
+            controller
+                .configured_generation(&pool)
+                .await
+                .unwrap()
+                .limit(),
+            4
         );
     }
 

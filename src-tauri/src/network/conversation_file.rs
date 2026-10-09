@@ -437,8 +437,10 @@ pub async fn send_path(
             })
         })
         .collect();
-    let local_limit = super::transfer::load_max_parallel_channels(pool).await?;
-    let concurrency = super::transfer::concurrency_controller().generation(local_limit)?;
+    let concurrency = super::transfer::concurrency_controller()
+        .configured_generation(pool)
+        .await?;
+    let local_limit = concurrency.limit();
     let upload_plans: HashMap<_, _> = recipient_ids
         .iter()
         .map(|peer_id| {
@@ -558,8 +560,10 @@ pub async fn resume_waiting_for_peer(
     let Some(peer) = active_peers.iter().find(|peer| peer.id == peer_id) else {
         return Err("peer is not online".to_string());
     };
-    let local_limit = super::transfer::load_max_parallel_channels(pool).await?;
-    let concurrency = super::transfer::concurrency_controller().generation(local_limit)?;
+    let concurrency = super::transfer::concurrency_controller()
+        .configured_generation(pool)
+        .await?;
+    let local_limit = concurrency.limit();
 
     let transfers = sqlx::query_as::<_, TransferRecord>(
         "SELECT id, message_id, conversation_id, peer_id, direction, status,
@@ -713,9 +717,11 @@ pub async fn resume_transfer(
         .find(|transfer| transfer.status == "awaiting_acceptance")
         .or_else(|| transfers.first())
         .ok_or_else(|| "resumable file transfer not found".to_string())?;
-    let local_limit = super::transfer::load_max_parallel_channels(pool).await?;
+    let concurrency = super::transfer::concurrency_controller()
+        .configured_generation(pool)
+        .await?;
+    let local_limit = concurrency.limit();
     let upload_plan = upload_plan_for_resume(&previous.id, peer_capabilities, local_limit);
-    let concurrency = super::transfer::concurrency_controller().generation(local_limit)?;
     let mut job = prepare_resume_job(pool, previous, peer_addr, upload_plan, concurrency).await?;
     let layout_matches = transfer_id_matches_upload_plan(&previous.id, upload_plan);
     let transfer = if previous.status == "awaiting_acceptance" && layout_matches {
@@ -953,8 +959,10 @@ pub async fn retry_message(
         .into_iter()
         .map(|peer| (peer.id.clone(), peer))
         .collect();
-    let local_limit = super::transfer::load_max_parallel_channels(pool).await?;
-    let concurrency = super::transfer::concurrency_controller().generation(local_limit)?;
+    let concurrency = super::transfer::concurrency_controller()
+        .configured_generation(pool)
+        .await?;
+    let local_limit = concurrency.limit();
     let upload_plans: HashMap<_, _> = retry_recipients
         .iter()
         .map(|peer_id| {

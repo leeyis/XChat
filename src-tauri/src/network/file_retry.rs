@@ -1,10 +1,12 @@
 //! Retry only transport failures and explicit temporary HTTP responses.
+use futures_util::StreamExt;
 use serde::{de::DeserializeOwned, Serialize};
 use std::time::Duration;
 
 pub(super) const ATTEMPTS: usize = 3;
 pub(super) const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) const RESPONSE_TIMEOUT: Duration = Duration::from_secs(300);
+const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug)]
 pub(super) struct RequestError {
@@ -49,20 +51,35 @@ pub(super) async fn decode<T: DeserializeOwned>(
     response: reqwest::Response,
 ) -> Result<T, RequestError> {
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|error| RequestError::transient(format!("读取传输响应失败: {error}")))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(RequestError::permanent("文件传输控制响应超过 64 KiB"));
+    }
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk =
+            chunk.map_err(|error| RequestError::transient(format!("读取传输响应失败: {error}")))?;
+        if chunk.len() > MAX_RESPONSE_BYTES.saturating_sub(body.len()) {
+            return Err(RequestError::permanent("文件传输控制响应超过 64 KiB"));
+        }
+        body.extend_from_slice(&chunk);
+    }
     if !status.is_success() {
         return Err(RequestError {
             detail: format!(
                 "接收端拒绝传输 ({status}): {}",
-                body.chars().take(512).collect::<String>()
+                String::from_utf8_lossy(&body)
+                    .chars()
+                    .take(512)
+                    .collect::<String>()
             ),
             retryable: retryable_status(status),
         });
     }
-    serde_json::from_str(&body)
+    serde_json::from_slice(&body)
         .map_err(|error| RequestError::permanent(format!("解析传输响应失败: {error}")))
 }
 
@@ -101,6 +118,53 @@ pub(super) async fn post<T: DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn oversized_fixed_and_chunked_responses_are_rejected_without_retry() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        let router = axum::Router::new().route(
+            "/:mode",
+            axum::routing::post(
+                move |axum::extract::Path(mode): axum::extract::Path<String>| {
+                    let counted = counted.clone();
+                    async move {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        if mode == "fixed" {
+                            return axum::response::Response::new(axum::body::Body::from(
+                                vec![b'x'; MAX_RESPONSE_BYTES + 1],
+                            ));
+                        }
+                        let body = futures_util::stream::iter(
+                            (0..17).map(|_| Ok::<_, std::io::Error>(vec![b'x'; 4096])),
+                        );
+                        axum::response::Response::builder()
+                            .status(if mode == "busy" { 503 } else { 200 })
+                            .body(axum::body::Body::from_stream(body))
+                            .unwrap()
+                    }
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let client = reqwest::Client::new();
+        for mode in ["fixed", "chunked", "busy"] {
+            let error = post::<serde_json::Value>(&client, &format!("{base}/{mode}"), &())
+                .await
+                .unwrap_err();
+            assert!(error.contains("64 KiB"), "{mode}: {error}");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        server.abort();
+    }
 
     #[test]
     fn disk_identity_protocol_and_validation_errors_are_not_retried() {
