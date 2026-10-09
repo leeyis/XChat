@@ -429,58 +429,61 @@ pub async fn send_path(
     } else {
         "sent"
     };
-    let message = db::save_conversation_message(
-        pool,
-        conversation_id,
-        &my_id,
-        receiver_id,
-        &source.file_name,
-        "file",
-        unix_timestamp(),
-        message_status,
-        &client_message_id,
-    )
-    .await?;
     let file_status = if online_addresses.is_empty() {
         "waiting_peer"
     } else {
         "queued"
     };
-    let message =
-        db::set_file_message_metadata(pool, message.id, &source.path, source.size, file_status)
-            .await?;
-    db::ensure_message_recipients(pool, &client_message_id, &recipient_ids).await?;
-
     let group_sync = group_sync_message(&conversation, &members)?;
-    let mut transfers = Vec::with_capacity(recipient_ids.len());
-    let mut jobs = Vec::with_capacity(online_addresses.len());
-    for peer_id in recipient_ids {
-        let upload_plan = upload_plans
-            .get(&peer_id)
-            .copied()
-            .unwrap_or_else(|| UploadPlan::new(UploadProtocol::SequentialV1, 1));
-        let transfer_id =
-            new_transfer_id_for_plan(&client_message_id, &peer_id, upload_plan, false);
-        let status = if online_addresses.contains_key(&peer_id) {
-            "queued"
-        } else {
-            "waiting_peer"
-        };
-        let transfer = db::create_transfer(
-            pool,
-            &transfer_id,
-            Some(message.id),
+    let planned_transfers = recipient_ids
+        .iter()
+        .map(|peer_id| {
+            let upload_plan = upload_plans
+                .get(peer_id)
+                .copied()
+                .unwrap_or_else(|| UploadPlan::new(UploadProtocol::SequentialV1, 1));
+            db::OutgoingTransfer {
+                id: new_transfer_id_for_plan(&client_message_id, peer_id, upload_plan, false),
+                peer_id: peer_id.clone(),
+                status: if online_addresses.contains_key(peer_id) {
+                    "queued"
+                } else {
+                    "waiting_peer"
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    let enqueued = db::enqueue_outgoing_message(
+        pool,
+        db::OutgoingMessage {
             conversation_id,
-            &peer_id,
-            "send",
-            status,
-            source.size,
-        )
-        .await?;
-
-        if let Some(peer_addr) = online_addresses.get(&peer_id) {
+            sender_id: &my_id,
+            receiver_id,
+            content: &source.file_name,
+            msg_type: "file",
+            timestamp: unix_timestamp(),
+            status: message_status,
+            client_message_id: &client_message_id,
+            recipients: &recipient_ids,
+            mentions: &[],
+        },
+        Some(db::OutgoingFile {
+            path: &source.path,
+            size: source.size,
+            status: file_status,
+            transfers: &planned_transfers,
+        }),
+    )
+    .await?;
+    let message = enqueued.message;
+    let transfers = enqueued.transfers;
+    let mut jobs = Vec::with_capacity(online_addresses.len());
+    for transfer in &transfers {
+        let peer_id = &transfer.peer_id;
+        let upload_plan = upload_plans[peer_id];
+        if let Some(peer_addr) = online_addresses.get(peer_id) {
             jobs.push(UploadJob {
-                transfer_id,
+                transfer_id: transfer.id.clone(),
                 peer_id: peer_id.clone(),
                 peer_addr: peer_addr.clone(),
                 conversation_id: conversation_id.to_string(),
@@ -490,12 +493,9 @@ pub async fn send_path(
                 group_sync: group_sync.clone(),
                 upload_plan,
                 concurrency: concurrency.clone(),
-                file_sha256: upload_plan
-                    .is_parallel()
-                    .then(|| parallel_hash.clone()),
+                file_sha256: upload_plan.is_parallel().then(|| parallel_hash.clone()),
             });
         }
-        transfers.push(transfer);
     }
 
     for job in jobs {

@@ -1,6 +1,6 @@
 use crate::utils::{is_legacy_generated_name, machine_name};
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqlitePool, Pool, Sqlite};
+use sqlx::{sqlite::SqlitePool, Pool, Sqlite, SqliteConnection};
 use std::path::PathBuf;
 
 #[cfg(feature = "desktop")]
@@ -2404,6 +2404,39 @@ pub async fn save_conversation_message(
     status: &str,
     client_message_id: &str,
 ) -> Result<MessageRecord, String> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("开始消息事务失败: {e}"))?;
+    let message = save_conversation_message_on(
+        &mut tx,
+        conversation_id,
+        sender_id,
+        receiver_id,
+        content,
+        msg_type,
+        timestamp,
+        status,
+        client_message_id,
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("提交消息事务失败: {e}"))?;
+    Ok(message)
+}
+
+async fn save_conversation_message_on(
+    connection: &mut SqliteConnection,
+    conversation_id: &str,
+    sender_id: &str,
+    receiver_id: Option<&str>,
+    content: &str,
+    msg_type: &str,
+    timestamp: i64,
+    status: &str,
+    client_message_id: &str,
+) -> Result<MessageRecord, String> {
     if conversation_id.trim().is_empty()
         || sender_id.trim().is_empty()
         || msg_type.trim().is_empty()
@@ -2411,10 +2444,25 @@ pub async fn save_conversation_message(
     {
         return Err("conversation, sender, message type and client message id are required".into());
     }
-    if get_conversation(pool, conversation_id).await?.is_none() {
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?)")
+            .bind(conversation_id)
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(|e| e.to_string())?;
+    if !exists {
         return Err("conversation not found".to_string());
     }
-    if let Some(existing) = get_message_by_client_id(pool, client_message_id).await? {
+    let existing = sqlx::query_as::<_, MessageRecord>(
+        "SELECT id, sender_id, receiver_id, content, msg_type, timestamp, file_path,
+                file_status, file_size, sender_msg_id, status, conversation_id, client_message_id
+         FROM messages WHERE client_message_id = ?",
+    )
+    .bind(client_message_id)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|e| e.to_string())?;
+    if let Some(existing) = existing {
         if existing.status.as_deref() == Some("recalled") {
             if existing.conversation_id.as_deref() == Some(conversation_id)
                 && existing.sender_id == sender_id
@@ -2430,11 +2478,6 @@ pub async fn save_conversation_message(
     } else {
         unix_timestamp()
     };
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| format!("开始消息事务失败: {}", e))?;
-
     sqlx::query(
         "INSERT INTO messages
             (sender_id, receiver_id, content, msg_type, timestamp, status,
@@ -2459,7 +2502,7 @@ pub async fn save_conversation_message(
     .bind(status)
     .bind(conversation_id)
     .bind(client_message_id)
-    .execute(&mut *tx)
+    .execute(&mut *connection)
     .await
     .map_err(|e| format!("保存会话消息失败: {}", e))?;
 
@@ -2470,16 +2513,16 @@ pub async fn save_conversation_message(
          FROM messages WHERE client_message_id = ?",
     )
     .bind(client_message_id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *connection)
     .await
     .map_err(|e| format!("读取会话消息失败: {}", e))?;
 
     if message.conversation_id.as_deref() != Some(conversation_id)
         || message.sender_id != sender_id
+        || message.receiver_id.as_deref() != receiver_id
         || message.content != content
         || message.msg_type != msg_type
     {
-        tx.rollback().await.ok();
         return Err("client message id conflicts with another message".to_string());
     }
 
@@ -2490,14 +2533,214 @@ pub async fn save_conversation_message(
     )
     .bind(timestamp)
     .bind(conversation_id)
-    .execute(&mut *tx)
+    .execute(&mut *connection)
     .await
     .map_err(|e| format!("更新会话时间失败: {}", e))?;
 
+    Ok(message)
+}
+
+pub struct OutgoingMessage<'a> {
+    pub conversation_id: &'a str,
+    pub sender_id: &'a str,
+    pub receiver_id: Option<&'a str>,
+    pub content: &'a str,
+    pub msg_type: &'a str,
+    pub timestamp: i64,
+    pub status: &'a str,
+    pub client_message_id: &'a str,
+    pub recipients: &'a [String],
+    pub mentions: &'a [String],
+}
+
+pub struct OutgoingTransfer {
+    pub id: String,
+    pub peer_id: String,
+    pub status: &'static str,
+}
+
+pub struct OutgoingFile<'a> {
+    pub path: &'a str,
+    pub size: i64,
+    pub status: &'a str,
+    pub transfers: &'a [OutgoingTransfer],
+}
+
+pub struct EnqueuedMessage {
+    pub message: MessageRecord,
+    pub recipients: Vec<String>,
+    pub transfers: Vec<TransferRecord>,
+    pub is_new: bool,
+}
+
+/// Accept an outgoing operation only after its complete, recoverable work set is durable.
+/// No networking or source-file IO may run while this transaction is held.
+pub async fn enqueue_outgoing_message(
+    pool: &Pool<Sqlite>,
+    outgoing: OutgoingMessage<'_>,
+    file: Option<OutgoingFile<'_>>,
+) -> Result<EnqueuedMessage, String> {
+    use std::collections::BTreeSet;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
+    let is_new: bool = !sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM messages WHERE client_message_id = ?)",
+    )
+    .bind(outgoing.client_message_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut message = save_conversation_message_on(
+        &mut tx,
+        outgoing.conversation_id,
+        outgoing.sender_id,
+        outgoing.receiver_id,
+        outgoing.content,
+        outgoing.msg_type,
+        outgoing.timestamp,
+        outgoing.status,
+        outgoing.client_message_id,
+    )
+    .await?;
+    if message.status.as_deref() == Some("recalled") {
+        return Err("cannot enqueue a recalled message".into());
+    }
+    let stored: Vec<(String, bool)> = sqlx::query_as(
+        "SELECT reader_id, mentioned FROM message_receipts WHERE message_client_id = ? ORDER BY reader_id",
+    )
+    .bind(outgoing.client_message_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mentions = outgoing.mentions.iter().cloned().collect::<BTreeSet<_>>();
+    let recipients = if is_new {
+        outgoing.recipients.iter().cloned().collect::<BTreeSet<_>>()
+    } else if !stored.is_empty() {
+        let stored_mentions = stored
+            .iter()
+            .filter(|(_, mentioned)| *mentioned)
+            .map(|(id, _)| id.clone())
+            .collect::<BTreeSet<_>>();
+        if mentions != stored_mentions {
+            return Err("client message id conflicts with another mention set".into());
+        }
+        stored.iter().map(|(id, _)| id.clone()).collect()
+    } else if let Some(receiver) = message.receiver_id.as_ref() {
+        // Repair old direct messages interrupted between body and recipient commits.
+        BTreeSet::from([receiver.clone()])
+    } else {
+        return Err("旧群消息缺少原始收件人快照，不能安全重试".into());
+    };
+    if recipients
+        .iter()
+        .any(|id| id.trim().is_empty() || id.trim() != id)
+    {
+        return Err("invalid message recipient".into());
+    }
+    if !mentions.is_subset(&recipients) {
+        return Err("@ 目标必须属于消息的收件人快照".into());
+    }
+    for peer in &recipients {
+        sqlx::query(
+            "INSERT INTO message_receipts (message_client_id, reader_id, mentioned, updated_at)
+             VALUES (?, ?, ?, ?) ON CONFLICT(message_client_id, reader_id) DO NOTHING",
+        )
+        .bind(outgoing.client_message_id)
+        .bind(peer)
+        .bind(mentions.contains(peer))
+        .bind(unix_timestamp())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    let mut transfers = Vec::new();
+    if let Some(file) = file {
+        if outgoing.msg_type != "file"
+            || file.path.trim().is_empty()
+            || file.size < 0
+            || !valid_transfer_status(file.status)
+        {
+            return Err("invalid outgoing file metadata".into());
+        }
+        if is_new {
+            let targets = file
+                .transfers
+                .iter()
+                .map(|t| t.peer_id.clone())
+                .collect::<BTreeSet<_>>();
+            if targets != recipients || targets.len() != file.transfers.len() {
+                return Err("file tasks must cover every recipient exactly once".into());
+            }
+            sqlx::query(
+                "UPDATE messages SET file_path = ?, file_size = ?, file_status = ? WHERE id = ?",
+            )
+            .bind(file.path)
+            .bind(file.size)
+            .bind(file.status)
+            .bind(message.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+            for transfer in file.transfers {
+                if transfer.id.is_empty() || !matches!(transfer.status, "queued" | "waiting_peer") {
+                    return Err("invalid outgoing transfer".into());
+                }
+                sqlx::query(
+                    "INSERT INTO transfers (id, message_id, conversation_id, peer_id, direction,
+                     status, bytes_total, bytes_transferred, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, 'send', ?, ?, 0, ?, ?)",
+                )
+                .bind(&transfer.id)
+                .bind(message.id)
+                .bind(outgoing.conversation_id)
+                .bind(&transfer.peer_id)
+                .bind(transfer.status)
+                .bind(file.size)
+                .bind(unix_timestamp())
+                .bind(unix_timestamp())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
+            }
+            message.file_path = Some(file.path.into());
+            message.file_size = Some(file.size);
+            message.file_status = Some(file.status.into());
+        } else if message.file_path.as_deref() != Some(file.path)
+            || message.file_size != Some(file.size)
+        {
+            return Err("client message id conflicts with another file".into());
+        }
+        transfers = sqlx::query_as::<_, TransferRecord>(
+            "SELECT id, message_id, conversation_id, peer_id, direction, status,
+                    bytes_total, bytes_transferred, error, created_at, updated_at
+             FROM transfers WHERE message_id = ? AND direction = 'send' ORDER BY created_at, id",
+        )
+        .bind(message.id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        if transfers
+            .iter()
+            .map(|t| t.peer_id.clone())
+            .collect::<BTreeSet<_>>()
+            != recipients
+        {
+            return Err("file message is missing recipient tasks".into());
+        }
+    } else if outgoing.msg_type == "file" {
+        return Err("outgoing file requires metadata and tasks".into());
+    }
     tx.commit()
         .await
-        .map_err(|e| format!("提交消息事务失败: {}", e))?;
-    Ok(message)
+        .map_err(|e| format!("提交发件任务失败: {e}"))?;
+    Ok(EnqueuedMessage {
+        message,
+        recipients: recipients.into_iter().collect(),
+        transfers,
+        is_new,
+    })
 }
 
 pub async fn get_message_by_client_id(
@@ -3821,6 +4064,204 @@ pub(crate) async fn remove_test_database(pool: &SqlitePool, app_dir: &std::path:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn atomic_enqueue_rolls_back_partial_work_and_freezes_retry_targets() {
+        let app_dir = std::env::temp_dir().join(format!("xchat-atomic-{}", uuid::Uuid::new_v4()));
+        let pool = init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        let self_id = get_user_id(&pool).await.unwrap();
+        let conversation = ensure_direct_conversation(&pool, "peer-a").await.unwrap();
+        let recipients = vec!["peer-a".to_string(), "peer-b".to_string()];
+        let mentions = vec!["peer-b".to_string()];
+        let outgoing = |kind| OutgoingMessage {
+            conversation_id: &conversation.id,
+            sender_id: &self_id,
+            receiver_id: Some("peer-a"),
+            content: "atomic payload",
+            msg_type: kind,
+            timestamp: 100,
+            status: "pending",
+            client_message_id: "atomic-id",
+            recipients: &recipients,
+            mentions: &mentions,
+        };
+        sqlx::query("CREATE TRIGGER fail_recipient BEFORE INSERT ON message_receipts
+                     WHEN NEW.reader_id = 'peer-b' BEGIN SELECT RAISE(ABORT, 'injected recipient failure'); END")
+            .execute(&pool).await.unwrap();
+        let error = enqueue_outgoing_message(&pool, outgoing("text"), None)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.contains("injected recipient failure"));
+        assert!(get_message_by_client_id(&pool, "atomic-id")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(get_message_receipts(&pool, "atomic-id")
+            .await
+            .unwrap()
+            .is_empty());
+        sqlx::query("DROP TRIGGER fail_recipient")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let tasks = vec![
+            OutgoingTransfer {
+                id: "file-a".into(),
+                peer_id: "peer-a".into(),
+                status: "queued",
+            },
+            OutgoingTransfer {
+                id: "file-b".into(),
+                peer_id: "peer-b".into(),
+                status: "waiting_peer",
+            },
+        ];
+        sqlx::query("CREATE TRIGGER fail_transfer BEFORE INSERT ON transfers
+                     WHEN NEW.peer_id = 'peer-b' BEGIN SELECT RAISE(ABORT, 'injected transfer failure'); END")
+            .execute(&pool).await.unwrap();
+        let file = || {
+            Some(OutgoingFile {
+                path: "source.bin",
+                size: 100,
+                status: "queued",
+                transfers: &tasks,
+            })
+        };
+        let error = enqueue_outgoing_message(&pool, outgoing("file"), file())
+            .await
+            .err()
+            .unwrap();
+        assert!(error.contains("injected transfer failure"));
+        assert!(get_message_by_client_id(&pool, "atomic-id")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(get_message_receipts(&pool, "atomic-id")
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(get_transfer(&pool, "file-a").await.unwrap().is_none());
+        sqlx::query("DROP TRIGGER fail_transfer")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let queued = enqueue_outgoing_message(&pool, outgoing("file"), file())
+            .await
+            .unwrap();
+        assert!(queued.is_new);
+        assert_eq!(queued.transfers.len(), 2);
+        assert_eq!(queued.message.file_path.as_deref(), Some("source.bin"));
+        pool.close().await;
+
+        // Reopen the actual database, then retry with a changed group/peer snapshot.
+        let pool = init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        let changed_recipients = vec!["peer-new".to_string()];
+        let retry = enqueue_outgoing_message(
+            &pool,
+            OutgoingMessage {
+                recipients: &changed_recipients,
+                ..outgoing("file")
+            },
+            file(),
+        )
+        .await
+        .unwrap();
+        assert!(!retry.is_new);
+        assert_eq!(retry.message.id, queued.message.id);
+        assert_eq!(retry.recipients, recipients);
+        assert_eq!(retry.transfers, queued.transfers);
+        assert!(get_message_receipts(&pool, "atomic-id")
+            .await
+            .unwrap()
+            .iter()
+            .any(|receipt| receipt.reader_id == "peer-b" && receipt.mentioned));
+        assert!(enqueue_outgoing_message(
+            &pool,
+            OutgoingMessage {
+                mentions: &[],
+                ..outgoing("file")
+            },
+            file()
+        )
+        .await
+        .is_err());
+        assert!(enqueue_outgoing_message(
+            &pool,
+            OutgoingMessage {
+                content: "conflicting content",
+                ..outgoing("file")
+            },
+            file()
+        )
+        .await
+        .is_err());
+        assert_eq!(
+            get_message_by_client_id(&pool, "atomic-id")
+                .await
+                .unwrap()
+                .unwrap()
+                .content,
+            "atomic payload"
+        );
+        pool.close().await;
+        remove_test_database(&pool, &app_dir).await;
+    }
+
+    #[tokio::test]
+    async fn atomic_enqueue_serializes_duplicate_requests_and_repairs_legacy_direct_message() {
+        let app_dir = std::env::temp_dir().join(format!("xchat-enqueue-race-{}", uuid::Uuid::new_v4()));
+        let pool = init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        let self_id = get_user_id(&pool).await.unwrap();
+        let conversation = ensure_direct_conversation(&pool, "original-peer")
+            .await
+            .unwrap();
+        let recipients = vec!["original-peer".to_string()];
+        let outgoing = || OutgoingMessage {
+            conversation_id: &conversation.id,
+            sender_id: &self_id,
+            receiver_id: Some("original-peer"),
+            content: "durable",
+            msg_type: "text",
+            timestamp: 100,
+            status: "pending",
+            client_message_id: "concurrent-id",
+            recipients: &recipients,
+            mentions: &[],
+        };
+        let (a, b) = tokio::join!(
+            enqueue_outgoing_message(&pool, outgoing(), None),
+            enqueue_outgoing_message(&pool, outgoing(), None),
+        );
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert_ne!(a.is_new, b.is_new);
+        assert_eq!(a.message.id, b.message.id);
+        sqlx::query("DELETE FROM message_receipts WHERE message_client_id = 'concurrent-id'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let changed_recipients = vec!["unrelated-peer".to_string()];
+        let repaired = enqueue_outgoing_message(
+            &pool,
+            OutgoingMessage {
+                recipients: &changed_recipients,
+                ..outgoing()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(repaired.recipients, recipients);
+        assert!(
+            claim_message_delivery(&pool, "concurrent-id", "original-peer", false)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        pool.close().await;
+        remove_test_database(&pool, &app_dir).await;
+    }
 
     #[tokio::test]
     async fn test_database_teardown_waits_for_returned_connections() {

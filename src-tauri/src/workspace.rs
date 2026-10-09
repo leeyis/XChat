@@ -1293,19 +1293,11 @@ pub async fn send_message(
         )
     };
     let mention_ids = mention_ids.into_iter().collect::<BTreeSet<_>>();
-    if conversation.kind == "group" {
-        let recipient_ids = recipients.iter().collect::<BTreeSet<_>>();
-        if let Some(id) = mention_ids.iter().find(|id| !recipient_ids.contains(id)) {
-            return Err(format!("@ 目标必须是当前群成员且不能是自己: {id}"));
-        }
-    } else if !mention_ids.is_empty() {
+    if conversation.kind != "group" && !mention_ids.is_empty() {
         return Err("单聊消息不能携带 @ 目标".to_string());
     }
     let mention_ids = mention_ids.into_iter().collect::<Vec<_>>();
     let write_guard = MESSAGE_WRITE_LOCK.lock().await;
-    let is_new = db::get_message_by_client_id(pool, client_message_id)
-        .await?
-        .is_none();
     let online = recipients
         .iter()
         .filter_map(|id| peers.get(id))
@@ -1313,32 +1305,29 @@ pub async fn send_message(
         .cloned()
         .collect::<Vec<_>>();
     let initial_status = initial_send_status(&conversation.kind, online.is_empty());
-    let message = db::save_conversation_message(
+    let enqueued = db::enqueue_outgoing_message(
         pool,
-        conversation_id,
-        &self_id,
-        conversation.peer_id.as_deref(),
-        content,
-        msg_type,
-        now(),
-        initial_status,
-        client_message_id,
+        db::OutgoingMessage {
+            conversation_id,
+            sender_id: &self_id,
+            receiver_id: conversation.peer_id.as_deref(),
+            content,
+            msg_type,
+            timestamp: now(),
+            status: initial_status,
+            client_message_id,
+            recipients: &recipients,
+            mentions: &mention_ids,
+        },
+        None,
     )
     .await?;
-    db::ensure_message_recipients(pool, client_message_id, &recipients).await?;
-    if is_new {
-        db::mark_message_mentions(pool, client_message_id, &mention_ids).await?;
-    } else {
-        let stored_mentions = db::get_message_receipts(pool, client_message_id)
-            .await?
-            .into_iter()
-            .filter(|receipt| receipt.mentioned)
-            .map(|receipt| receipt.reader_id)
-            .collect::<BTreeSet<_>>();
-        if stored_mentions != mention_ids.iter().cloned().collect() {
-            return Err("client message id conflicts with another mention set".to_string());
-        }
-    }
+    let db::EnqueuedMessage {
+        message,
+        recipients,
+        is_new,
+        ..
+    } = enqueued;
     drop(write_guard);
 
     // Reusing an existing ID is a manual retry, not a second message. Atomic recipient
