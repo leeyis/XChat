@@ -17,6 +17,10 @@ XChat 是面向局域网与跨 VLAN / WireGuard 场景的桌面通讯工具。�
 
 ## Review First
 
+阶段三稳定性功能原型入口：[`xchat-desktop-prototype.html?review=phase3`](xchat-desktop-prototype.html?review=phase3)。包含任务中心、连接诊断、备份恢复及双视角远程协助；顶部场景切换用于评审失败和恢复流程。数据均为内存中的演示夹具，刷新后重置。设计和评审说明见 [`阶段三原型计划`](../docs/plans/2026-10-09-stability-phase-3-prototype.md)。截图交互资源保持原状。
+
+身份说明：下面保留了设计系统源文档中的历史描述。当前阶段三以 XChat 设备 ID 识别设备和验证连接，MAC 只作辅助信息，不作为身份或远程授权凭据。
+
 1. [`preview/index.html`](preview/index.html)：设计系统审阅入口。
 2. [`preview/applied-surfaces.html`](preview/applied-surfaces.html)：最接近真实产品的应用表面。
 3. [`preview/components.html`](preview/components.html)：消息、设备、传输、输入器与 AI 卡片。

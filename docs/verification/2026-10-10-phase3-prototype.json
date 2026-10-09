@@ -1,0 +1,624 @@
+{
+  "interaction": {
+    "time": "2026-10-09T16:26:17.121Z",
+    "viewport": [
+      1427,
+      907
+    ],
+    "results": [
+      {
+        "name": "任务初始六项和夹板图标",
+        "passed": true
+      },
+      {
+        "name": "需要关注筛选",
+        "passed": true
+      },
+      {
+        "name": "搜索空结果",
+        "passed": true
+      },
+      {
+        "name": "群消息逐收件人明细",
+        "passed": true
+      },
+      {
+        "name": "不同源文件阻止续传",
+        "passed": true
+      },
+      {
+        "name": "相同源文件继续",
+        "passed": true
+      },
+      {
+        "name": "取消后异步重试不覆盖状态",
+        "passed": true
+      },
+      {
+        "name": "群重试完成且收件人明细更新",
+        "passed": true
+      },
+      {
+        "name": "空场景数量一致",
+        "passed": true
+      },
+      {
+        "name": "等待任务打开正确诊断对象",
+        "passed": true
+      },
+      {
+        "name": "健康结果匹配所选设备",
+        "passed": true
+      },
+      {
+        "name": "诊断默认隐藏地址",
+        "passed": true
+      },
+      {
+        "name": "明确选择附带当前地址",
+        "passed": true
+      },
+      {
+        "name": "身份不匹配阻止发送",
+        "passed": true
+      },
+      {
+        "name": "检查期间不能重复提交",
+        "passed": true
+      },
+      {
+        "name": "检查结束提供下一步",
+        "passed": true
+      },
+      {
+        "name": "取消备份不产生记录或迟到弹窗",
+        "passed": true
+      },
+      {
+        "name": "空间检查计入附件",
+        "passed": true
+      },
+      {
+        "name": "可更换保存位置",
+        "passed": true
+      },
+      {
+        "name": "校验成功才加入备份记录",
+        "passed": true
+      },
+      {
+        "name": "损坏备份不能进入恢复",
+        "passed": true
+      },
+      {
+        "name": "恢复前预览合并与保留记录",
+        "passed": true
+      },
+      {
+        "name": "恢复提交期间防重复操作",
+        "passed": true
+      },
+      {
+        "name": "恢复设置反馈遵循选择",
+        "passed": true
+      },
+      {
+        "name": "不可用场景阻止请求：offline",
+        "passed": true
+      },
+      {
+        "name": "不可用场景阻止请求：unsupported",
+        "passed": true
+      },
+      {
+        "name": "不可用场景阻止请求：busy",
+        "passed": true
+      },
+      {
+        "name": "同意前无屏幕画面",
+        "passed": true
+      },
+      {
+        "name": "收到查看请求需要明确同意",
+        "passed": true
+      },
+      {
+        "name": "拒绝请求保持无画面",
+        "passed": true
+      },
+      {
+        "name": "允许查看未授予控制",
+        "passed": true
+      },
+      {
+        "name": "控制必须再次确认",
+        "passed": true
+      },
+      {
+        "name": "拒绝控制继续仅查看",
+        "passed": true
+      },
+      {
+        "name": "单独同意后允许控制",
+        "passed": true
+      },
+      {
+        "name": "即时撤销控制",
+        "passed": true
+      },
+      {
+        "name": "暂停隐藏画面并撤回控制",
+        "passed": true
+      },
+      {
+        "name": "继续共享仍为仅查看",
+        "passed": true
+      },
+      {
+        "name": "共享方选择第二屏",
+        "passed": true
+      },
+      {
+        "name": "断线隐藏画面",
+        "passed": true
+      },
+      {
+        "name": "重连必须重新同意且无控制",
+        "passed": true
+      },
+      {
+        "name": "锁屏隐藏画面",
+        "passed": true
+      },
+      {
+        "name": "结束会话收回授权",
+        "passed": true
+      },
+      {
+        "name": "邀请接受前不共享",
+        "passed": true
+      },
+      {
+        "name": "邀请方向显示正确共享者",
+        "passed": true
+      },
+      {
+        "name": "邀请方向控制申请来自张三",
+        "passed": true
+      },
+      {
+        "name": "邀请方向共享方身份正确",
+        "passed": true
+      },
+      {
+        "name": "深色主题切换",
+        "passed": true
+      },
+      {
+        "name": "页面无横向溢出",
+        "passed": true
+      },
+      {
+        "name": "退出评审隐藏阶段三界面",
+        "passed": true
+      },
+      {
+        "name": "原截图入口保留",
+        "passed": true
+      },
+      {
+        "name": "可重新进入阶段三",
+        "passed": true
+      }
+    ],
+    "passed": 51,
+    "failed": 0,
+    "scope": "Interactive HTML prototype; Chrome MCP browser DOM operations, no production API calls"
+  },
+  "responsive": {
+    "results": [
+      {
+        "width": 1000,
+        "theme": "light",
+        "page": "tasks",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "page": "diagnostics",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "page": "backup",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "page": "remote",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "dark",
+        "page": "tasks",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "dark",
+        "page": "diagnostics",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "dark",
+        "page": "backup",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "dark",
+        "page": "remote",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "page": "tasks",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "page": "diagnostics",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "page": "backup",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "page": "remote",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "dark",
+        "page": "tasks",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "dark",
+        "page": "diagnostics",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "dark",
+        "page": "backup",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "dark",
+        "page": "remote",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "page": "tasks",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "page": "diagnostics",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "page": "backup",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "page": "remote",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "dark",
+        "page": "tasks",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "dark",
+        "page": "diagnostics",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "dark",
+        "page": "backup",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "dark",
+        "page": "remote",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "passed": true
+      }
+    ],
+    "failed": 0,
+    "scope": "Same-origin Chrome iframe viewports: 1000/860/390px, light/dark, four modules"
+  },
+  "keyboard": {
+    "dialogClosed": true,
+    "focusAction": "source",
+    "focusTask": "source",
+    "viewport": [
+      1427,
+      907
+    ]
+  },
+  "console": {
+    "exceptionCount": 0,
+    "exceptions": []
+  },
+  "visual": {
+    "method": "Isolated headless Chrome, temporary profile and HTML copy with original resources. Fallback after Chrome MCP capture returned image readback failed. CSS animation/transition disabled in the temporary visual harness to capture settled states; narrow capture uses a 390px iframe.",
+    "screenshots": [
+      {
+        "scene": "tasks",
+        "path": "docs/verification/2026-10-10-phase3-tasks.png",
+        "viewport": [
+          1440,
+          1000
+        ],
+        "captureViewport": [
+          1440,
+          1000
+        ],
+        "sha256": "4ee81ec10cd0677f7cfb9d200421fe1e7981212afaa545d9d2bc93261d62c19f"
+      },
+      {
+        "scene": "diagnostics-dark",
+        "path": "docs/verification/2026-10-10-phase3-diagnostics-dark.png",
+        "viewport": [
+          1440,
+          1000
+        ],
+        "captureViewport": [
+          1440,
+          1000
+        ],
+        "sha256": "0024f865bfd11a0a79dc9390e4fd04046fbae7c86da3abd7b5058c4903523893"
+      },
+      {
+        "scene": "backup-preview",
+        "path": "docs/verification/2026-10-10-phase3-backup-preview.png",
+        "viewport": [
+          1440,
+          1000
+        ],
+        "captureViewport": [
+          1440,
+          1000
+        ],
+        "sha256": "0857efdc609ae2ed2e295b9907b3aa377fb48ab20d28fea64814ee19ca66ff98"
+      },
+      {
+        "scene": "remote",
+        "path": "docs/verification/2026-10-10-phase3-remote.png",
+        "viewport": [
+          1440,
+          1000
+        ],
+        "captureViewport": [
+          1440,
+          1000
+        ],
+        "sha256": "a7149f9860fe5de0fb0ee35c556241d6c72a4d614a71a5dd2d14b57ad27b3f9e"
+      },
+      {
+        "scene": "tasks-narrow",
+        "path": "docs/verification/2026-10-10-phase3-tasks-narrow.png",
+        "viewport": [
+          390,
+          844
+        ],
+        "captureViewport": [
+          1000,
+          1000
+        ],
+        "sha256": "5a8b3e342d5410b45a57fe5ea5200cb8cc55b316fe4b899b1a0c72bf182b6c4b"
+      }
+    ]
+  },
+  "sourceSha256": {
+    "ui-ref/xchat-desktop-prototype.html": "11595f3f958a75f73a455ef67ef9ff9991987a8616dcc7a9f226c0e543a19f5e",
+    "ui-ref/assets/stability-phase3-review.js": "368d710fa0c8f1d4ee6302284a19f06cd0d3a9853d69e533f76469904cd8b499",
+    "ui-ref/assets/stability-phase3-review.css": "ab20dc0f1cda82eeb831b4febf5eeb18bc24b8c123bef12160280a23fefd3d8d"
+  }
+}
