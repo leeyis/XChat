@@ -379,13 +379,31 @@ struct UpdateDeviceRequest {
     remark: Option<String>,
 }
 
-pub async fn start_server(
+#[derive(Clone)]
+struct ServerLifetime(tokio::sync::watch::Receiver<()>);
+
+async fn cancel_stopped_request(
+    axum::Extension(mut lifetime): axum::Extension<ServerLifetime>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    tokio::select! {
+        _ = lifetime.0.changed() => api_error(StatusCode::SERVICE_UNAVAILABLE, "network service stopped"),
+        response = next.run(request) => response,
+    }
+}
+
+pub async fn serve_listener(
+    listener: tokio::net::TcpListener,
     port: u16,
-    _udp_port: u16,
     pool: Pool<Sqlite>,
     peer_manager: Arc<PeerManager>,
+    health: tokio::sync::watch::Receiver<crate::network::runtime::NetworkHealth>,
+    ready: tokio::sync::oneshot::Sender<()>,
     #[cfg(feature = "desktop")] app_handle: Option<tauri::AppHandle>,
-) {
+) -> Result<(), String> {
+    // Dropping a service generation cancels its HTTP work and upgraded sockets as well.
+    let (_lifetime_guard, lifetime) = tokio::sync::watch::channel(());
     let media_token = uuid::Uuid::new_v4().to_string();
 
     match cleanup_persisted_control_messages(&pool).await {
@@ -436,6 +454,10 @@ pub async fn start_server(
 
     let app = Router::new()
         .route("/", get(serve_index))
+        .route("/api/health", get(move || {
+            let health = health.borrow().clone();
+            async move { Json(health) }
+        }))
         .route("/api/workspace", get(get_workspace_http))
         .route(
             "/api/settings/preference",
@@ -557,16 +579,16 @@ pub async fn start_server(
         .route("/api/workspace-media/:message_id", get(serve_workspace_media_http))
         .route("/ws", get(websocket_handler))
         .route("/*path", get(serve_assets))
+        .layer(axum::middleware::from_fn(cancel_stopped_request))
+        .layer(axum::Extension(ServerLifetime(lifetime)))
         .layer(cors)
         .layer(axum::extract::DefaultBodyLimit::disable()) // 无限制
         .with_state(state)
         .into_make_service_with_connect_info::<SocketAddr>();
 
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
-        .await
-        .unwrap();
     println!("[Web Server] 启动在端口 {} (无文件大小限制)", port);
-    axum::serve(listener, app).await.unwrap();
+    let _ = ready.send(());
+    axum::serve(listener, app).await.map_err(|e| format!("http serve failed: {e}"))
 }
 
 async fn get_workspace_http(State(state): State<Arc<AppState>>) -> ApiResponse {
@@ -1996,6 +2018,7 @@ async fn get_chat_history_http(
 async fn websocket_handler(
     ws: WebSocketUpgrade,
     Query(query): Query<WebSocketTargetQuery>,
+    lifetime: Option<axum::Extension<ServerLifetime>>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Response {
     let local_id = match crate::db::get_user_id(&state.pool).await {
@@ -2012,8 +2035,15 @@ async fn websocket_handler(
         }
         None => false,
     };
-    let mut response = ws.on_upgrade(move |socket| {
-        handle_websocket(socket, state, peer_payload_allowed)
+    let mut response = ws.on_upgrade(move |socket| async move {
+        if let Some(axum::Extension(mut lifetime)) = lifetime {
+            tokio::select! {
+                _ = lifetime.0.changed() => {},
+                _ = handle_websocket(socket, state, peer_payload_allowed) => {},
+            }
+        } else {
+            handle_websocket(socket, state, peer_payload_allowed).await;
+        }
     });
     match header::HeaderValue::from_str(&local_id) {
         Ok(device_id) => {
@@ -2694,6 +2724,18 @@ fn should_handle_as_stable_direct_message(
 }
 
 // 处理 WebSocket 连接
+struct WebSocketLifetime {
+    connection_id: u64,
+    forward: tokio::task::AbortHandle,
+}
+
+impl Drop for WebSocketLifetime {
+    fn drop(&mut self) {
+        clear_inbound_replies(self.connection_id);
+        self.forward.abort();
+    }
+}
+
 async fn handle_websocket(
     socket: WebSocket,
     state: Arc<AppState>,
@@ -2732,6 +2774,7 @@ async fn handle_websocket(
             }
         }
     });
+    let _lifetime = WebSocketLifetime { connection_id, forward: forward_handle.abort_handle() };
 
     // 接收消息
     while let Some(msg) = receiver.next().await {

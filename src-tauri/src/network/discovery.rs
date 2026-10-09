@@ -815,7 +815,7 @@ fn enable_ingress_interface_metadata(_socket: &UdpSocket) -> std::io::Result<()>
     Ok(())
 }
 
-fn create_listener_socket(bind_addr: &str) -> std::io::Result<tokio::net::UdpSocket> {
+pub(crate) fn create_listener_socket(bind_addr: &str) -> std::io::Result<tokio::net::UdpSocket> {
     let socket = create_discovery_socket(bind_addr)?;
     enable_ingress_interface_metadata(&socket)?;
     socket.set_nonblocking(true)?;
@@ -1708,19 +1708,16 @@ async fn send_fixed_peer_announcements(
     }
 }
 
-pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx::Sqlite>) {
+pub async fn start_announcing(
+    port: u16, user_id: String, pool: sqlx::Pool<sqlx::Sqlite>,
+    ready: tokio::sync::oneshot::Sender<()>,
+) -> Result<(), String> {
     ACTIVE_DISCOVERY_PORT.store(port, Ordering::Relaxed);
     let mut settings_changes = discovery_policy::subscribe_settings_changes();
     use rand::Rng;
     use sysinfo::System;
 
-    let unicast_socket = match create_discovery_socket("0.0.0.0:0") {
-        Ok(socket) => socket,
-        Err(error) => {
-            eprintln!("[UDP] 创建固定地址发送 socket 失败: {error}");
-            return;
-        }
-    };
+    let unicast_socket = create_discovery_socket("0.0.0.0:0").map_err(|e| e.to_string())?;
     let (hostname, mac_address) = local_device_metadata();
     let mut system = System::new();
     let mut snapshot = read_network_snapshot(&pool, None).await;
@@ -1735,6 +1732,7 @@ pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx:
         &snapshot,
         &discovery_policy::build_send_plan(&snapshot, port),
     );
+    let _ = ready.send(());
 
     loop {
         let username = crate::db::get_username(&pool)
@@ -1847,24 +1845,17 @@ pub async fn start_announcing(port: u16, user_id: String, pool: sqlx::Pool<sqlx:
 }
 
 // 桌面端版本 - 带 AppHandle
-#[cfg(all(feature = "desktop", not(feature = "web")))]
-pub async fn start_listening(
+#[cfg(feature = "desktop")]
+pub async fn listen_on(
+    socket: tokio::net::UdpSocket,
     port: u16,
     my_id: String,
     my_name: String,
     app: Option<AppHandle>,
     peer_manager: Arc<PeerManager>,
     pool: sqlx::Pool<sqlx::Sqlite>,
-) {
-    let bind_addr = format!("0.0.0.0:{}", port);
-    let socket = match create_listener_socket(&bind_addr) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[UDP] 创建监听 socket 失败: {}", e);
-            return;
-        }
-    };
-
+    ready: tokio::sync::oneshot::Sender<()>,
+) -> Result<(), String> {
     let mut settings_changes = discovery_policy::subscribe_settings_changes();
     let mut buf = [0u8; 1024];
     let (hostname, mac_address) = local_device_metadata();
@@ -1886,14 +1877,14 @@ pub async fn start_listening(
     .await;
     let mut next_policy_refresh = tokio::time::Instant::now() + INTERFACE_POLL_INTERVAL;
     println!("[UDP] 正在端口 {} 监听邻居...", port);
+    let _ = ready.send(());
 
     loop {
         let packet = tokio::select! {
             result = recv_discovery_packet(&socket, &mut buf) => match result {
                 Ok(packet) => packet,
                 Err(error) => {
-                    eprintln!("[UDP][discovery.listener] receive failed: {error}");
-                    continue;
+                    return Err(format!("discovery receive failed: {error}"));
                 }
             },
             _ = tokio::time::sleep_until(next_policy_refresh) => {
@@ -2106,22 +2097,15 @@ pub async fn start_listening(
 
 // Web 端版本 - 不带 AppHandle
 #[cfg(all(feature = "web", not(feature = "desktop")))]
-pub async fn start_listening(
+pub async fn listen_on(
+    socket: tokio::net::UdpSocket,
     port: u16,
     my_id: String,
     my_name: String,
     peer_manager: Arc<PeerManager>,
     pool: sqlx::Pool<sqlx::Sqlite>,
-) {
-    let bind_addr = format!("0.0.0.0:{}", port);
-    let socket = match create_listener_socket(&bind_addr) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[UDP] Web端创建监听 socket 失败: {}", e);
-            return;
-        }
-    };
-
+    ready: tokio::sync::oneshot::Sender<()>,
+) -> Result<(), String> {
     let mut settings_changes = discovery_policy::subscribe_settings_changes();
     let mut buf = [0u8; 1024];
     let (hostname, mac_address) = local_device_metadata();
@@ -2142,13 +2126,13 @@ pub async fn start_listening(
     )
     .await;
     let mut next_policy_refresh = tokio::time::Instant::now() + INTERFACE_POLL_INTERVAL;
+    let _ = ready.send(());
     loop {
         let packet = tokio::select! {
             result = recv_discovery_packet(&socket, &mut buf) => match result {
                 Ok(packet) => packet,
                 Err(error) => {
-                    eprintln!("[UDP][discovery.listener] receive failed: {error}");
-                    continue;
+                    return Err(format!("discovery receive failed: {error}"));
                 }
             },
             _ = tokio::time::sleep_until(next_policy_refresh) => {

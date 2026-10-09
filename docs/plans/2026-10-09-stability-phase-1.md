@@ -12,8 +12,8 @@
 | --- | --- | --- |
 | S1 原子入队 | complete | 正文/目标/提及/文件任务同事务；失败回滚及重复 ID 测试 |
 | S2 文件接管 | complete | 租约/执行者保护；重启非终态可恢复；取消与完成不被旧 worker 覆盖 |
-| S3 运行时 | in_progress | 三入口共享启动；监听 readiness；监督/退避/停止；可查询健康 |
-| S4 回执 | pending | 当前正文不等待历史全量；批次限额；ReadAck 优先；写超时 |
+| S3 运行时 | complete | 三入口共享启动；监听 readiness；监督/退避/停止；可查询健康 |
+| S4 回执 | in_progress | 当前正文不等待历史全量；批次限额；ReadAck 优先；写超时 |
 | S5 验证 | pending | T1–T5 针对性测试、desktop/web 检查、隔离运行 |
 | S6 交付 | pending | 最终 diff、实施总结、平台与验证限制 |
 
@@ -63,11 +63,28 @@
 
 - 验证：file_execution_lease 故障测试通过；web lib 全量 148 项通过；desktop lib check 通过。恢复界限为租约最长 60 秒加扫描周期，不能抢占仍有效的跨进程执行者。
 
+- S2 提交 7c35bc2（fix(transfer): 用执行租约恢复中断任务并隔离过期回调）。
+
 ### S3 设计收敛
 
 - 共享 supervisor 统一三入口；先恢复队列并绑定 UDP/TCP，监听就绪后启动广播/看门狗。
 - 子任务退出或 panic 记录服务错误，取消同代任务并按上限 30 秒退避重建；关闭取消与任务生命周期统一管理。
 - /api/health 返回运行代次、监听就绪和最近错误；不改产品 UI。
+
+- 三入口已切换 NetworkRuntime；UDP/TCP 先绑定与 ready 信号、子任务 JoinSet 监督、最高 30 秒退避、headless Ctrl+C/桌面 Exit 关闭已接入。
+- web bin 编译通过；占用端口释放后恢复/健康 API/停止释放监听，以及 panic/退出测试进行中。
+- 一次 PowerShell 内嵌双引号导致入口编辑命令解析失败，未改文件；改成独立临时 Python 脚本后成功。
+
+- 首次 runtime 故障测试中 Windows 允许已有 loopback 监听与 wildcard 监听共存，因此未触发预期 bind 错误；改为占用相同 wildcard 地址。测试下载目录也显式设为临时目录。
+- 服务停止现在同时取消该代 HTTP 请求/升级 WebSocket，防止旧连接跨代残留。
+
+- S3 验证：network::runtime 两项测试通过，覆盖同地址端口冲突、退避恢复、健康 API、WebSocket 随服务停止、监听释放、panic 观察和停止打断；desktop lib/bin 与 web bin check 通过。
+
+### S4 设计收敛
+
+- 当前 ACK 独立高优先队列；历史回执分页上限 16 条、低优先通道、游标推进，取代收帧前全量查询/阻塞入队。
+- 回执发送选择最高 ReadAck；成功发送 ReadAck 同时覆盖 delivery 标记，反向补发仍持久兜底。
+- 当前消息处理不等待反向连接；慢 socket 写 3 秒上限，退出同步清理 reader/forward/pager。
 
 ### S1 设计收敛
 

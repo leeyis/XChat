@@ -5,4 +5,5 @@ pub mod messaging;
 pub mod peer_identity;
 pub mod peer_connection;
 pub mod protocol;
+pub mod runtime;
 pub mod transfer;

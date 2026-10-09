@@ -235,62 +235,22 @@ pub fn run() {
                 handle.manage(commands::AndroidShareState::new());
                 handle.manage(commands::TrayFlashState::default());
 
-                let h1 = handle.clone();
-                let id1 = my_id.clone();
-                let name1 = my_name.clone();
-                let peer_manager_clone = peer_manager.clone();
-                let pool_for_discovery = pool.clone();
-                tokio::spawn(async move {
-                    println!("[Lib] 开启监听线程...");
-                    network::discovery::start_listening(
-                        port,
-                        id1,
-                        name1,
-                        Some(h1),
-                        peer_manager_clone,
-                        pool_for_discovery,
-                    )
-                    .await;
-                });
-
-                let id2 = my_id.clone();
-                let pool2 = pool.clone();
-                tokio::spawn(async move {
-                    println!("[Lib] 开启广播线程...");
-                    network::discovery::start_announcing(port, id2, pool2).await;
-                });
-
-                let peer_manager_for_watchdog = peer_manager.clone();
-                let pool_for_watchdog = pool.clone();
-                let handle_for_watchdog = handle.clone();
-                tokio::spawn(async move {
-                    println!("[Lib] 开启离线看门狗...");
-                    network::discovery::start_offline_watchdog(
-                        peer_manager_for_watchdog,
-                        pool_for_watchdog,
-                        Some(handle_for_watchdog),
-                    )
-                    .await;
-                });
-
-                // 启动 HTTP 服务器（用于接收文件和 WebSocket 消息）
-                let pool_clone = pool.clone();
-                let peer_manager_clone = peer_manager.clone();
-                let handle_clone = handle.clone();
-                tokio::spawn(async move {
-                    println!("[Lib] 启动 HTTP 服务器在端口 {}...", port);
-                    web_server::start_server(
-                        port,
-                        port,
-                        pool_clone,
-                        peer_manager_clone,
-                        Some(handle_clone),
-                    )
-                    .await;
-                });
+                handle.manage(network::runtime::NetworkRuntime::start(
+                    network::runtime::RuntimeConfig {
+                        port, user_id: my_id, username: my_name, pool,
+                        peer_manager, app_handle: Some(handle.clone()),
+                    },
+                ));
             });
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(runtime) = app.try_state::<network::runtime::NetworkRuntime>() {
+                    tauri::async_runtime::block_on(runtime.shutdown());
+                }
+            }
+        });
 }
