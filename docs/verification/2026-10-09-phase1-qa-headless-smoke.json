@@ -1,0 +1,50 @@
+{
+  "success": true,
+  "port": 47896,
+  "database_directory": "C:\\Users\\wangy\\AppData\\Local\\Temp\\xchat-phase1-qa-smoke-hnce_2d8",
+  "runs": [
+    {
+      "iteration": 1,
+      "pid": 53492,
+      "health": {
+        "port": 47896,
+        "state": "ready",
+        "generation": 1,
+        "http_ready": true,
+        "discovery_ready": true,
+        "announcing": true,
+        "watchdog_running": true,
+        "database_ready": true,
+        "eligible_discovery_interfaces": 0,
+        "last_error": null,
+        "retry_in_seconds": 0
+      },
+      "malformed_datagrams_sent": 20,
+      "workspace_status": 200,
+      "log": "C:\\Users\\wangy\\AppData\\Local\\Temp\\xchat-phase1-qa-smoke-hnce_2d8\\run-0.log"
+    },
+    {
+      "iteration": 2,
+      "pid": 11132,
+      "health": {
+        "port": 47896,
+        "state": "ready",
+        "generation": 1,
+        "http_ready": true,
+        "discovery_ready": true,
+        "announcing": true,
+        "watchdog_running": true,
+        "database_ready": true,
+        "eligible_discovery_interfaces": 0,
+        "last_error": null,
+        "retry_in_seconds": 0
+      },
+      "malformed_datagrams_sent": 20,
+      "workspace_status": 200,
+      "log": "C:\\Users\\wangy\\AppData\\Local\\Temp\\xchat-phase1-qa-smoke-hnce_2d8\\run-1.log"
+    }
+  ],
+  "invalid_port_exit_code": 1,
+  "invalid_port_log": "C:\\Users\\wangy\\AppData\\Local\\Temp\\xchat-phase1-qa-smoke-hnce_2d8\\invalid-port.log",
+  "stop_method": "forced termination and restart; graceful lifecycle covered by Rust integration test"
+}

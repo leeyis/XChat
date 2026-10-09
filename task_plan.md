@@ -1,4 +1,12 @@
-# 当前任务：2026-10-09 稳定性阶段 1
+# 当前任务：2026-10-09 稳定性阶段一 QA 复查
+
+用户要求自主复查并修复阶段一瑕疵。基线 `3557f78`，检查原子入队、文件租约/取消竞态、网络监督与回执队列，先复现确认，再修复并回归。重要修复及时提交 Git，不推送。详细记录：`docs/plans/2026-10-09-stability-phase-1-qa.md`。
+
+状态：已完成。修复 5 类缺陷并提交 `9ba5e88`；Web 162 项、Desktop 187 项回归通过（2 个原有 ignored）；提交后的 QA 定向 4 项通过；desktop/web/Android 编译与隔离进程验证通过。报告 `docs/stability-phase-1-qa.md`。原有未跟踪 `analysis/` 未纳入提交，未推送远程。沿用 planning-with-files；历史任务完整保留如下。
+
+---
+
+# 历史任务：2026-10-09 稳定性阶段 1
 
 用户已批准 `docs/feiq-inspired-stability-performance-recommendations.md`，授权实施阶段 1。
 详细计划与交接记录：`docs/plans/2026-10-09-stability-phase-1.md`。以下旧计划保留为历史。

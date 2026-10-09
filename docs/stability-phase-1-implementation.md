@@ -1,5 +1,7 @@
 # XChat 稳定性阶段 1：实施与验收
 
+后续 QA 复查确认并修复了异常 UDP、文件取消窗口、空目标受理、无效端口假就绪和自动恢复布局变更问题，代码提交 `9ba5e88`。最终验证与限制见 [阶段一 QA 报告](stability-phase-1-qa.md)。
+
 日期：2026-10-09。对应[飞秋借鉴建议](feiq-inspired-stability-performance-recommendations.md)的阶段 1，基线版本 0.1.13、提交 `6298408`。
 
 ## 已落地的行为

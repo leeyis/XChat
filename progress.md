@@ -1,3 +1,9 @@
+# 2026-10-09 阶段一 QA 复查
+
+基线 3557f78，已跟踪树干净；建立 QA 计划并以真实隔离进程复现 UDP 超长报文导致整代重启。工具读取采用 Python UTF-8，避免 PowerShell 默认编码显示乱码。回归先复现失败再修复；Web 162 项通过，desktop lib/bin 与 web bin 编译通过。修复提交 9ba5e88；Desktop 187 通过/2 个既有 ignored，Android arm64 编译通过（9 个原有警告），headless 两轮 UDP/重启/无效端口验证通过；提交后 Web QA 定向 4 项通过。QA 已完成，见 docs/stability-phase-1-qa.md。
+
+---
+
 ## 2026-10-09 阶段 1 交付完成
 
 - 最终代码提交 839823c；web 158 passed，desktop 183 passed/2 ignored，desktop/web/Android arm64 编译均通过。

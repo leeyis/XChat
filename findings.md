@@ -1,3 +1,9 @@
+# 2026-10-09 阶段一 QA 复查
+
+已在隔离 Windows headless 进程复现：2048 字节 UDP 触发 WSAEMSGSIZE (10040)，监督器重启 TCP/UDP/HTTP，health 短暂不可达，generation 1 -> 2。详见 docs/plans/2026-10-09-stability-phase-1-qa.md。共确认并修复 5 类缺陷：异常 UDP、持久取消注册窗口、空目标受理、端口 0 假就绪、自动恢复丢失兼容布局；ACK 分页/优先/写入超时既有用例继续通过。代码提交 9ba5e88。
+
+---
+
 ## 2026-10-09 阶段 1 实施发现
 
 - Windows 上占用 loopback 地址不保证 wildcard TCP bind 失败；故障测试必须使用同一监听地址。
