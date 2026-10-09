@@ -1,3 +1,9 @@
+## 2026-10-09 阶段 1 交付完成
+
+- 最终代码提交 839823c；web 158 passed，desktop 183 passed/2 ignored，desktop/web/Android arm64 编译均通过。
+- 隔离 headless 两轮重启与健康/工作区接口通过；实现、故障证据与实机验证边界已归档到 docs/stability-phase-1-implementation.md。
+- 尚未推送或覆盖安装包。原有 analysis 反编译成果保持未跟踪。
+
 ## 2026-10-09 阶段 1 / S5 验收补强
 
 - web lib 最终 158 项通过；desktop lib 首轮 182 项通过/2 项原有交互测试忽略，最终新增用例回归正在结束。

@@ -14,8 +14,8 @@
 | S2 文件接管 | complete | 租约/执行者保护；重启非终态可恢复；取消与完成不被旧 worker 覆盖 |
 | S3 运行时 | complete | 三入口共享启动；监听 readiness；监督/退避/停止；可查询健康 |
 | S4 回执 | complete | 当前正文不等待历史全量；批次限额；ReadAck 优先；写超时 |
-| S5 验证 | in_progress | T1–T5 针对性测试、desktop/web 检查、隔离运行 |
-| S6 交付 | pending | 最终 diff、实施总结、平台与验证限制 |
+| S5 验证 | complete | T1–T5 针对性测试、desktop/web 检查、隔离运行 |
+| S6 交付 | complete | 最终 diff、实施总结、平台与验证限制 |
 
 ## 实施前的基线事实
 
@@ -38,6 +38,19 @@
 ## 验证计划
 
 针对事务回滚/幂等、重启接管/终态保护、绑定失败/停止、积压回执/慢连接做有用的故障测试，不写镜像实现的测试。共享 Rust 修改后检查 desktop lib/bin 和 web bin；执行相关测试，再根据影响运行已有库回归。运行实例使用替代端口和临时数据库；不运行 FeiQ、不接触真实聊天数据。
+
+## 最终验收与提交
+
+阶段 1 已完成。最终代码提交 `839823c`，此前依次为 `068505e`、`7c35bc2`、`bdbf46b`、`7fbfe38`；最初计划提交 `72b65c9`。所有改动按里程碑在本地提交，没有推送。
+
+- web lib：158 passed。
+- desktop lib：183 passed、2 ignored（原有交互式截图测试）；desktop lib/bin check 通过。
+- web bin check/build 通过；隔离 headless 两轮启动、强制退出与重启验证通过。
+- Android arm64：本机 NDK 27.1.12297006 临时环境 check 通过，9 个现有 unused 告警。未做 Android 实机和真实多机压测。
+- 代码图谱已重建；不改生产 UI、不改 gen/android、不包含前序 analysis 大体积反编译产物。
+- 实施与验收报告：`docs/stability-phase-1-implementation.md`；原始运行结果：`docs/verification/2026-10-09-phase1-headless-smoke.json`。
+
+以下为过程记录，其中“进行中”只描述当时状态。后续从最终报告进入阶段 2，继续保留本文件用于故障边界和设计原因交接。
 
 ## 已执行记录
 
@@ -126,3 +139,5 @@
 ## 交接须知
 
 从本文与根 `task_plan.md` 当前任务区恢复；看 `git diff` 识别真实变更。未完成项不得标完成。不要因文档批准请求再次批准同一底层实施。若需要新增 UI，则先完成原型及其他独立底层工作后请求具体原型评审。
+
+文档收尾时内嵌 PowerShell 命令中的 Markdown 反引号导致一次 Python 解析失败；文件未改变，改用独立脚本完成。

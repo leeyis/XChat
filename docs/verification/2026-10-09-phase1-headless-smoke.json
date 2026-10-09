@@ -1,0 +1,46 @@
+{
+  "success": true,
+  "port": 21289,
+  "database_directory": "C:\\Users\\wangy\\AppData\\Local\\Temp\\xchat-phase1-smoke-dqwmb6ms",
+  "runs": [
+    {
+      "iteration": 1,
+      "pid": 37564,
+      "health": {
+        "port": 21289,
+        "state": "ready",
+        "generation": 1,
+        "http_ready": true,
+        "discovery_ready": true,
+        "announcing": true,
+        "watchdog_running": true,
+        "database_ready": true,
+        "eligible_discovery_interfaces": 0,
+        "last_error": null,
+        "retry_in_seconds": 0
+      },
+      "workspace_status": 200,
+      "log": "C:\\Users\\wangy\\AppData\\Local\\Temp\\xchat-phase1-smoke-dqwmb6ms\\run-0.log"
+    },
+    {
+      "iteration": 2,
+      "pid": 27852,
+      "health": {
+        "port": 21289,
+        "state": "ready",
+        "generation": 1,
+        "http_ready": true,
+        "discovery_ready": true,
+        "announcing": true,
+        "watchdog_running": true,
+        "database_ready": true,
+        "eligible_discovery_interfaces": 0,
+        "last_error": null,
+        "retry_in_seconds": 0
+      },
+      "workspace_status": 200,
+      "log": "C:\\Users\\wangy\\AppData\\Local\\Temp\\xchat-phase1-smoke-dqwmb6ms\\run-1.log"
+    }
+  ],
+  "stop_method": "forced termination and restart; graceful lifecycle covered by Rust integration test"
+}
