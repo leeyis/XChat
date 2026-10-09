@@ -13,8 +13,8 @@
 | S1 原子入队 | complete | 正文/目标/提及/文件任务同事务；失败回滚及重复 ID 测试 |
 | S2 文件接管 | complete | 租约/执行者保护；重启非终态可恢复；取消与完成不被旧 worker 覆盖 |
 | S3 运行时 | complete | 三入口共享启动；监听 readiness；监督/退避/停止；可查询健康 |
-| S4 回执 | in_progress | 当前正文不等待历史全量；批次限额；ReadAck 优先；写超时 |
-| S5 验证 | pending | T1–T5 针对性测试、desktop/web 检查、隔离运行 |
+| S4 回执 | complete | 当前正文不等待历史全量；批次限额；ReadAck 优先；写超时 |
+| S5 验证 | in_progress | T1–T5 针对性测试、desktop/web 检查、隔离运行 |
 | S6 交付 | pending | 最终 diff、实施总结、平台与验证限制 |
 
 ## 当前已知事实
@@ -80,11 +80,18 @@
 
 - S3 验证：network::runtime 两项测试通过，覆盖同地址端口冲突、退避恢复、健康 API、WebSocket 随服务停止、监听释放、panic 观察和停止打断；desktop lib/bin 与 web bin check 通过。
 
+- S3 提交 bdbf46b（feat(network): 统一服务监督就绪状态与受控关闭）。
+
 ### S4 设计收敛
 
 - 当前 ACK 独立高优先队列；历史回执分页上限 16 条、低优先通道、游标推进，取代收帧前全量查询/阻塞入队。
 - 回执发送选择最高 ReadAck；成功发送 ReadAck 同时覆盖 delivery 标记，反向补发仍持久兜底。
 - 当前消息处理不等待反向连接；慢 socket 写 3 秒上限，退出同步清理 reader/forward/pager。
+
+- S4 已接入当前帧与历史 worker 分离、游标分页、ACK 高优先转发、3 秒写超时；正在测试 80 条历史积压、最高回执、满通道不阻塞和慢写上限。
+- 反向回执继续由既有控制调度器发送；ReadAck 成功同时完成 delivery 标记，兼容旧数据库只写 read 标记的记录。
+
+- S4 验证：80 条积压下当前 ACK 优先、低优先通道满时不阻塞、分页 16 条、ReadAck 最高状态及两标记完成、慢写截止时间通过；完整 web lib 152 项通过，desktop lib/bin check 通过。
 
 ### S1 设计收敛
 

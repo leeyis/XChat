@@ -3486,6 +3486,16 @@ pub async fn get_pending_receipts_for_peer(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     peer_id: &str,
 ) -> Result<Vec<PendingReceiptRecord>, String> {
+    get_pending_receipts_page(pool, peer_id, None, 16).await
+}
+
+pub async fn get_pending_receipts_page(
+    pool: &Pool<Sqlite>,
+    peer_id: &str,
+    after: Option<(&str, &str)>,
+    limit: i64,
+) -> Result<Vec<PendingReceiptRecord>, String> {
+    let (after_message, after_reader) = after.unwrap_or(("", ""));
     sqlx::query_as::<_, PendingReceiptRecord>(
         "SELECT r.message_client_id, m.conversation_id, r.reader_id,
                 r.delivered_at, r.read_at, r.delivery_ack_sent_at,
@@ -3494,13 +3504,17 @@ pub async fn get_pending_receipts_for_peer(
          INNER JOIN messages m ON m.client_message_id = r.message_client_id
          WHERE m.sender_id = ?
            AND m.conversation_id IS NOT NULL
+           AND (r.message_client_id, r.reader_id) > (?, ?)
            AND (
                 (r.delivered_at IS NOT NULL AND r.delivery_ack_sent_at IS NULL)
                 OR (r.read_at IS NOT NULL AND r.read_ack_sent_at IS NULL)
            )
-         ORDER BY r.updated_at ASC",
+         ORDER BY r.message_client_id ASC, r.reader_id ASC LIMIT ?",
     )
     .bind(peer_id)
+    .bind(after_message)
+    .bind(after_reader)
+    .bind(limit.clamp(1, 16))
     .fetch_all(pool)
     .await
     .map_err(|e| format!("查询待回送消息回执失败: {}", e))
@@ -3512,18 +3526,22 @@ pub async fn mark_receipt_ack_sent(
     reader_id: &str,
     ack_kind: &str,
 ) -> Result<MessageReceiptRecord, String> {
-    let (column, acknowledged_column) = match ack_kind {
-        "delivery" => ("delivery_ack_sent_at", "delivered_at"),
-        "read" => ("read_ack_sent_at", "read_at"),
+    let acknowledged_column = match ack_kind {
+        "delivery" => "delivered_at",
+        "read" => "read_at",
         _ => return Err("ack kind must be delivery or read".to_string()),
     };
     // column names are selected from the closed match above, never from user input.
     let query = format!(
-        "UPDATE message_receipts SET {column} = ?
+        "UPDATE message_receipts SET delivery_ack_sent_at = COALESCE(delivery_ack_sent_at, ?),
+            read_ack_sent_at = CASE WHEN ? = 'read' THEN COALESCE(read_ack_sent_at, ?)
+                                   ELSE read_ack_sent_at END
          WHERE message_client_id = ? AND reader_id = ?
            AND {acknowledged_column} IS NOT NULL"
     );
     let result = sqlx::query(&query)
+        .bind(unix_timestamp())
+        .bind(ack_kind)
         .bind(unix_timestamp())
         .bind(message_client_id)
         .bind(reader_id)

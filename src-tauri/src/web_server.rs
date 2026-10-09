@@ -2101,39 +2101,47 @@ fn now_timestamp() -> i64 {
 }
 
 async fn send_delivery_ack(
-    state: &AppState,
     conversation_id: &str,
     message_client_id: &str,
     author_id: &str,
     reader_id: &str,
     timestamp: i64,
+    read_at: Option<i64>,
 ) -> Result<(), String> {
-    let ack = crate::network::protocol::ProtocolMessage::DeliveryAck {
-        conversation_id: conversation_id.to_string(),
-        from_id: reader_id.to_string(),
-        message_ids: vec![message_client_id.to_string()],
-        timestamp: timestamp.max(0) as u64,
+    let ack = if let Some(read_at) = read_at {
+        crate::network::protocol::ProtocolMessage::ReadAck {
+            conversation_id: conversation_id.to_string(),
+            from_id: reader_id.to_string(),
+            message_ids: vec![message_client_id.to_string()],
+            timestamp: read_at.max(0) as u64,
+        }
+    } else {
+        crate::network::protocol::ProtocolMessage::DeliveryAck {
+            conversation_id: conversation_id.to_string(),
+            from_id: reader_id.to_string(),
+            message_ids: vec![message_client_id.to_string()],
+            timestamp: timestamp.max(0) as u64,
+        }
     };
     // 先借对端主动建立的入站连接回送：发送方正好在这条连接上等回执。
     // 这条路径刻意不标记已发送 —— 发送方可能是旧版，不会读这条连接，
     // 那样标记会让回执永久丢失；反向补发路径继续兜底。
-    if let Some(reply_tx) = CURRENT_PEER_REPLY.try_with(Clone::clone).ok().or_else(|| inbound_reply_sender(author_id)) {
+    if let Some(reply_tx) = CURRENT_PEER_REPLY
+        .try_with(Clone::clone)
+        .ok()
+        .or_else(|| inbound_reply_sender(author_id))
+    {
         match serde_json::to_string(&ack) {
             Ok(json) => {
-                let _ = reply_tx.send(json).await;
+                reply_tx
+                    .try_send(json)
+                    .map_err(|error| format!("current ACK queue unavailable: {error}"))?;
             }
             Err(error) => eprintln!("[WebSocket] 序列化送达回执失败: {error}"),
         }
     }
-    let peer_addr = state
-        .peer_manager
-        .get_all_peers()
-        .into_iter()
-        .find(|peer| peer.id == author_id && !peer.is_offline)
-        .map(|peer| peer.addr)
-        .ok_or_else(|| format!("消息作者 {} 当前不可达", author_id))?;
-    crate::network::protocol::send_protocol_message(&peer_addr, author_id, &ack).await?;
-    crate::db::mark_receipt_ack_sent(&state.pool, message_client_id, reader_id, "delivery").await?;
+    // The receipt is already durable. The bounded control scheduler handles reverse
+    // retries, so a blocked reverse route cannot delay the next incoming payload.
     Ok(())
 }
 
@@ -2156,12 +2164,12 @@ async fn record_local_delivery(
     .await?;
 
     if let Err(error) = send_delivery_ack(
-        state,
         conversation_id,
         message_client_id,
         author_id,
         reader_id,
         receipt.delivered_at.unwrap_or_else(now_timestamp),
+        receipt.read_at,
     )
     .await
     {
@@ -2727,20 +2735,18 @@ fn should_handle_as_stable_direct_message(
 struct WebSocketLifetime {
     connection_id: u64,
     forward: tokio::task::AbortHandle,
+    history: tokio::task::AbortHandle,
 }
 
 impl Drop for WebSocketLifetime {
     fn drop(&mut self) {
         clear_inbound_replies(self.connection_id);
         self.forward.abort();
+        self.history.abort();
     }
 }
 
-async fn handle_websocket(
-    socket: WebSocket,
-    state: Arc<AppState>,
-    peer_payload_allowed: bool,
-) {
+async fn handle_websocket(socket: WebSocket, state: Arc<AppState>, peer_payload_allowed: bool) {
     let (mut sender, mut receiver) = socket.split();
 
     println!("[WebSocket] 新的 WebSocket 连接");
@@ -2751,33 +2757,50 @@ async fn handle_websocket(
     // 反向不可达时送达回执只能从这里回去。
     let connection_id = next_websocket_connection_id();
     let (reply_tx, mut reply_rx) = tokio::sync::mpsc::channel::<String>(64);
-    let forward_handle = tokio::spawn(async move {
+    let (history_tx, mut history_rx) = tokio::sync::mpsc::channel::<String>(16);
+    let (history_peer, peer_updates) = tokio::sync::watch::channel::<Option<String>>(None);
+    let current_frame = Arc::new(tokio::sync::Mutex::new(()));
+    let history_handle = tokio::spawn(receipt_history_loop(
+        state.clone(),
+        peer_updates,
+        history_tx,
+        current_frame.clone(),
+    ));
+    let mut forward_handle = tokio::spawn(async move {
         loop {
-            tokio::select! {
+            let text = tokio::select! {
+                biased;
+                Some(reply) = reply_rx.recv() => reply,
+                Some(history) = history_rx.recv() => history,
                 broadcast = broadcast_rx.recv() => {
                     match broadcast {
-                        Ok(msg) => {
-                            if sender.send(Message::Text(msg.into())).await.is_err() {
-                                break;
-                            }
-                        }
-                        // Lagged（滞后）或 Closed（不会发生）：继续接收
-                        Err(_) => continue,
+                        Ok(msg) => msg,
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
-                // 回送通道关闭时只禁用这一支，广播转发继续工作。
-                Some(reply) = reply_rx.recv() => {
-                    if sender.send(Message::Text(reply.into())).await.is_err() {
-                        break;
-                    }
-                }
+            };
+            if write_websocket_frame(&mut sender, text, std::time::Duration::from_secs(3))
+                .await
+                .is_err()
+            {
+                break;
             }
         }
     });
-    let _lifetime = WebSocketLifetime { connection_id, forward: forward_handle.abort_handle() };
+    let _lifetime = WebSocketLifetime {
+        connection_id,
+        forward: forward_handle.abort_handle(),
+        history: history_handle.abort_handle(),
+    };
 
     // 接收消息
-    while let Some(msg) = receiver.next().await {
+    while let Some(msg) = tokio::select! {
+        biased;
+        _ = &mut forward_handle => None,
+        message = receiver.next() => message,
+    } {
+        let _processing = current_frame.lock().await;
         match msg {
             Ok(Message::Text(text)) => {
                 if !peer_payload_allowed {
@@ -2788,13 +2811,16 @@ async fn handle_websocket(
 
                 match serde_json::from_str::<serde_json::Value>(&text) {
                     Ok(val) => {
-                        // 先记住这条连接能到达对端，再补发该对端还没送出去的回执。
-                        // 之前那几条消息的送达回执可能正是因为反向不可达而卡住的。
+                        // Queue history separately; its worker waits until this frame is committed.
                         if let Some(peer_id) =
                             val.get("from_id").and_then(serde_json::Value::as_str)
                         {
                             register_inbound_reply(peer_id, connection_id, &reply_tx);
-                            flush_pending_receipts(&state, peer_id, &reply_tx).await;
+                            history_peer.send_if_modified(|current| {
+                                if current.as_deref() == Some(peer_id) { return false; }
+                                *current = Some(peer_id.to_string());
+                                true
+                            });
                         }
                         match crate::network::protocol::parse_protocol_value(val.clone()) {
                             Ok(Some(message)) => {
@@ -3380,41 +3406,106 @@ async fn handle_websocket(
 /// 这里刻意不写 `*_ack_sent_at`：入站连接只保证「现在能到达对端」，而反向补发
 /// 路径仍然负责持久重试。旧版对端不会读发送用的那条连接，若在这里标记已发送，
 /// 回执反而会永久丢失。
+async fn write_websocket_frame<S>(
+    sender: &mut S,
+    text: String,
+    deadline: std::time::Duration,
+) -> Result<(), String>
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    tokio::time::timeout(deadline, sender.send(Message::Text(text.into())))
+        .await
+        .map_err(|_| "websocket write timeout".to_string())?
+        .map_err(|_| "websocket write failed".to_string())
+}
+
+async fn receipt_history_loop(
+    state: Arc<AppState>,
+    mut peers: tokio::sync::watch::Receiver<Option<String>>,
+    history: tokio::sync::mpsc::Sender<String>,
+    current_frame: Arc<tokio::sync::Mutex<()>>,
+) {
+    let mut peer = None;
+    let mut cursor = None;
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            changed = peers.changed() => {
+                if changed.is_err() { return; }
+                peer = peers.borrow_and_update().clone();
+                cursor = None;
+            }
+            _ = interval.tick() => {}
+        }
+        let Some(peer) = peer.as_deref() else {
+            continue;
+        };
+        if history.is_closed() {
+            return;
+        }
+        if history.capacity() == 0 {
+            continue;
+        }
+        // One bounded database page; never wait for a slow socket with this gate held.
+        let _frame_complete = current_frame.lock().await;
+        flush_pending_receipts(&state, peer, &history, &mut cursor).await;
+    }
+}
+
 async fn flush_pending_receipts(
     state: &AppState,
     peer_id: &str,
     reply_tx: &tokio::sync::mpsc::Sender<String>,
+    cursor: &mut Option<(String, String)>,
 ) {
-    let receipts = match crate::db::get_pending_receipts_for_peer(&state.pool, peer_id).await {
+    let after = cursor
+        .as_ref()
+        .map(|(message, reader)| (message.as_str(), reader.as_str()));
+    let receipts = match crate::db::get_pending_receipts_page(
+        &state.pool,
+        peer_id,
+        after,
+        reply_tx.capacity().min(16) as i64,
+    )
+    .await
+    {
         Ok(receipts) => receipts,
         Err(error) => {
             eprintln!("[WebSocket] 查询待回送回执失败 ({peer_id}): {error}");
             return;
         }
     };
+    if receipts.is_empty() {
+        *cursor = None;
+        return;
+    }
     for receipt in receipts {
-        let frame = if receipt.delivered_at.is_some() && receipt.delivery_ack_sent_at.is_none() {
-            crate::network::protocol::ProtocolMessage::DeliveryAck {
+        let next_cursor = (receipt.message_client_id.clone(), receipt.reader_id.clone());
+        let frame = if let Some(timestamp) = receipt.read_at {
+            crate::network::protocol::ProtocolMessage::ReadAck {
                 conversation_id: receipt.conversation_id.clone(),
                 from_id: receipt.reader_id.clone(),
                 message_ids: vec![receipt.message_client_id.clone()],
-                timestamp: now_timestamp().max(0) as u64,
+                timestamp: timestamp.max(0) as u64,
             }
-        } else if receipt.read_at.is_some() && receipt.read_ack_sent_at.is_none() {
-            crate::network::protocol::ProtocolMessage::ReadAck {
+        } else if let Some(timestamp) = receipt.delivered_at {
+            crate::network::protocol::ProtocolMessage::DeliveryAck {
                 conversation_id: receipt.conversation_id,
                 from_id: receipt.reader_id,
                 message_ids: vec![receipt.message_client_id],
-                timestamp: now_timestamp().max(0) as u64,
+                timestamp: timestamp.max(0) as u64,
             }
         } else {
             continue;
         };
         match serde_json::to_string(&frame) {
             Ok(json) => {
-                if reply_tx.send(json).await.is_err() {
+                if reply_tx.try_send(json).is_err() {
                     return;
                 }
+                *cursor = Some(next_cursor);
             }
             Err(error) => eprintln!("[WebSocket] 序列化回执失败: {error}"),
         }
@@ -7019,6 +7110,167 @@ mod websocket_protocol_tests {
 
         pool.close().await;
         crate::db::remove_test_database(&pool, &app_dir).await;
+    }
+
+    #[tokio::test]
+    async fn current_ack_precedes_large_history_and_history_uses_highest_receipt() {
+        let peer_id = format!("backlog-peer-{}", uuid::Uuid::new_v4());
+        let app_dir = std::env::temp_dir().join(format!("xchat-ack-backlog-{}", uuid::Uuid::new_v4()));
+        let pool = crate::db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        let my_id = crate::db::get_user_id(&pool).await.unwrap();
+        let conversation = crate::db::ensure_direct_conversation(&pool, &peer_id)
+            .await
+            .unwrap();
+        for index in 0..80 {
+            let id = format!("old-{index:03}");
+            crate::db::save_conversation_message(
+                &pool,
+                &conversation.id,
+                &peer_id,
+                Some(&my_id),
+                "old payload",
+                "text",
+                1,
+                "delivered",
+                &id,
+            )
+            .await
+            .unwrap();
+            crate::db::ensure_message_recipients(&pool, &id, &[my_id.clone()])
+                .await
+                .unwrap();
+            crate::db::save_message_receipt(&pool, &id, &my_id, Some(2), Some(3))
+                .await
+                .unwrap();
+        }
+        let (ws_broadcast, _) = broadcast::channel(8);
+        let state = Arc::new(AppState {
+            pool: pool.clone(),
+            peer_manager: Arc::new(PeerManager::new()),
+            media_token: String::new(),
+            ws_broadcast,
+            #[cfg(feature = "desktop")]
+            app_handle: None,
+        });
+        // A full history queue must return immediately and retain its cursor for retry.
+        let (history_tx, mut history_rx) = tokio::sync::mpsc::channel(4);
+        let mut cursor = None;
+        flush_pending_receipts(&state, &peer_id, &history_tx, &mut cursor).await;
+        assert_eq!(history_rx.len(), 4);
+        let before = cursor.clone();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            flush_pending_receipts(&state, &peer_id, &history_tx, &mut cursor),
+        )
+        .await
+        .unwrap();
+        assert_eq!(cursor, before);
+        for _ in 0..4 {
+            let value: serde_json::Value =
+                serde_json::from_str(&history_rx.recv().await.unwrap()).unwrap();
+            assert_eq!(value["msg_type"], "read_ack");
+        }
+        let page = crate::db::get_pending_receipts_page(&pool, &peer_id, None, 1000)
+            .await
+            .unwrap();
+        assert_eq!(page.len(), 16);
+        crate::db::mark_receipt_ack_sent(&pool, "old-000", &my_id, "read")
+            .await
+            .unwrap();
+        let confirmed = crate::db::get_message_receipts(&pool, "old-000")
+            .await
+            .unwrap();
+        assert!(confirmed[0].delivery_ack_sent_at.is_some() && confirmed[0].read_ack_sent_at.is_some());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = Router::new()
+            .route("/ws", get(websocket_handler))
+            .with_state(state);
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let (mut client, _) =
+            tokio_tungstenite::connect_async(format!("ws://{address}/ws?target_id={my_id}"))
+                .await
+                .unwrap();
+        let incoming = serde_json::json!({
+            "msg_type": "text", "from_id": peer_id, "from_name": "backlog test",
+            "content": "new payload", "timestamp": 42, "conversation_id": conversation.id,
+            "client_message_id": "z-current",
+        });
+        client
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                incoming.to_string().into(),
+            ))
+            .await
+            .unwrap();
+        let first_ack = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let frame = client.next().await.unwrap().unwrap();
+                if let tokio_tungstenite::tungstenite::Message::Text(text) = frame {
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    if matches!(
+                        value["msg_type"].as_str(),
+                        Some("delivery_ack" | "read_ack")
+                    ) {
+                        break value;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(first_ack["message_ids"], serde_json::json!(["z-current"]));
+        assert_eq!(first_ack["msg_type"], "delivery_ack");
+        let mut historical = std::collections::BTreeSet::new();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while historical.len() < 20 {
+                if let tokio_tungstenite::tungstenite::Message::Text(text) =
+                    client.next().await.unwrap().unwrap()
+                {
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    if let Some(id) = value["message_ids"][0]
+                        .as_str()
+                        .filter(|id| id.starts_with("old-"))
+                    {
+                        assert_eq!(value["msg_type"], "read_ack");
+                        historical.insert(id.to_string());
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+        client.close(None).await.unwrap();
+        drop(client);
+        server.abort();
+        let _ = server.await;
+        pool.close().await;
+        crate::db::remove_test_database(&pool, &app_dir).await;
+    }
+
+    #[tokio::test]
+    async fn stalled_websocket_writer_has_a_bounded_deadline() {
+        let mut sink = Box::pin(futures_util::sink::unfold(
+            (),
+            |(), _message: Message| async {
+                std::future::pending::<Result<(), std::io::Error>>().await
+            },
+        ));
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            write_websocket_frame(
+                &mut sink,
+                "ack".into(),
+                std::time::Duration::from_millis(25),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.unwrap_err(), "websocket write timeout");
     }
 
     #[tokio::test]

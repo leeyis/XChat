@@ -470,7 +470,7 @@ pub async fn send_json_via_ws(
 ) -> Result<(), String> {
     let mut ws_stream = open_verified_ws(peer_addr, expected_peer_id).await?;
     write_ws_frame(&mut ws_stream, json).await?;
-    let _ = ws_stream.close(None).await;
+    let _ = tokio::time::timeout(PEER_WEBSOCKET_TIMEOUT, ws_stream.close(None)).await;
     Ok(())
 }
 

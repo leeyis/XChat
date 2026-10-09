@@ -1624,7 +1624,7 @@ pub async fn resend_for_peer(
                 .into_iter()
                 .take(16)
             {
-                if receipt.delivered_at.is_some() && receipt.delivery_ack_sent_at.is_none() {
+                if receipt.read_at.is_none() && receipt.delivered_at.is_some() && receipt.delivery_ack_sent_at.is_none() {
                     let ack = ProtocolMessage::DeliveryAck {
                         conversation_id: receipt.conversation_id.clone(),
                         from_id: receipt.reader_id.clone(),
@@ -1644,7 +1644,7 @@ pub async fn resend_for_peer(
                         .await?;
                     }
                 }
-                if receipt.read_at.is_some() && receipt.read_ack_sent_at.is_none() {
+                if receipt.read_at.is_some() && (receipt.read_ack_sent_at.is_none() || receipt.delivery_ack_sent_at.is_none()) {
                     let ack = ProtocolMessage::ReadAck {
                         conversation_id: receipt.conversation_id,
                         from_id: receipt.reader_id.clone(),

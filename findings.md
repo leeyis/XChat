@@ -1,3 +1,9 @@
+## 2026-10-09 阶段 1 实施发现
+
+- Windows 上占用 loopback 地址不保证 wildcard TCP bind 失败；故障测试必须使用同一监听地址。
+- runtime 停止需要同时结束升级后的 WebSocket；仅中止 axum serve 会留下独立连接任务。现以服务生命周期通道和连接 Drop guard 清理。
+- 历史数据库可能有 read_ack_sent_at 已写而 delivery_ack_sent_at 为空；最高状态补发必须兼容，并在 ReadAck 发出后一起完成两种标记，避免占住有限队列。
+
 # 发现与决策
 
 ## 当前任务：2026-10-09 稳定性阶段 1
