@@ -731,6 +731,7 @@ async fn init_db_with_path_and_machine_name(
             .await?;
     }
 
+    crate::workspace::init_sync_schema(&pool).await?;
     Ok(pool)
 }
 

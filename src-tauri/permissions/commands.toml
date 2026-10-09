@@ -221,6 +221,11 @@ description = "Allows reading the React workspace snapshot"
 commands.allow = ["get_workspace_snapshot"]
 
 [[permission]]
+identifier = "allow-sync-workspace"
+description = "Allows incremental workspace synchronization."
+commands.allow = ["sync_workspace"]
+
+[[permission]]
 identifier = "allow-update-workspace-preference"
 description = "Allows updating whitelisted React workspace preferences"
 commands.allow = ["update_workspace_preference"]

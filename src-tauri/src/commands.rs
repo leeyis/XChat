@@ -2492,6 +2492,15 @@ pub async fn get_workspace_snapshot(
 }
 
 #[tauri::command]
+pub async fn sync_workspace(
+    state: State<'_, DbState>,
+    peer_state: State<'_, PeerState>,
+    cursor: Option<String>,
+) -> Result<crate::workspace::WorkspaceSync, String> {
+    crate::workspace::get_sync(&state.pool, &peer_state.manager, cursor.as_deref()).await
+}
+
+#[tauri::command]
 pub async fn update_workspace_preference(
     app: AppHandle,
     state: State<'_, DbState>,

@@ -47,6 +47,11 @@ static RESUME_TRANSFER_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 static UPLOAD_START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static RECEIVE_PROCESSING_PHASES: OnceLock<Mutex<HashMap<String, ReceiveProcessingPhase>>> =
     OnceLock::new();
+static RECEIVE_PROCESSING_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn receive_processing_revision() -> u64 {
+    RECEIVE_PROCESSING_REVISION.load(Ordering::Acquire)
+}
 static RECEIVE_PROGRESS_WINDOWS: OnceLock<Mutex<HashMap<String, Weak<Mutex<Instant>>>>> =
     OnceLock::new();
 
@@ -118,6 +123,7 @@ impl ReceiveProcessingGuard {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(self.transfer_id.clone(), phase);
+        RECEIVE_PROCESSING_REVISION.fetch_add(1, Ordering::AcqRel);
     }
 }
 
@@ -128,6 +134,7 @@ impl Drop for ReceiveProcessingGuard {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&self.transfer_id);
+            RECEIVE_PROCESSING_REVISION.fetch_add(1, Ordering::AcqRel);
         }
     }
 }

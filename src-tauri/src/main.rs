@@ -120,6 +120,7 @@ fn main() {
             lanchat::commands::stop_tray_flash,
             lanchat::commands::request_permission_on_android,
             lanchat::commands::get_workspace_snapshot,
+            lanchat::commands::sync_workspace,
             lanchat::commands::update_workspace_preference,
             lanchat::commands::create_group,
             lanchat::commands::update_group,

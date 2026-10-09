@@ -17,6 +17,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[path = "workspace_sync.rs"]
+mod sync;
+pub(crate) use sync::init_schema as init_sync_schema;
+pub use sync::{get_sync, WorkspaceSync};
+
 // ponytail: text sends are rare; shard this lock by client_message_id if throughput matters.
 static MESSAGE_WRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static DELIVERY_NETWORK_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
@@ -554,23 +559,7 @@ pub async fn get_snapshot(
     let self_id = db::get_user_id(pool).await?;
     let self_name = db::get_username(pool).await?;
     let devices = devices(pool, peer_manager, &self_id).await?;
-    for device in &devices {
-        db::ensure_direct_conversation(pool, &device.id).await?;
-    }
-
-    let display_names = devices
-        .iter()
-        .map(|device| {
-            (
-                device.id.clone(),
-                device.remark.clone().unwrap_or_else(|| device.name.clone()),
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    let mut conversations = Vec::new();
-    for record in db::list_conversations(pool).await? {
-        conversations.push(conversation_view(pool, record, &display_names, &self_id).await?);
-    }
+    let conversations = sync::conversation_views(pool, &devices, &self_id).await?;
 
     let files = message_views(
         pool,
@@ -1456,15 +1445,19 @@ pub async fn file_center(
 }
 
 pub async fn transfers(pool: &Pool<Sqlite>) -> Result<Vec<WorkspaceTransfer>, String> {
+    let file_names = sqlx::query_as::<_, (String, String)>(
+        "SELECT t.id, COALESCE(m.content, '') FROM
+         (SELECT id, message_id FROM transfers ORDER BY updated_at DESC LIMIT 500) t
+         LEFT JOIN messages m ON m.id = t.message_id AND m.msg_type = 'file'",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|error| error.to_string())?
+    .into_iter()
+    .collect::<HashMap<_, _>>();
     let mut views = Vec::new();
     for transfer in db::list_transfers(pool, 500).await? {
-        let file_name = match transfer.message_id {
-            Some(message_id) => db::get_file_message_by_id(pool, message_id)
-                .await?
-                .map(|message| message.content)
-                .unwrap_or_default(),
-            None => String::new(),
-        };
+        let file_name = file_names.get(&transfer.id).cloned().unwrap_or_default();
         let processing_phase =
             if transfer.direction == "receive" && transfer.status == "transferring" {
                 crate::network::conversation_file::receive_processing_phase(&transfer.id)

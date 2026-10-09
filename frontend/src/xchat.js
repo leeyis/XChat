@@ -1,6 +1,7 @@
 import { captureRecord, captureRecords, captureSettings, downloadCapture, patchCaptureRecord, removeCaptureRecord, saveCaptureRecord, writeCaptureClipboard } from "./capture-library.js";
 import { captureId, normalizePinView } from "./capture-model.js";
 import { renderPinnedCapture } from "./capture-renderer.js";
+import { WorkspaceSyncLoader } from "./workspace-sync.js";
 
 const MESSAGE_STATUS = ["pending", "sent", "delivered", "read"];
 const EVENT_NAMES = [
@@ -1289,6 +1290,11 @@ export class TauriAdapter {
   constructor(tauri) {
     this.tauri = tauri;
     this.runtime = "tauri";
+    this.workspaceSync = new WorkspaceSyncLoader(
+      (cursor) => this.invoke("sync_workspace", { cursor }),
+      () => this.getFullSnapshot(),
+      unavailable,
+    );
   }
 
   invoke(command, payload) {
@@ -1296,6 +1302,10 @@ export class TauriAdapter {
   }
 
   async getSnapshot() {
+    return this.workspaceSync.getSnapshot();
+  }
+
+  async getFullSnapshot() {
     try {
       return await this.invoke("get_workspace_snapshot");
     } catch (error) {
@@ -1878,6 +1888,11 @@ export class HttpWsAdapter {
     this.runtime = "web";
     this.pendingUploads = new Map();
     this.aborters = new Map();
+    this.workspaceSync = new WorkspaceSyncLoader(
+      (cursor) => this.request(`/api/workspace/sync${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+      () => this.getFullSnapshot(),
+      unavailable,
+    );
   }
 
   request(path, options = {}) {
@@ -1893,6 +1908,10 @@ export class HttpWsAdapter {
   }
 
   async getSnapshot() {
+    return this.workspaceSync.getSnapshot();
+  }
+
+  async getFullSnapshot() {
     try {
       return await this.request("/api/workspace");
     } catch (error) {

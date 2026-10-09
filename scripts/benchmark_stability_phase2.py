@@ -18,6 +18,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 
 
 def main():
@@ -112,7 +113,7 @@ def main():
                 # Older servers may serve the frontend fallback for unknown routes.
                 pass
             for index in range(args.samples + 2):
-                path = '/api/workspace' if mode == 'snapshot' else f'/api/workspace/sync?cursor={cursor}'
+                path = '/api/workspace' if mode == 'snapshot' else '/api/workspace/sync?cursor=' + urllib.parse.quote(cursor, safe='')
                 started = time.perf_counter()
                 payload, size = request(path)
                 elapsed = (time.perf_counter() - started) * 1000

@@ -58,6 +58,7 @@
     "allow-set-language",
     "allow-request-permission-on-android",
     "allow-get-workspace-snapshot",
+    "allow-sync-workspace",
     "allow-create-group",
     "allow-update-group",
     "allow-recall-conversation-message",

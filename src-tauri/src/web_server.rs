@@ -459,6 +459,7 @@ pub async fn serve_listener(
             async move { Json(health) }
         }))
         .route("/api/workspace", get(get_workspace_http))
+        .route("/api/workspace/sync", get(sync_workspace_http))
         .route(
             "/api/settings/preference",
             post(update_workspace_preference_http),
@@ -599,6 +600,31 @@ async fn get_workspace_http(State(state): State<Arc<AppState>>) -> ApiResponse {
             snapshot.capabilities.reveal_file = false;
             snapshot.capabilities.native_file_picker = false;
             Json(snapshot).into_response()
+        }
+        Err(error) => backend_error(error),
+    }
+}
+
+#[derive(Deserialize)]
+struct WorkspaceSyncQuery {
+    cursor: Option<String>,
+}
+
+async fn sync_workspace_http(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<WorkspaceSyncQuery>,
+) -> ApiResponse {
+    match crate::workspace::get_sync(&state.pool, &state.peer_manager, query.cursor.as_deref())
+        .await
+    {
+        Ok(mut sync) => {
+            if let Some(capabilities) = sync.changes.get_mut("capabilities") {
+                capabilities["capture"] = true.into();
+                capabilities["captureShortcut"] = true.into();
+                capabilities["revealFile"] = false.into();
+                capabilities["nativeFilePicker"] = false.into();
+            }
+            Json(sync).into_response()
         }
         Err(error) => backend_error(error),
     }

@@ -103,6 +103,7 @@ pub fn run() {
             commands::start_voice_recording,
             commands::stop_voice_recording,
             commands::get_workspace_snapshot,
+            commands::sync_workspace,
             commands::update_workspace_preference,
             commands::create_group,
             commands::update_group,
