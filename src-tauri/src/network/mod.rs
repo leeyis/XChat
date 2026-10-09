@@ -1,6 +1,7 @@
 pub mod conversation_file;
 pub mod discovery;
 pub mod discovery_policy;
+mod file_retry;
 pub mod messaging;
 pub mod peer_identity;
 pub mod peer_connection;

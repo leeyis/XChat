@@ -4416,6 +4416,9 @@ async fn receive_parallel_upload_for_version(
         Err(error) if error.contains("接收繁忙") => {
             return api_error(StatusCode::SERVICE_UNAVAILABLE, error)
         }
+        Err(error) if error.contains("无进展超时") => {
+            return api_error(StatusCode::REQUEST_TIMEOUT, error)
+        }
         Err(error) if error.contains("磁盘空间不足") => {
             return api_error(StatusCode::INSUFFICIENT_STORAGE, error)
         }

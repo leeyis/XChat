@@ -47,6 +47,31 @@ static RESUME_TRANSFER_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 static UPLOAD_START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static RECEIVE_PROCESSING_PHASES: OnceLock<Mutex<HashMap<String, ReceiveProcessingPhase>>> =
     OnceLock::new();
+static RECEIVE_PROGRESS_WINDOWS: OnceLock<Mutex<HashMap<String, Weak<Mutex<Instant>>>>> =
+    OnceLock::new();
+
+fn receive_progress_window(transfer_id: &str) -> Arc<Mutex<Instant>> {
+    let mut windows = RECEIVE_PROGRESS_WINDOWS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    windows.retain(|_, window| window.strong_count() > 0);
+    if let Some(window) = windows.get(transfer_id).and_then(Weak::upgrade) {
+        return window;
+    }
+    let window = Arc::new(Mutex::new(Instant::now()));
+    windows.insert(transfer_id.to_owned(), Arc::downgrade(&window));
+    window
+}
+
+fn take_progress_window(window: &Mutex<Instant>, now: Instant) -> bool {
+    let mut last = window.lock().unwrap_or_else(|error| error.into_inner());
+    if now.duration_since(*last) < Duration::from_millis(500) {
+        return false;
+    }
+    *last = now;
+    true
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReceiveProcessingPhase {
@@ -1569,6 +1594,7 @@ async fn upload_parallel_chunks(
     };
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(60 * 60))
+        .connect_timeout(Duration::from_secs(5))
         .build()
     {
         Ok(client) => client,
@@ -1591,6 +1617,9 @@ async fn upload_parallel_chunks(
         Some(Err(error)) => return UploadOutcome::Failed(0, error),
         None => return UploadOutcome::Cancelled(0),
     };
+    if let Err(error) = validate_prepared_response(&request, &prepared) {
+        return UploadOutcome::Failed(0, error);
+    }
     match prepared.status.as_str() {
         "awaiting_acceptance" => {
             return UploadOutcome::AwaitingAcceptance(prepared.received as i64)
@@ -1622,6 +1651,7 @@ async fn upload_parallel_chunks(
     }
 
     let progress = Arc::new(AtomicI64::new(prepared.received as i64));
+    let prepare_request = request.clone();
     let mut uploads = stream::iter(missing)
         .map(|chunk| {
             upload_parallel_range(
@@ -1632,6 +1662,7 @@ async fn upload_parallel_chunks(
                 job.transfer_id.clone(),
                 job.source.path.clone(),
                 chunk,
+                prepare_request.clone(),
                 progress.clone(),
                 job.concurrency.clone(),
                 token.clone(),
@@ -1641,6 +1672,7 @@ async fn upload_parallel_chunks(
     let mut interval = tokio::time::interval(Duration::from_millis(500));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut streaming_digest = None;
+    let mut persisted_bytes = -1;
 
     loop {
         tokio::select! {
@@ -1657,6 +1689,7 @@ async fn upload_parallel_chunks(
                 if token.load(Ordering::Acquire) {
                     return UploadOutcome::Cancelled(bytes);
                 }
+                if bytes == persisted_bytes { continue; }
                 if let Err(error) = db::update_owned_transfer(
                     pool,
                     lease,
@@ -1666,6 +1699,7 @@ async fn upload_parallel_chunks(
                 ).await {
                     return UploadOutcome::Failed(bytes, error);
                 }
+                persisted_bytes = bytes;
             }
             result = uploads.next() => {
                 let Some(result) = result else { break };
@@ -1727,22 +1761,29 @@ async fn post_parallel_request(
     url: &str,
     request: &ParallelPrepareRequest,
 ) -> Result<ParallelPrepareResponse, String> {
-    let response = client
-        .post(url)
-        .json(request)
-        .send()
-        .await
-        .map_err(|error| format!("请求并行传输失败: {error}"))?;
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|error| format!("读取并行传输响应失败: {error}"))?;
-    if !status.is_success() {
-        let detail: String = body.chars().take(512).collect();
-        return Err(format!("接收端拒绝并行传输 ({status}): {detail}"));
+    super::file_retry::post(client, url, request).await
+}
+
+fn validate_prepared_response(
+    request: &ParallelPrepareRequest,
+    response: &ParallelPrepareResponse,
+) -> Result<(), String> {
+    let missing: BTreeSet<_> = response.missing_chunks.iter().copied().collect();
+    if missing.len() != response.missing_chunks.len()
+        || missing.iter().any(|index| *index >= request.chunks.len())
+        || response.received > request.file_size
+        || (response.status == "ready"
+            && response.received
+                != request
+                    .chunks
+                    .iter()
+                    .filter(|chunk| !missing.contains(&chunk.index))
+                    .map(|chunk| chunk.length)
+                    .sum::<u64>())
+    {
+        return Err("接收端返回了无效的缺失分块或确认字节数".to_string());
     }
-    serde_json::from_str(&body).map_err(|error| format!("解析并行传输响应失败: {error}"))
+    Ok(())
 }
 
 async fn upload_parallel_range(
@@ -1753,69 +1794,140 @@ async fn upload_parallel_range(
     transfer_id: String,
     source_path: String,
     chunk: ParallelChunkRange,
+    prepare: ParallelPrepareRequest,
     progress: Arc<AtomicI64>,
     concurrency: super::transfer::TransferConcurrencyGeneration,
     token: super::transfer::TransferCancellationToken,
 ) -> Result<(), String> {
-    let _permit = concurrency
-        .acquire_for_peer(&peer_id, &token)
-        .await
-        .map_err(|error| match error {
-            super::transfer::TransferPermitError::Cancelled => "transfer cancelled".to_string(),
-            super::transfer::TransferPermitError::Closed => "文件传输并发控制器已关闭".to_string(),
-        })?;
-    let mut file = tokio::fs::File::open(&source_path)
-        .await
-        .map_err(|error| format!("打开并行上传源文件失败: {error}"))?;
-    file.seek(SeekFrom::Start(chunk.offset))
-        .await
-        .map_err(|error| format!("定位并行上传分块失败: {error}"))?;
-    let stream_progress = progress.clone();
-    let stream = ReaderStream::with_capacity(file.take(chunk.length), PARALLEL_STREAM_BUFFER)
-        .map(move |result| {
-            if let Ok(bytes) = &result {
-                stream_progress.fetch_add(bytes.len() as i64, Ordering::AcqRel);
+    use super::file_retry::{self, RequestError};
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+
+    let operation = async {
+        let mut last_error = String::new();
+        for attempt in 0..file_retry::ATTEMPTS {
+            if attempt > 0 {
+                tokio::time::sleep(file_retry::backoff(attempt - 1)).await;
+                // A lost response does not mean the receiver lost the block.
+                let state: ParallelPrepareResponse = match file_retry::post_once(
+                    &client,
+                    &format!("{base_url}/api/uploads/v{protocol_version}/prepare"),
+                    &prepare,
+                )
+                .await
+                {
+                    Ok(state) => state,
+                    Err(error) if error.retryable => {
+                        last_error = error.detail;
+                        continue;
+                    }
+                    Err(error) => return Err(error.detail),
+                };
+                validate_prepared_response(&prepare, &state)?;
+                if matches!(state.status.as_str(), "completed" | "already_exists")
+                    || (state.status == "ready" && !state.missing_chunks.contains(&chunk.index))
+                {
+                    progress.fetch_add(chunk.length as i64, Ordering::AcqRel);
+                    return Ok(());
+                }
+                if state.status != "ready" {
+                    return Err(format!("接收尝试不可继续: {}", state.status));
+                }
             }
-            result
-        });
-    let url = format!(
-        "{base_url}/api/uploads/v{protocol_version}/{}/{}",
-        urlencoding::encode(&transfer_id),
-        chunk.index
-    );
-    let response = await_with_transfer_cancellation(
-        client
-            .post(url)
-            .header(reqwest::header::CONTENT_LENGTH, chunk.length)
-            .body(reqwest::Body::wrap_stream(stream))
-            .send(),
+            let permit = concurrency
+                .acquire_for_peer(&peer_id, &token)
+                .await
+                .map_err(|_| "transfer cancelled".to_string())?;
+            let mut file = tokio::fs::File::open(&source_path)
+                .await
+                .map_err(|error| format!("打开并行上传源文件失败: {error}"))?;
+            if file
+                .metadata()
+                .await
+                .map_err(|error| error.to_string())?
+                .len()
+                != prepare.file_size
+            {
+                return Err("源文件大小在传输过程中发生变化".to_string());
+            }
+            file.seek(SeekFrom::Start(chunk.offset))
+                .await
+                .map_err(|error| format!("定位并行上传分块失败: {error}"))?;
+            let read_bytes = Arc::new(AtomicU64::new(0));
+            let source_error = Arc::new(AtomicBool::new(false));
+            let stream_bytes = read_bytes.clone();
+            let stream_error = source_error.clone();
+            let stream =
+                ReaderStream::with_capacity(file.take(chunk.length), PARALLEL_STREAM_BUFFER).map(
+                    move |result| {
+                        match &result {
+                            Ok(bytes) => {
+                                stream_bytes.fetch_add(bytes.len() as u64, Ordering::AcqRel);
+                            }
+                            Err(_) => {
+                                stream_error.store(true, Ordering::Release);
+                            }
+                        }
+                        result
+                    },
+                );
+            let url = format!(
+                "{base_url}/api/uploads/v{protocol_version}/{}/{}",
+                urlencoding::encode(&transfer_id),
+                chunk.index
+            );
+            let send = async {
+                let response = client
+                    .post(url)
+                    .header(reqwest::header::CONTENT_LENGTH, chunk.length)
+                    .body(reqwest::Body::wrap_stream(stream))
+                    .send()
+                    .await
+                    .map_err(RequestError::transport)?;
+                let response: serde_json::Value = file_retry::decode(response).await?;
+                if !matches!(
+                    response.get("status").and_then(|v| v.as_str()),
+                    Some("receiving" | "completed" | "already_exists")
+                ) {
+                    return Err(RequestError::permanent("并行分块返回未知状态"));
+                }
+                Ok(())
+            };
+            tokio::pin!(send);
+            let mut observed = 0;
+            let mut last_progress = Instant::now();
+            let result = loop {
+                tokio::select! {
+                    result = &mut send => break result,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                        let current = read_bytes.load(Ordering::Acquire);
+                        if current != observed { observed = current; last_progress = Instant::now(); }
+                        let deadline = if current == chunk.length { file_retry::RESPONSE_TIMEOUT } else { file_retry::IDLE_TIMEOUT };
+                        if last_progress.elapsed() >= deadline { break Err(RequestError::transient("分块传输无进展超时")); }
+                    }
+                }
+            };
+            drop(permit);
+            match result {
+                Ok(()) => {
+                    // Persist only confirmed bytes, never bytes merely read by reqwest.
+                    progress.fetch_add(chunk.length as i64, Ordering::AcqRel);
+                    return Ok(());
+                }
+                Err(error) if error.retryable && !source_error.load(Ordering::Acquire) => {
+                    last_error = error.detail
+                }
+                Err(error) => return Err(error.detail),
+            }
+        }
+        Err(format!("分块重试达到上限: {last_error}"))
+    };
+    await_with_transfer_cancellation(
+        tokio::time::timeout(Duration::from_secs(3600), operation),
         &token,
     )
     .await
     .ok_or_else(|| "transfer cancelled".to_string())?
-        .map_err(|error| format!("上传并行分块 {} 失败: {error}", chunk.index))?;
-    let status = response.status();
-    let body = await_with_transfer_cancellation(response.text(), &token)
-        .await
-        .ok_or_else(|| "transfer cancelled".to_string())?
-        .unwrap_or_default();
-    if !status.is_success() {
-        let detail: String = body.chars().take(512).collect();
-        return Err(format!(
-            "接收端拒绝并行分块 {} ({status}): {detail}",
-            chunk.index
-        ));
-    }
-    let response_status = serde_json::from_str::<serde_json::Value>(&body)
-        .ok()
-        .and_then(|value| value.get("status")?.as_str().map(str::to_owned));
-    if !matches!(
-        response_status.as_deref(),
-        Some("receiving" | "completed" | "already_exists")
-    ) {
-        return Err(format!("并行分块 {} 返回未知状态", chunk.index));
-    }
-    Ok(())
+    .map_err(|_| "分块传输达到总时限".to_string())?
 }
 
 async fn update_terminal(
@@ -2408,10 +2520,7 @@ pub(crate) async fn receive_parallel_chunk(
         .await
         .map_err(|error| format!("创建并行分块目录失败: {error}"))?;
     let _disk_reservation = super::transfer::reserve_disk(download_root, chunk.length).await?;
-    let temporary = directory.join(format!(
-        ".{chunk_index:06}-{}.tmp",
-        uuid::Uuid::new_v4()
-    ));
+    let temporary = directory.join(format!(".{chunk_index:06}-{}.tmp", uuid::Uuid::new_v4()));
     let mut file = tokio::fs::File::create(&temporary)
         .await
         .map_err(|error| format!("创建并行分块临时文件失败: {error}"))?;
@@ -2419,80 +2528,70 @@ pub(crate) async fn receive_parallel_chunk(
     let mut written = 0u64;
     let mut reported = 0i64;
     let mut pending = 0i64;
-    let mut last_report = Instant::now();
-    while let Some(data) = stream.next().await {
+    let progress_window = receive_progress_window(transfer_id);
+    loop {
+        let data = match tokio::time::timeout(super::file_retry::IDLE_TIMEOUT, stream.next()).await
+        {
+            Ok(Some(data)) => data,
+            Ok(None) => break,
+            Err(_) => {
+                drop(file);
+                return Err(fail_parallel_chunk_attempt(
+                    pool,
+                    transfer_id,
+                    &temporary,
+                    None,
+                    reported,
+                    "读取并行分块无进展超时".to_string(),
+                )
+                .await);
+            }
+        };
         let data = match data {
             Ok(data) => data,
             Err(error) => {
                 drop(file);
-                return Err(
-                    fail_parallel_chunk_attempt(
-                        pool,
-                        transfer_id,
-                        &temporary,
-                        None,
-                        reported,
-                        format!("读取并行分块请求失败: {error}"),
-                    )
-                    .await,
-                );
+                return Err(fail_parallel_chunk_attempt(
+                    pool,
+                    transfer_id,
+                    &temporary,
+                    None,
+                    reported,
+                    format!("读取并行分块请求失败: {error}"),
+                )
+                .await);
             }
         };
         written = written.saturating_add(data.len() as u64);
         if written > chunk.length {
             drop(file);
-            return Err(
-                fail_parallel_chunk_attempt(
-                    pool,
-                    transfer_id,
-                    &temporary,
-                    None,
-                    reported,
-                    "并行分块超过声明长度".to_string(),
-                )
-                .await,
-            );
+            return Err(fail_parallel_chunk_attempt(
+                pool,
+                transfer_id,
+                &temporary,
+                None,
+                reported,
+                "并行分块超过声明长度".to_string(),
+            )
+            .await);
         }
         if let Err(error) = file.write_all(&data).await {
             drop(file);
-            return Err(
-                fail_parallel_chunk_attempt(
-                    pool,
-                    transfer_id,
-                    &temporary,
-                    None,
-                    reported,
-                    format!("写入并行分块失败: {error}"),
-                )
-                .await,
-            );
+            return Err(fail_parallel_chunk_attempt(
+                pool,
+                transfer_id,
+                &temporary,
+                None,
+                reported,
+                format!("写入并行分块失败: {error}"),
+            )
+            .await);
         }
         pending += data.len() as i64;
-        if pending >= 1024 * 1024 || last_report.elapsed() >= Duration::from_millis(250) {
+        if take_progress_window(&progress_window, Instant::now()) {
             if let Err(error) = adjust_transfer_progress(pool, transfer_id, pending).await {
                 drop(file);
-                return Err(
-                    fail_parallel_chunk_attempt(
-                        pool,
-                        transfer_id,
-                        &temporary,
-                        None,
-                        reported,
-                        error,
-                    )
-                    .await,
-                );
-            }
-            reported += pending;
-            pending = 0;
-            last_report = Instant::now();
-        }
-    }
-    if pending > 0 {
-        if let Err(error) = adjust_transfer_progress(pool, transfer_id, pending).await {
-            drop(file);
-            return Err(
-                fail_parallel_chunk_attempt(
+                return Err(fail_parallel_chunk_attempt(
                     pool,
                     transfer_id,
                     &temporary,
@@ -2500,38 +2599,50 @@ pub(crate) async fn receive_parallel_chunk(
                     reported,
                     error,
                 )
-                .await,
-            );
+                .await);
+            }
+            reported += pending;
+            pending = 0;
+        }
+    }
+    if pending > 0 {
+        if let Err(error) = adjust_transfer_progress(pool, transfer_id, pending).await {
+            drop(file);
+            return Err(fail_parallel_chunk_attempt(
+                pool,
+                transfer_id,
+                &temporary,
+                None,
+                reported,
+                error,
+            )
+            .await);
         }
         reported += pending;
     }
     if written != chunk.length {
         drop(file);
-        return Err(
-            fail_parallel_chunk_attempt(
-                pool,
-                transfer_id,
-                &temporary,
-                None,
-                reported,
-                "并行分块长度与清单不一致".to_string(),
-            )
-            .await,
-        );
+        return Err(fail_parallel_chunk_attempt(
+            pool,
+            transfer_id,
+            &temporary,
+            None,
+            reported,
+            "并行分块长度与清单不一致".to_string(),
+        )
+        .await);
     }
     if let Err(error) = file.flush().await {
         drop(file);
-        return Err(
-            fail_parallel_chunk_attempt(
-                pool,
-                transfer_id,
-                &temporary,
-                None,
-                reported,
-                format!("保存并行分块失败: {error}"),
-            )
-            .await,
-        );
+        return Err(fail_parallel_chunk_attempt(
+            pool,
+            transfer_id,
+            &temporary,
+            None,
+            reported,
+            format!("保存并行分块失败: {error}"),
+        )
+        .await);
     }
     drop(file);
 
@@ -2539,44 +2650,38 @@ pub(crate) async fn receive_parallel_chunk(
     let transfer = match db::get_transfer(pool, transfer_id).await {
         Ok(Some(transfer)) => transfer,
         Ok(None) => {
-            return Err(
-                fail_parallel_chunk_attempt(
-                    pool,
-                    transfer_id,
-                    &temporary,
-                    None,
-                    reported,
-                    "并行接收传输不存在".to_string(),
-                )
-                .await,
-            )
-        }
-        Err(error) => {
-            return Err(
-                fail_parallel_chunk_attempt(
-                    pool,
-                    transfer_id,
-                    &temporary,
-                    None,
-                    reported,
-                    error,
-                )
-                .await,
-            )
-        }
-    };
-    if transfer.status != "transferring" {
-        return Err(
-            fail_parallel_chunk_attempt(
+            return Err(fail_parallel_chunk_attempt(
                 pool,
                 transfer_id,
                 &temporary,
                 None,
                 reported,
-                "并行接收传输已结束".to_string(),
+                "并行接收传输不存在".to_string(),
             )
-            .await,
-        );
+            .await)
+        }
+        Err(error) => {
+            return Err(fail_parallel_chunk_attempt(
+                pool,
+                transfer_id,
+                &temporary,
+                None,
+                reported,
+                error,
+            )
+            .await)
+        }
+    };
+    if transfer.status != "transferring" {
+        return Err(fail_parallel_chunk_attempt(
+            pool,
+            transfer_id,
+            &temporary,
+            None,
+            reported,
+            "并行接收传输已结束".to_string(),
+        )
+        .await);
     }
     let mut published = false;
     if tokio::fs::metadata(&existing_path)
@@ -2588,48 +2693,42 @@ pub(crate) async fn receive_parallel_chunk(
     } else {
         if let Err(error) = tokio::fs::remove_file(&existing_path).await {
             if error.kind() != std::io::ErrorKind::NotFound {
-                return Err(
-                    fail_parallel_chunk_attempt(
-                        pool,
-                        transfer_id,
-                        &temporary,
-                        None,
-                        reported,
-                        format!("替换无效并行分块失败: {error}"),
-                    )
-                    .await,
-                );
-            }
-        }
-        if let Err(error) = tokio::fs::rename(&temporary, &existing_path).await {
-            return Err(
-                fail_parallel_chunk_attempt(
+                return Err(fail_parallel_chunk_attempt(
                     pool,
                     transfer_id,
                     &temporary,
                     None,
                     reported,
-                    format!("发布并行分块失败: {error}"),
+                    format!("替换无效并行分块失败: {error}"),
                 )
-                .await,
-            );
+                .await);
+            }
+        }
+        if let Err(error) = tokio::fs::rename(&temporary, &existing_path).await {
+            return Err(fail_parallel_chunk_attempt(
+                pool,
+                transfer_id,
+                &temporary,
+                None,
+                reported,
+                format!("发布并行分块失败: {error}"),
+            )
+            .await);
         }
         published = true;
     }
     let received = match received_parallel_chunks(download_root, &manifest).await {
         Ok(received) => received,
         Err(error) => {
-            return Err(
-                fail_parallel_chunk_attempt(
-                    pool,
-                    transfer_id,
-                    &temporary,
-                    published.then_some(existing_path.as_path()),
-                    reported,
-                    error,
-                )
-                .await,
+            return Err(fail_parallel_chunk_attempt(
+                pool,
+                transfer_id,
+                &temporary,
+                published.then_some(existing_path.as_path()),
+                reported,
+                error,
             )
+            .await)
         }
     };
     let bytes = received
@@ -2647,17 +2746,15 @@ pub(crate) async fn receive_parallel_chunk(
     .execute(pool)
     .await
     {
-        return Err(
-            fail_parallel_chunk_attempt(
-                pool,
-                transfer_id,
-                &temporary,
-                published.then_some(existing_path.as_path()),
-                reported,
-                format!("校正并行传输进度失败: {error}"),
-            )
-            .await,
-        );
+        return Err(fail_parallel_chunk_attempt(
+            pool,
+            transfer_id,
+            &temporary,
+            published.then_some(existing_path.as_path()),
+            reported,
+            format!("校正并行传输进度失败: {error}"),
+        )
+        .await);
     }
     Ok(ParallelChunkReceiveResult {
         complete: received.len() == manifest.chunks.len(),
@@ -2830,6 +2927,105 @@ fn unix_timestamp() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn phase2_progress_is_coalesced_across_chunks_of_one_transfer() {
+        let first = receive_progress_window("phase2-progress-window");
+        let second = receive_progress_window("phase2-progress-window");
+        assert!(Arc::ptr_eq(&first, &second));
+        let start = Instant::now();
+        *first.lock().unwrap() = start;
+        let mut writes = 0;
+        for tick in 0..2000 {
+            for window in [&first, &second] {
+                writes += usize::from(take_progress_window(
+                    window,
+                    start + Duration::from_millis(tick),
+                ));
+            }
+        }
+        assert_eq!(writes, 3, "4000 reports must share the same 500 ms window");
+    }
+
+    #[tokio::test]
+    async fn phase2_chunk_retry_confirms_commits_and_never_double_counts() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+        // busy then success; committed but response lost; permanently busy; invalid;
+        // cancellation during the backoff. Every case uses a real loopback server.
+        for mode in 0..5 {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let queries = Arc::new(AtomicUsize::new(0));
+            let token = Arc::new(AtomicBool::new(false));
+            let count = calls.clone();
+            let cancelled = token.clone();
+            let query_count = queries.clone();
+            let router = axum::Router::new().route("/api/uploads/v4/test/0", axum::routing::post(move |request: axum::extract::Request| {
+                let count = count.clone();
+                let cancelled = cancelled.clone();
+                async move {
+                    let bytes = axum::body::to_bytes(request.into_body(), 1024).await.unwrap();
+                    assert_eq!(bytes.as_ref(), b"payload");
+                    let attempt = count.fetch_add(1, Ordering::SeqCst);
+                    if mode == 4 { cancelled.store(true, Ordering::Release); }
+                    let status = if mode == 3 { 409 } else if mode == 0 && attempt > 0 { 200 } else { 503 };
+                    (axum::http::StatusCode::from_u16(status).unwrap(), axum::Json(serde_json::json!({"status": "receiving"})))
+                }
+            })).route("/api/uploads/v4/prepare", axum::routing::post(move || {
+                query_count.fetch_add(1, Ordering::SeqCst);
+                async move { axum::Json(serde_json::json!({"status":"ready", "received":if mode == 1 {7} else {0}, "missing_chunks":if mode == 1 {vec![]} else {vec![0]}})) }
+            }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            let path =
+                std::env::temp_dir().join(format!("xchat-phase2-retry-{}", uuid::Uuid::new_v4()));
+            tokio::fs::write(&path, b"payload").await.unwrap();
+            let chunk = ParallelChunkRange {
+                index: 0,
+                offset: 0,
+                length: 7,
+            };
+            let prepare = ParallelPrepareRequest {
+                sender_id: "sender".into(),
+                conversation_id: "direct".into(),
+                client_message_id: "message".into(),
+                transfer_id: "test".into(),
+                sender_msg_id: "1".into(),
+                file_name: "file.bin".into(),
+                file_size: 7,
+                file_sha256: String::new(),
+                chunks: vec![chunk.clone()],
+            };
+            let progress = Arc::new(AtomicI64::new(0));
+            let result = upload_parallel_range(
+                reqwest::Client::new(),
+                base,
+                "peer".into(),
+                4,
+                "test".into(),
+                path.to_string_lossy().into_owned(),
+                chunk,
+                prepare,
+                progress.clone(),
+                super::super::transfer::TransferConcurrencyController::default()
+                    .generation(4)
+                    .unwrap(),
+                token,
+            )
+            .await;
+            assert_eq!(result.is_ok(), mode < 2, "mode {mode}: {result:?}");
+            assert_eq!(
+                progress.load(Ordering::Acquire),
+                if mode < 2 { 7 } else { 0 }
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), [2, 1, 3, 1, 1][mode]);
+            assert_eq!(queries.load(Ordering::SeqCst), [1, 1, 2, 0, 0][mode]);
+            server.abort();
+            tokio::fs::remove_file(path).await.unwrap();
+        }
+    }
 
     async fn claim_test_upload(pool: &Pool<Sqlite>, id: &str) -> db::TransferLease {
         sqlx::query("UPDATE transfers SET status = 'queued' WHERE id = ?")
