@@ -511,6 +511,9 @@ pub async fn resume_waiting_for_peer(
     peer_id: &str,
     peer_addr: &str,
 ) -> Result<(), String> {
+    let _resume_guard = RESUME_TRANSFER_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock().await;
     let peer_id = peer_id.trim();
     let peer_addr = peer_addr.trim();
     if peer_id.is_empty() || peer_addr.is_empty() {
@@ -1098,117 +1101,97 @@ fn spawn_upload(pool: Pool<Sqlite>, job: UploadJob) {
     });
 }
 
+pub async fn recover_abandoned_uploads(pool: &Pool<Sqlite>) -> Result<(), String> {
+    let messages = db::recover_abandoned_transfers(pool).await?;
+    for id in messages {
+        refresh_file_status(pool, id).await?;
+        eprintln!("[ConversationFile] recovered message_id={id}");
+    }
+    Ok(())
+}
+
+struct UploadExecutionGuard {
+    id: String,
+    token: super::transfer::TransferCancellationToken,
+}
+
+impl Drop for UploadExecutionGuard {
+    fn drop(&mut self) {
+        self.token.store(true, Ordering::Release);
+        cancellation_registry().complete_execution(&self.id, &self.token);
+    }
+}
+
 async fn run_upload(pool: &Pool<Sqlite>, mut job: UploadJob) {
-    let registry = cancellation_registry();
-    let token = registry.register(job.transfer_id.clone());
-    let current = match db::get_transfer(pool, &job.transfer_id).await {
-        Ok(Some(transfer)) => transfer,
-        Ok(None) => {
-            registry.complete(&job.transfer_id);
-            return;
-        }
+    let lease = match db::claim_send_transfer(pool, &job.transfer_id).await {
+        Ok(Some(lease)) => lease,
+        Ok(None) => return,
         Err(error) => {
-            eprintln!("[ConversationFile] 读取传输失败: {error}");
-            registry.complete(&job.transfer_id);
+            eprintln!(
+                "[ConversationFile] claim transfer_id={} error={error}",
+                job.transfer_id
+            );
             return;
         }
     };
-
-    if matches!(
-        current.status.as_str(),
-        "completed" | "cancelled" | "failed"
-    ) {
-        if let Err(error) = refresh_file_status(pool, job.message_id).await {
-            eprintln!("[ConversationFile] 聚合文件状态失败: {error}");
-        }
-        registry.complete(&job.transfer_id);
-        return;
-    }
-    if current.status == "cancelling" || token.load(Ordering::Acquire) {
-        let _ = update_terminal(
-            pool,
-            job.message_id,
-            &job.transfer_id,
-            "cancelled",
-            current.bytes_transferred,
-            None,
-        )
-        .await;
-        registry.complete(&job.transfer_id);
-        return;
-    }
-    if !matches!(current.status.as_str(), "queued" | "waiting_peer") {
-        registry.complete(&job.transfer_id);
-        return;
-    }
-
-    let claimed = match db::update_transfer(
-        pool,
-        &job.transfer_id,
-        "transferring",
-        current.bytes_transferred,
-        None,
-    )
-    .await
-    {
-        Ok(transfer) => transfer,
-        Err(error) => {
-            eprintln!("[ConversationFile] 启动传输失败: {error}");
-            registry.complete(&job.transfer_id);
-            return;
-        }
+    let token = cancellation_registry().register_execution(&job.transfer_id);
+    let _guard = UploadExecutionGuard {
+        id: job.transfer_id.clone(),
+        token: token.clone(),
     };
-    if claimed.status != "transferring" || token.load(Ordering::Acquire) {
-        let _ = update_terminal(
-            pool,
-            job.message_id,
-            &job.transfer_id,
-            "cancelled",
-            claimed.bytes_transferred,
-            None,
-        )
-        .await;
-        registry.complete(&job.transfer_id);
-        return;
-    }
-    if let Err(error) = refresh_file_status(pool, job.message_id).await {
-        eprintln!("[ConversationFile] 聚合文件状态失败: {error}");
-    }
-
-    let outcome = upload_chunks(pool, &job, &token).await;
-    // Drop our digest subscription promptly when preparation fails or is cancelled.
-    job.file_sha256 = None;
-    let (status, bytes, error) = match outcome {
-        UploadOutcome::Completed(bytes) => ("completed", bytes, None),
-        UploadOutcome::AwaitingAcceptance(bytes) => ("awaiting_acceptance", bytes, None),
-        UploadOutcome::Cancelled(bytes) => {
-            if notify_remote_cleanup(&job, "cancelled").await.as_deref() == Some("completed") {
-                ("completed", job.source.size, None)
-            } else {
-                ("cancelled", bytes, None)
+    let transfer_id = job.transfer_id.clone();
+    eprintln!(
+        "[ConversationFile] claimed transfer_id={transfer_id} message_id={} lease={}",
+        job.message_id, lease.token
+    );
+    let work = async {
+        if !db::renew_transfer_lease(pool, &lease).await? {
+            return Err("transfer lease lost before upload".to_string());
+        }
+        refresh_file_status(pool, job.message_id).await?;
+        let outcome = upload_chunks(pool, &job, &token, &lease).await;
+        // A stale worker must not cancel the receiver's newly resumed task either.
+        if !db::renew_transfer_lease(pool, &lease).await? {
+            return Err("transfer lease lost after upload".to_string());
+        }
+        // Drop our digest subscription promptly when preparation fails or is cancelled.
+        job.file_sha256 = None;
+        let (status, bytes, error) = match outcome {
+            UploadOutcome::Completed(bytes) => ("completed", bytes, None),
+            UploadOutcome::AwaitingAcceptance(bytes) => ("awaiting_acceptance", bytes, None),
+            UploadOutcome::Cancelled(bytes) => {
+                if notify_remote_cleanup(&job, "cancelled").await.as_deref() == Some("completed") {
+                    ("completed", job.source.size, None)
+                } else {
+                    ("cancelled", bytes, None)
+                }
             }
-        }
-        UploadOutcome::Failed(bytes, error) => {
-            if notify_remote_cleanup(&job, "failed").await.as_deref() == Some("completed") {
-                ("completed", job.source.size, None)
-            } else {
-                ("failed", bytes, Some(error))
+            UploadOutcome::Failed(bytes, error) => {
+                if notify_remote_cleanup(&job, "failed").await.as_deref() == Some("completed") {
+                    ("completed", job.source.size, None)
+                } else {
+                    ("failed", bytes, Some(error))
+                }
+            }
+        };
+        db::update_owned_transfer(pool, &lease, status, bytes, error.as_deref()).await?;
+        refresh_file_status(pool, job.message_id).await
+    };
+    let heartbeat = async {
+        loop {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            if !db::renew_transfer_lease(pool, &lease).await? {
+                return Err::<(), String>("transfer lease expired or execution replaced".into());
             }
         }
     };
-    if let Err(update_error) = update_terminal(
-        pool,
-        job.message_id,
-        &job.transfer_id,
-        status,
-        bytes,
-        error.as_deref(),
-    )
-    .await
-    {
-        eprintln!("[ConversationFile] 保存传输终态失败: {update_error}");
+    let result = tokio::select! {
+        result = work => result,
+        result = heartbeat => result,
+    };
+    if let Err(error) = result {
+        eprintln!("[ConversationFile] execution stopped transfer_id={transfer_id} error={error}");
     }
-    registry.complete(&job.transfer_id);
 }
 
 async fn post_remote_terminal(
@@ -1313,6 +1296,7 @@ async fn upload_chunks(
     pool: &Pool<Sqlite>,
     job: &UploadJob,
     token: &super::transfer::TransferCancellationToken,
+    lease: &db::TransferLease,
 ) -> UploadOutcome {
     if token.load(Ordering::Acquire) {
         return UploadOutcome::Cancelled(0);
@@ -1335,7 +1319,7 @@ async fn upload_chunks(
         return UploadOutcome::Cancelled(0);
     }
     if job.upload_plan.is_parallel() {
-        return upload_parallel_chunks(pool, job, token).await;
+        return upload_parallel_chunks(pool, job, token, lease).await;
     }
 
     let mut file = match tokio::fs::File::open(&job.source.path).await {
@@ -1496,9 +1480,9 @@ async fn upload_chunks(
         if token.load(Ordering::Acquire) {
             return UploadOutcome::Cancelled(bytes_transferred);
         }
-        if let Err(error) = db::update_transfer(
+        if let Err(error) = db::update_owned_transfer(
             pool,
-            &job.transfer_id,
+            lease,
             "transferring",
             bytes_transferred,
             None,
@@ -1523,6 +1507,7 @@ async fn upload_parallel_chunks(
     pool: &Pool<Sqlite>,
     job: &UploadJob,
     token: &super::transfer::TransferCancellationToken,
+    lease: &db::TransferLease,
 ) -> UploadOutcome {
     let Some(hash) = job.file_sha256.clone() else {
         return UploadOutcome::Failed(0, "并行传输缺少文件摘要".to_string());
@@ -1656,9 +1641,9 @@ async fn upload_parallel_chunks(
                 if token.load(Ordering::Acquire) {
                     return UploadOutcome::Cancelled(bytes);
                 }
-                if let Err(error) = db::update_transfer(
+                if let Err(error) = db::update_owned_transfer(
                     pool,
-                    &job.transfer_id,
+                    lease,
                     "transferring",
                     bytes,
                     None,
@@ -2820,6 +2805,12 @@ fn unix_timestamp() -> i64 {
 mod tests {
     use super::*;
 
+    async fn claim_test_upload(pool: &Pool<Sqlite>, id: &str) -> db::TransferLease {
+        sqlx::query("UPDATE transfers SET status = 'queued' WHERE id = ?")
+            .bind(id).execute(pool).await.unwrap();
+        db::claim_send_transfer(pool, id).await.unwrap().unwrap()
+    }
+
     #[test]
     fn stale_partial_cleanup_only_targets_managed_names() {
         assert!(is_received_partial_name(
@@ -3540,6 +3531,7 @@ mod tests {
                 &task_pool,
                 &job,
                 &Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                &claim_test_upload(&task_pool, &job.transfer_id).await,
             )
             .await
         });
@@ -3589,7 +3581,10 @@ mod tests {
         let task_pool = pool.clone();
         let upload =
             tokio::spawn(
-                async move { upload_parallel_chunks(&task_pool, &cancelled_job, &token).await },
+                async move {
+                    let lease = claim_test_upload(&task_pool, &cancelled_job.transfer_id).await;
+                    upload_parallel_chunks(&task_pool, &cancelled_job, &token, &lease).await
+                },
             );
         for _ in &ranges {
             tokio::time::timeout(Duration::from_secs(2), chunks_rx.recv())
@@ -3763,10 +3758,12 @@ mod tests {
             let token_b = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let job_a = make_job(&transfer_a, &source_a);
             let job_b = make_job(&transfer_b, &source_b);
+            let lease_a = claim_test_upload(&pool, &transfer_a).await;
+            let lease_b = claim_test_upload(&pool, &transfer_b).await;
 
             let (outcome_a, outcome_b) = tokio::join!(
-                upload_parallel_chunks(&pool, &job_a, &token_a),
-                upload_parallel_chunks(&pool, &job_b, &token_b),
+                upload_parallel_chunks(&pool, &job_a, &token_a, &lease_a),
+                upload_parallel_chunks(&pool, &job_b, &token_b, &lease_b),
             );
 
             for outcome in [outcome_a, outcome_b] {
@@ -3938,6 +3935,7 @@ mod tests {
                 &pool_v1,
                 &v1_job,
                 &Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                &claim_test_upload(&pool_v1, &v1_job.transfer_id).await,
             )
             .await
         });
@@ -3947,6 +3945,7 @@ mod tests {
                 &pool_v2,
                 &v2_job,
                 &Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                &claim_test_upload(&pool_v2, &v2_job.transfer_id).await,
             )
             .await
         });
@@ -4043,7 +4042,9 @@ mod tests {
         let upload_pool = pool.clone();
         let upload_token = token.clone();
         let mut upload = tokio::spawn(async move {
-            upload_chunks(&upload_pool, &job, &upload_token).await
+            // This test cancels before any progress write; no database task is created.
+            let lease = db::TransferLease { transfer_id: job.transfer_id.clone(), token: "unused".into() };
+            upload_chunks(&upload_pool, &job, &upload_token, &lease).await
         });
         tokio::time::timeout(Duration::from_secs(1), started.notified())
             .await

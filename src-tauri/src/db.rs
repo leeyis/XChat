@@ -625,6 +625,12 @@ async fn init_db_with_path_and_machine_name(
     .execute(&pool)
     .await?;
 
+    // Internal execution ownership; deliberately absent from public transfer payloads.
+    let _ = sqlx::query("ALTER TABLE transfers ADD COLUMN lease_token TEXT")
+        .execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE transfers ADD COLUMN lease_until INTEGER NOT NULL DEFAULT 0")
+        .execute(&pool).await;
+
     // 创建 persisted_uris 表追踪已持久化的 content URI 权限
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS persisted_uris (
@@ -3762,6 +3768,103 @@ pub async fn create_transfer(
     Ok(transfer)
 }
 
+pub const TRANSFER_LEASE_SECONDS: i64 = 60;
+
+#[derive(Debug, Clone)]
+pub struct TransferLease {
+    pub transfer_id: String,
+    pub token: String,
+}
+
+pub async fn claim_send_transfer(
+    pool: &Pool<Sqlite>,
+    id: &str,
+) -> Result<Option<TransferLease>, String> {
+    let token = uuid::Uuid::new_v4().to_string();
+    let now = unix_timestamp();
+    let result = sqlx::query(
+        "UPDATE transfers SET status = 'transferring', lease_token = ?, lease_until = ?, updated_at = ?
+         WHERE id = ? AND direction = 'send' AND status IN ('queued', 'waiting_peer') AND lease_until <= ?",
+    )
+    .bind(&token).bind(now + TRANSFER_LEASE_SECONDS).bind(now).bind(id).bind(now)
+    .execute(pool).await.map_err(|e| e.to_string())?;
+    Ok((result.rows_affected() == 1).then(|| TransferLease {
+        transfer_id: id.into(),
+        token,
+    }))
+}
+
+pub async fn renew_transfer_lease(
+    pool: &Pool<Sqlite>,
+    lease: &TransferLease,
+) -> Result<bool, String> {
+    let now = unix_timestamp();
+    let result = sqlx::query(
+        "UPDATE transfers SET lease_until = ? WHERE id = ? AND lease_token = ? AND lease_until > ?
+         AND status IN ('transferring', 'cancelling')",
+    )
+    .bind(now + TRANSFER_LEASE_SECONDS)
+    .bind(&lease.transfer_id)
+    .bind(&lease.token)
+    .bind(now)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(result.rows_affected() == 1)
+}
+
+pub async fn update_owned_transfer(
+    pool: &Pool<Sqlite>,
+    lease: &TransferLease,
+    status: &str,
+    bytes: i64,
+    error: Option<&str>,
+) -> Result<(), String> {
+    if !matches!(
+        status,
+        "transferring" | "completed" | "failed" | "cancelled" | "awaiting_acceptance"
+    ) || bytes < 0
+    {
+        return Err("invalid owned transfer update".into());
+    }
+    let terminal = status != "transferring";
+    let now = unix_timestamp();
+    let result = sqlx::query(
+        "UPDATE transfers SET
+            status = CASE WHEN status = 'cancelling' AND ? != 'completed' THEN 'cancelled' ELSE ? END,
+            bytes_transferred = MAX(bytes_transferred, MIN(?, bytes_total)), error = ?, updated_at = ?,
+            lease_token = CASE WHEN ? THEN NULL ELSE lease_token END,
+            lease_until = CASE WHEN ? THEN 0 ELSE lease_until END
+         WHERE id = ? AND lease_token = ? AND lease_until > ?
+           AND (status = 'transferring' OR (status = 'cancelling' AND ?))",
+    )
+    .bind(status).bind(status).bind(bytes).bind(error).bind(now).bind(terminal).bind(terminal)
+    .bind(&lease.transfer_id).bind(&lease.token).bind(now).bind(terminal)
+    .execute(pool).await.map_err(|e| e.to_string())?;
+    if result.rows_affected() != 1 {
+        return Err("transfer execution lease lost or cancellation requested".into());
+    }
+    Ok(())
+}
+
+/// Recover only abandoned work. A second runtime must not steal a live worker's lease.
+pub async fn recover_abandoned_transfers(pool: &Pool<Sqlite>) -> Result<Vec<i64>, String> {
+    let now = unix_timestamp();
+    let affected: Vec<Option<i64>> = sqlx::query_scalar(
+        "UPDATE transfers SET status = CASE WHEN status = 'cancelling' THEN 'cancelled' ELSE 'waiting_peer' END,
+            lease_token = NULL, lease_until = 0, error = NULL, updated_at = ?
+         WHERE direction = 'send' AND status IN ('queued', 'offering', 'transferring', 'cancelling')
+           AND lease_until <= ? RETURNING message_id",
+    )
+    .bind(now).bind(now).fetch_all(pool).await.map_err(|e| e.to_string())?;
+    Ok(affected
+        .into_iter()
+        .flatten()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect())
+}
+
 pub async fn update_transfer(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     transfer_id: &str,
@@ -3785,7 +3888,8 @@ pub async fn update_transfer(
              bytes_transferred = MAX(bytes_transferred, MIN(?, bytes_total)),
              error = ?,
              updated_at = ?
-         WHERE id = ? AND status NOT IN ('completed', 'cancelled')",
+         WHERE id = ? AND status NOT IN ('completed', 'cancelled')
+           AND (direction != 'send' OR lease_until <= strftime('%s', 'now'))",
     )
     .bind(status)
     .bind(bytes_transferred)
@@ -4064,6 +4168,151 @@ pub(crate) async fn remove_test_database(pool: &SqlitePool, app_dir: &std::path:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn file_execution_lease_recovers_restart_and_rejects_stale_completion() {
+        let app_dir = std::env::temp_dir().join(format!("xchat-file-lease-{}", uuid::Uuid::new_v4()));
+        let pool = init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        let conversation = ensure_direct_conversation(&pool, "peer").await.unwrap();
+        for status in [
+            "queued",
+            "offering",
+            "transferring",
+            "cancelling",
+            "completed",
+            "cancelled",
+            "failed",
+            "awaiting_acceptance",
+        ] {
+            create_transfer(
+                &pool,
+                status,
+                None,
+                &conversation.id,
+                "peer",
+                "send",
+                status,
+                100,
+            )
+            .await
+            .unwrap();
+        }
+        create_transfer(
+            &pool,
+            "receive",
+            None,
+            &conversation.id,
+            "peer",
+            "receive",
+            "transferring",
+            100,
+        )
+        .await
+        .unwrap();
+        let (a, b) = tokio::join!(
+            claim_send_transfer(&pool, "queued"),
+            claim_send_transfer(&pool, "queued")
+        );
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert_ne!(a.is_some(), b.is_some());
+        let old = a.or(b).unwrap();
+        update_owned_transfer(&pool, &old, "transferring", 40, None)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let pool = init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        recover_abandoned_transfers(&pool).await.unwrap();
+        // A valid lease survives another runtime opening the same database.
+        assert_eq!(
+            get_transfer(&pool, "queued").await.unwrap().unwrap().status,
+            "transferring"
+        );
+        assert_eq!(
+            get_transfer(&pool, "offering")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "waiting_peer"
+        );
+        assert_eq!(
+            get_transfer(&pool, "transferring")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "waiting_peer"
+        );
+        assert_eq!(
+            get_transfer(&pool, "cancelling")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "cancelled"
+        );
+        for status in ["completed", "cancelled", "failed", "awaiting_acceptance"] {
+            assert_eq!(
+                get_transfer(&pool, status).await.unwrap().unwrap().status,
+                status
+            );
+        }
+        assert_eq!(
+            get_transfer(&pool, "receive")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "transferring"
+        );
+        sqlx::query("UPDATE transfers SET lease_until = 0 WHERE id = 'queued'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        recover_abandoned_transfers(&pool).await.unwrap();
+        let resumed = get_transfer(&pool, "queued").await.unwrap().unwrap();
+        assert_eq!(resumed.status, "waiting_peer");
+        assert_eq!(resumed.bytes_transferred, 40);
+        let current = claim_send_transfer(&pool, "queued").await.unwrap().unwrap();
+        assert!(!renew_transfer_lease(&pool, &old).await.unwrap());
+        assert!(
+            update_owned_transfer(&pool, &old, "failed", 99, Some("late worker"))
+                .await
+                .is_err()
+        );
+        assert!(renew_transfer_lease(&pool, &current).await.unwrap());
+        cancel_transfer(&pool, "queued").await.unwrap();
+        assert!(
+            update_owned_transfer(&pool, &current, "transferring", 80, None)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            get_transfer(&pool, "queued").await.unwrap().unwrap().status,
+            "cancelling"
+        );
+        // A confirmed remote completion may win the cancel race, then remains immutable.
+        update_owned_transfer(&pool, &current, "completed", 100, None)
+            .await
+            .unwrap();
+        assert!(update_owned_transfer(&pool, &old, "cancelled", 40, None)
+            .await
+            .is_err());
+        assert!(update_owned_transfer(&pool, &current, "failed", 100, None)
+            .await
+            .is_err());
+        assert_eq!(
+            get_transfer(&pool, "queued").await.unwrap().unwrap().status,
+            "completed"
+        );
+        assert!(claim_send_transfer(&pool, "queued")
+            .await
+            .unwrap()
+            .is_none());
+        pool.close().await;
+        remove_test_database(&pool, &app_dir).await;
+    }
 
     #[tokio::test]
     async fn atomic_enqueue_rolls_back_partial_work_and_freezes_retry_targets() {

@@ -2354,6 +2354,9 @@ async fn offline_scan_tick(
 
     // Each peer has an outbox lease/guard. Network waits must never block presence scans.
     if tick % RESEND_SWEEP_TICKS == 0 {
+        if let Err(error) = super::conversation_file::recover_abandoned_uploads(pool).await {
+            eprintln!("[UDP] 文件任务恢复失败: {error}");
+        }
         for peer in peer_manager.get_all_peers() {
             if !peer.is_offline {
                 super::peer_connection::schedule_validation(pool, peer_manager, &peer.id);

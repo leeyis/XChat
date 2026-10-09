@@ -11,8 +11,8 @@
 | 子项 | 状态 | 完成条件 |
 | --- | --- | --- |
 | S1 原子入队 | complete | 正文/目标/提及/文件任务同事务；失败回滚及重复 ID 测试 |
-| S2 文件接管 | pending | 租约/执行者保护；重启非终态可恢复；取消与完成不被旧 worker 覆盖 |
-| S3 运行时 | pending | 三入口共享启动；监听 readiness；监督/退避/停止；可查询健康 |
+| S2 文件接管 | complete | 租约/执行者保护；重启非终态可恢复；取消与完成不被旧 worker 覆盖 |
+| S3 运行时 | in_progress | 三入口共享启动；监听 readiness；监督/退避/停止；可查询健康 |
 | S4 回执 | pending | 当前正文不等待历史全量；批次限额；ReadAck 优先；写超时 |
 | S5 验证 | pending | T1–T5 针对性测试、desktop/web 检查、隔离运行 |
 | S6 交付 | pending | 最终 diff、实施总结、平台与验证限制 |
@@ -48,13 +48,26 @@
 
 - 原子 enqueue 已接入文本/文件发送；即时事务防并发重复写；存量 ID 保留目标与提及。
 - 新增真实 SQLite 收件人和第二个文件任务失败回滚测试、重开库测试、并发同 ID/旧单聊补全测试。
-- web bin 与 desktop lib 编译通过；atomic_enqueue 两项故障测试通过，完整 web lib 回归进行中。仅格式化修改函数，未执行全库 fmt。
+- web bin 与 desktop lib 编译通过；atomic_enqueue 两项故障测试通过，完整 web lib 146 项全部通过。仅格式化修改函数，未执行全库 fmt。
+
+- S1 实现提交 068505e（fix(outbox): 原子保存消息目标与文件任务）。
 
 ### S2 设计收敛
 
 - transfers 追加内部 lease_token/lease_until（保留现有序列化模型）；worker 原子领取、周期续租、按 token 更新进度/终态，失去租约停止 IO。
 - 启动/周期恢复仅接管无有效租约的发送非终态；保留 ID/字节/接收分块，取消收敛为 cancelled；活跃租约不抢占。
 - cancellation registry 需按执行 token 完成，避免旧 worker 清理新一代的取消句柄。
+
+- 文件 worker 已接入 60 秒租约/20 秒续租；周期扫描恢复非终态、token 防旧写、取消句柄按执行代次清理。启动接管将在共享 runtime 内调用。
+- 组件网络测试使用真实领取的租约；另加磁盘库重启/租约抢占/取消竞态测试。
+
+- 验证：file_execution_lease 故障测试通过；web lib 全量 148 项通过；desktop lib check 通过。恢复界限为租约最长 60 秒加扫描周期，不能抢占仍有效的跨进程执行者。
+
+### S3 设计收敛
+
+- 共享 supervisor 统一三入口；先恢复队列并绑定 UDP/TCP，监听就绪后启动广播/看门狗。
+- 子任务退出或 panic 记录服务错误，取消同代任务并按上限 30 秒退避重建；关闭取消与任务生命周期统一管理。
+- /api/health 返回运行代次、监听就绪和最近错误；不改产品 UI。
 
 ### S1 设计收敛
 

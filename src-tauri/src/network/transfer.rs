@@ -133,6 +133,27 @@ pub fn cancellation_registry() -> &'static TransferCancellationRegistry {
 }
 
 impl TransferCancellationRegistry {
+    pub fn register_execution(&self, transfer_id: &str) -> TransferCancellationToken {
+        let token = Arc::new(AtomicBool::new(false));
+        if let Some(previous) = self
+            .transfers()
+            .insert(transfer_id.to_string(), token.clone())
+        {
+            previous.store(true, Ordering::Release);
+        }
+        token
+    }
+
+    pub fn complete_execution(&self, transfer_id: &str, token: &TransferCancellationToken) {
+        let mut transfers = self.transfers();
+        if transfers
+            .get(transfer_id)
+            .is_some_and(|current| Arc::ptr_eq(current, token))
+        {
+            transfers.remove(transfer_id);
+        }
+    }
+
     pub fn register(&self, transfer_id: impl Into<String>) -> TransferCancellationToken {
         self.transfers()
             .entry(transfer_id.into())
@@ -205,6 +226,25 @@ mod tests {
         assert!(registry.complete("transfer-1"));
         assert_eq!(
             registry.request_cancel("transfer-1"),
+            CancellationRequest::NotFound
+        );
+    }
+
+    #[test]
+    fn expired_execution_cannot_remove_replacement_cancellation_handle() {
+        let registry = TransferCancellationRegistry::default();
+        let old = registry.register_execution("transfer");
+        let current = registry.register_execution("transfer");
+        assert!(old.load(Ordering::Acquire));
+        registry.complete_execution("transfer", &old);
+        assert_eq!(
+            registry.request_cancel("transfer"),
+            CancellationRequest::Requested
+        );
+        assert!(current.load(Ordering::Acquire));
+        registry.complete_execution("transfer", &current);
+        assert_eq!(
+            registry.request_cancel("transfer"),
             CancellationRequest::NotFound
         );
     }
