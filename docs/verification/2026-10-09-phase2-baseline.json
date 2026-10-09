@@ -1,0 +1,104 @@
+{
+  "label": "baseline-de5e87a",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "cpu_count": 12,
+  "binary_sha256": "20b7a6d7d2d7571ceece894736142223ffd34970997c0a89237568c54e6fe948",
+  "fixture": {
+    "offline_peers": 300,
+    "historical_files": 100,
+    "samples": 20
+  },
+  "mode": "snapshot",
+  "database_directory": "C:\\Users\\wangy\\AppData\\Local\\Temp\\xchat-phase2-benchmark-dvdpx9sl",
+  "port": 36528,
+  "elapsed_ms": {
+    "mean": 1449.313,
+    "p50": 1385.232,
+    "p95": 1897.395,
+    "max": 1903.004
+  },
+  "response_bytes_mean": 400761,
+  "samples": [
+    {
+      "elapsed_ms": 1298.506,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1505.879,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1445.879,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1678.673,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1376.254,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1227.809,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1292.982,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1375.448,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1733.165,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1346.009,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1311.099,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1436.958,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1292.992,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1505.062,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1897.395,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1903.004,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1446.982,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1394.21,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1243.059,
+      "response_bytes": 400761
+    },
+    {
+      "elapsed_ms": 1274.894,
+      "response_bytes": 400761
+    }
+  ],
+  "limits": "Local Windows loopback workspace polling; not a LAN or file-throughput claim."
+}
