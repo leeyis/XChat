@@ -16,7 +16,7 @@
 - [x] P2-3：按时间合并高频进度持久化，分块提交/取消/终态强制落盘，减少消息和文件任务写竞争。
 - [x] P2-4：工作区基线与增量同步，版本/游标失效可校正，避免每秒重建全部历史状态。
 - [x] P2-5：按到期任务与恢复事件唤醒，限制调度创建的任务数；保留低频校正和消息/控制独立预算。
-- [ ] P2-6：T6–T9 自动化与隔离负载验证，记录同条件前后比较、兼容性、平台限制；归档交付并提交。
+- [x] P2-6：T6–T9 自动化与隔离负载验证，记录同条件前后比较、兼容性、平台限制；归档交付并提交。
 
 ## 验证契约
 
@@ -37,10 +37,22 @@
 
 ## 当前状态
 
-P2-0 进行中：已恢复阶段一 QA 交接，确认阶段二五个改造面和 T6–T9。下一步定位资源控制、分块收发、工作区查询及到期调度，建立可重复本机基线。
+P2-0–P2-6 已完成。最终实现提交 `9bb49ca`，Web 174 / Desktop 199 + 2 ignored、前端 179 项通过；desktop/web 编译与 Android arm64 复验通过；Tauri/Web 实际页面同步通过；release 1 GiB / 4 GiB+1 和 1352 条文本 ACK 混合测试通过。同条件空闲工作区复测 mean 14.632 ms / P95 25.636 ms / 253 bytes。完整实现、命令、原始数据及实机限制见[交付报告](../stability-phase-2-implementation.md)。
 
-已定位事实：`TransferConcurrencyController::generation` 新配置创建独立信号量；`receive_parallel_chunk` 按 1 MiB **或** 250 ms 写 SQL；`upload_parallel_range` 一次尝试且读取字节直接累加；`get_snapshot` 为全部设备 ensure 会话并逐会话/文件查询；前端实际为 React/Vite、根 package.json 有 node:test（AGENTS 的仓库地图和“无测试”描述已过时，沿用既有工具链）。优先使用已有 prepare 查询确认缺块，保留 v1–v4；工作区以可恢复游标和按集合更新减少传输进度导致的全量重建。
+起点问题（本轮已处理）：`TransferConcurrencyController::generation` 新配置创建独立信号量；`receive_parallel_chunk` 按 1 MiB **或** 250 ms 写 SQL；`upload_parallel_range` 一次尝试且读取字节直接累加；`get_snapshot` 为全部设备 ensure 会话并逐会话/文件查询。前端实际为 React/Vite、根 package.json 有 node:test（AGENTS 的仓库地图和“无测试”描述已过时，沿用既有工具链）。当前使用已有 prepare 查询确认缺块，保留 v1–v4；工作区以可恢复游标和集合增量减少全量重建。
 
 ## 提交与验证
 
 基线：`docs/verification/2026-10-09-phase2-baseline.json`，300 离线联系人/100 历史文件/20 次轮询；mean 1449.313 ms、P95 1897.395 ms、400761 bytes。复测采用相同脚本/数据规模/本机环境。资源契约记录在 findings.md 最新节。
+
+| 里程碑 | 提交 |
+| --- | --- |
+| P2-0 计划与基线 | `4646228` |
+| P2-1 共享资源预算 | `28f28fd` |
+| P2-2/P2-3 重试与进度合并 | `6e53694` |
+| P2-4 工作区增量 | `9f318df` |
+| P2-5 到期调度 | `d03c560` |
+| P2-6 接收背压联调 | `13a970e` |
+| P2-6 配置/响应边界修复 | `9bb49ca` |
+
+复现工具：`scripts/benchmark_stability_phase2.py`、`scripts/verify_stability_phase2_load.py`、`scripts/run_phase2_frontend_smoke.py`、`scripts/smoke_workspace_sync.mjs`。文件负载使用合成有界文件发送器及真实 Rust 接收/文本/ACK；未宣称真实多机、慢盘、Wi-Fi 或 Android 实机覆盖。早期错误夹具的负载进程已停止，专属临时下载目录已验证路径后清理，日志和数据库保留；没有清理用户原有文件。下一阶段需用户另行指定，不自动启动远程协助/UI 开发。

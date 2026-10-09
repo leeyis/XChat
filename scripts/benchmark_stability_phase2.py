@@ -99,13 +99,18 @@ def main():
     samples = []
     cursor = None
     mode = 'snapshot'
+    initial_sync = None
+    full_snapshot_sample = None
     with (root / 'benchmark.log').open('w', encoding='utf-8') as log:
         process = start(log)
         try:
             try:
-                payload, _ = request('/api/workspace/sync')
+                started = time.perf_counter()
+                payload, size = request('/api/workspace/sync')
                 cursor = payload['cursor']
                 mode = 'incremental'
+                initial_sync = {'elapsed_ms': round((time.perf_counter() - started) * 1000, 3),
+                                'response_bytes': size, 'reset': payload.get('reset')}
             except urllib.error.HTTPError as error:
                 if error.code != 404:
                     raise
@@ -122,6 +127,11 @@ def main():
                 if index >= 2:
                     samples.append({'elapsed_ms': round(elapsed, 3), 'response_bytes': size})
                 time.sleep(.1)
+            if mode == 'incremental':
+                started = time.perf_counter()
+                _, size = request('/api/workspace')
+                full_snapshot_sample = {'elapsed_ms': round((time.perf_counter() - started) * 1000, 3),
+                                        'response_bytes': size}
             health, _ = request('/api/health')
             assert health['state'] == 'ready' and health['generation'] == 1, health
         finally:
@@ -137,6 +147,8 @@ def main():
         'elapsed_ms': {'mean': round(statistics.mean(elapsed), 3), 'p50': statistics.median(elapsed),
                        'p95': elapsed[math.ceil(len(elapsed) * .95) - 1], 'max': max(elapsed)},
         'response_bytes_mean': round(statistics.mean(sample['response_bytes'] for sample in samples)),
+        'initial_sync_sample': initial_sync,
+        'full_snapshot_sample': full_snapshot_sample,
         'samples': samples,
         'limits': 'Local Windows loopback workspace polling; not a LAN or file-throughput claim.',
     }

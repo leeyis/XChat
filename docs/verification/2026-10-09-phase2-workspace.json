@@ -1,102 +1,111 @@
 {
-  "label": "phase2-workspace-9f318df",
+  "label": "phase2-final-9bb49ca",
   "platform": "Windows-11-10.0.26200-SP0",
   "cpu_count": 12,
-  "binary_sha256": "6cb715acb0930270ca73bd5325e80e5846324b737a8201c6754976c69c08d7c1",
+  "binary_sha256": "83d4afd4f4cbcf2feec18e2d6671b2ca43852b202da0501a0eb95356d0fa4ecb",
   "fixture": {
     "offline_peers": 300,
     "historical_files": 100,
     "samples": 20
   },
   "mode": "incremental",
-  "database_directory": "C:\\Users\\wangy\\AppData\\Local\\Temp\\xchat-phase2-benchmark-mn3ghaik",
-  "port": 30787,
+  "database_directory": "C:\\Users\\wangy\\AppData\\Local\\Temp\\xchat-phase2-benchmark-prmyzpju",
+  "port": 56328,
   "elapsed_ms": {
-    "mean": 16.723,
-    "p50": 10.8515,
-    "p95": 38.384,
-    "max": 43.748
+    "mean": 14.632,
+    "p50": 10.685,
+    "p95": 25.636,
+    "max": 31.082
   },
   "response_bytes_mean": 253,
+  "initial_sync_sample": {
+    "elapsed_ms": 240.794,
+    "response_bytes": 401011,
+    "reset": true
+  },
+  "full_snapshot_sample": {
+    "elapsed_ms": 180.651,
+    "response_bytes": 400761
+  },
   "samples": [
     {
-      "elapsed_ms": 8.78,
+      "elapsed_ms": 21.725,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 11.035,
+      "elapsed_ms": 9.461,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 10.668,
+      "elapsed_ms": 14.245,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 10.519,
+      "elapsed_ms": 14.506,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 13.662,
+      "elapsed_ms": 10.368,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 9.315,
+      "elapsed_ms": 11.497,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 8.997,
+      "elapsed_ms": 25.636,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 20.232,
+      "elapsed_ms": 23.784,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 23.21,
+      "elapsed_ms": 8.856,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 23.029,
+      "elapsed_ms": 8.929,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 43.748,
+      "elapsed_ms": 9.462,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 18.496,
+      "elapsed_ms": 20.945,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 13.866,
+      "elapsed_ms": 25.371,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 8.433,
+      "elapsed_ms": 9.662,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 36.293,
+      "elapsed_ms": 9.715,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 9.283,
+      "elapsed_ms": 9.252,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 8.863,
+      "elapsed_ms": 11.002,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 9.404,
+      "elapsed_ms": 31.082,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 8.244,
+      "elapsed_ms": 8.6,
       "response_bytes": 253
     },
     {
-      "elapsed_ms": 38.384,
+      "elapsed_ms": 8.537,
       "response_bytes": 253
     }
   ],
