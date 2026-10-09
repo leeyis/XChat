@@ -626,10 +626,21 @@ async fn init_db_with_path_and_machine_name(
     .await?;
 
     // Internal execution ownership; deliberately absent from public transfer payloads.
-    let _ = sqlx::query("ALTER TABLE transfers ADD COLUMN lease_token TEXT")
-        .execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE transfers ADD COLUMN lease_until INTEGER NOT NULL DEFAULT 0")
-        .execute(&pool).await;
+    for (column, migration) in [
+        ("lease_token", "ALTER TABLE transfers ADD COLUMN lease_token TEXT"),
+        ("lease_until", "ALTER TABLE transfers ADD COLUMN lease_until INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pragma_table_info('transfers') WHERE name = ?)")
+            .bind(column).fetch_one(&pool).await?;
+        if !exists {
+            if let Err(error) = sqlx::query(migration).execute(&pool).await {
+                // Another process may have completed this additive migration first.
+                let migrated: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pragma_table_info('transfers') WHERE name = ?)")
+                    .bind(column).fetch_one(&pool).await?;
+                if !migrated { return Err(error); }
+            }
+        }
+    }
 
     // 创建 persisted_uris 表追踪已持久化的 content URI 权限
     sqlx::query(
@@ -4187,6 +4198,162 @@ pub(crate) async fn remove_test_database(pool: &SqlitePool, app_dir: &std::path:
 mod tests {
     use super::*;
 
+    // Runs in a separate test process so exit bypasses Rust/SQLx Drop and connection cleanup.
+    #[test]
+    fn phase_one_crash_child() {
+        let Ok(directory) = std::env::var("XCHAT_CRASH_CHILD_DIR") else {
+            return;
+        };
+        let step = std::env::var("XCHAT_CRASH_CHILD_STEP").unwrap();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let pool = init_db_standalone(Some(directory.into())).await.unwrap();
+            let self_id = get_user_id(&pool).await.unwrap();
+            let conversation = ensure_direct_conversation(&pool, "crash-recipient").await.unwrap();
+            if matches!(step.as_str(), "body_uncommitted" | "targets_uncommitted") {
+                let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+                save_conversation_message_on(&mut tx, &conversation.id, &self_id, Some("crash-recipient"),
+                    "crash payload", "text", 1, "pending", "crash-id").await.unwrap();
+                if step == "targets_uncommitted" {
+                    sqlx::query("INSERT INTO message_receipts (message_client_id, reader_id, updated_at) VALUES ('crash-id', 'crash-recipient', 1)")
+                        .execute(&mut *tx).await.unwrap();
+                }
+                std::process::exit(91);
+            }
+            let recipients = vec!["crash-recipient".to_string()];
+            enqueue_outgoing_message(&pool, OutgoingMessage {
+                conversation_id: &conversation.id, sender_id: &self_id, receiver_id: Some("crash-recipient"),
+                content: "crash payload", msg_type: "text", timestamp: 1, status: "pending",
+                client_message_id: "crash-id", recipients: &recipients, mentions: &[],
+            }, None).await.unwrap();
+            if step != "accepted" {
+                let attempt = claim_message_delivery(&pool, "crash-id", "crash-recipient", false).await.unwrap().unwrap();
+                mark_delivery_written(&pool, &attempt).await.unwrap();
+                if step == "ack_committed" {
+                    save_message_receipt(&pool, "crash-id", "crash-recipient", Some(10), None).await.unwrap();
+                }
+            }
+            std::process::exit(91);
+        });
+    }
+
+    #[tokio::test]
+    async fn process_exit_preserves_atomic_acceptance_and_ack_boundaries() {
+        for step in [
+            "body_uncommitted",
+            "targets_uncommitted",
+            "accepted",
+            "written_without_ack",
+            "ack_committed",
+        ] {
+            let app_dir =
+                std::env::temp_dir().join(format!("xchat-process-crash-{}", uuid::Uuid::new_v4()));
+            let directory = app_dir.clone();
+            let output = tokio::task::spawn_blocking(move || {
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "db::tests::phase_one_crash_child", "--nocapture"])
+                    .env("XCHAT_CRASH_CHILD_DIR", directory)
+                    .env("XCHAT_CRASH_CHILD_STEP", step)
+                    .output()
+                    .unwrap()
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(91),
+                "{step}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let pool = init_db_standalone(Some(app_dir.clone())).await.unwrap();
+            let message = get_message_by_client_id(&pool, "crash-id").await.unwrap();
+            let receipts = get_message_receipts(&pool, "crash-id").await.unwrap();
+            if step.ends_with("uncommitted") {
+                assert!(
+                    message.is_none() && receipts.is_empty(),
+                    "{step}: uncommitted work leaked"
+                );
+            } else {
+                assert!(message.is_some());
+                assert_eq!(receipts.len(), 1);
+                assert_eq!(receipts[0].reader_id, "crash-recipient");
+                if step == "ack_committed" {
+                    assert!(receipts[0].delivered_at.is_some());
+                    assert!(
+                        claim_message_delivery(&pool, "crash-id", "crash-recipient", true)
+                            .await
+                            .unwrap()
+                            .is_none()
+                    );
+                } else {
+                    assert!(receipts[0].delivered_at.is_none());
+                    assert!(!matches!(
+                        message.unwrap().status.as_deref(),
+                        Some("delivered" | "read")
+                    ));
+                    // Model expiration after process death without a 60-second wall-clock sleep.
+                    sqlx::query(
+                        "UPDATE message_delivery_attempts SET lease_until = 0, next_retry_at = 0",
+                    )
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                    assert!(
+                        claim_message_delivery(&pool, "crash-id", "crash-recipient", false)
+                            .await
+                            .unwrap()
+                            .is_some()
+                    );
+                }
+            }
+            pool.close().await;
+            remove_test_database(&pool, &app_dir).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_transfer_schema_migrates_without_losing_pending_work() {
+        let app_dir = std::env::temp_dir().join(format!("xchat-legacy-lease-{}", uuid::Uuid::new_v4()));
+        let pool = init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        let conversation = ensure_direct_conversation(&pool, "legacy-peer")
+            .await
+            .unwrap();
+        create_transfer(
+            &pool,
+            "legacy-transfer",
+            None,
+            &conversation.id,
+            "legacy-peer",
+            "send",
+            "transferring",
+            100,
+        )
+        .await
+        .unwrap();
+        sqlx::query("ALTER TABLE transfers DROP COLUMN lease_token")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE transfers DROP COLUMN lease_until")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        let pool = init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        recover_abandoned_transfers(&pool).await.unwrap();
+        let transfer = get_transfer(&pool, "legacy-transfer")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(transfer.status, "waiting_peer");
+        assert_eq!(transfer.bytes_total, 100);
+        assert!(claim_send_transfer(&pool, &transfer.id)
+            .await
+            .unwrap()
+            .is_some());
+        pool.close().await;
+        remove_test_database(&pool, &app_dir).await;
+    }
+
     #[tokio::test]
     async fn file_execution_lease_recovers_restart_and_rejects_stale_completion() {
         let app_dir = std::env::temp_dir().join(format!("xchat-file-lease-{}", uuid::Uuid::new_v4()));
@@ -4337,13 +4504,28 @@ mod tests {
         let app_dir = std::env::temp_dir().join(format!("xchat-atomic-{}", uuid::Uuid::new_v4()));
         let pool = init_db_standalone(Some(app_dir.clone())).await.unwrap();
         let self_id = get_user_id(&pool).await.unwrap();
-        let conversation = ensure_direct_conversation(&pool, "peer-a").await.unwrap();
+        let members = [
+            (&self_id[..], "owner"),
+            ("peer-a", "member"),
+            ("peer-b", "member"),
+        ]
+        .into_iter()
+        .map(|(id, role)| NewConversationMember {
+            peer_id: id.to_string(),
+            display_name: id.to_string(),
+            role: role.to_string(),
+        })
+        .collect::<Vec<_>>();
+        let conversation =
+            apply_group_sync(&pool, "atomic-group", "Atomic group", &self_id, 1, &members)
+                .await
+                .unwrap();
         let recipients = vec!["peer-a".to_string(), "peer-b".to_string()];
         let mentions = vec!["peer-b".to_string()];
         let outgoing = |kind| OutgoingMessage {
             conversation_id: &conversation.id,
             sender_id: &self_id,
-            receiver_id: Some("peer-a"),
+            receiver_id: None,
             content: "atomic payload",
             msg_type: kind,
             timestamp: 100,
@@ -4425,6 +4607,24 @@ mod tests {
         // Reopen the actual database, then retry with a changed group/peer snapshot.
         let pool = init_db_standalone(Some(app_dir.clone())).await.unwrap();
         let changed_recipients = vec!["peer-new".to_string()];
+        let updated_members = [(&self_id[..], "owner"), ("peer-new", "member")]
+            .into_iter()
+            .map(|(id, role)| NewConversationMember {
+                peer_id: id.to_string(),
+                display_name: id.to_string(),
+                role: role.to_string(),
+            })
+            .collect::<Vec<_>>();
+        apply_group_sync(
+            &pool,
+            "atomic-group",
+            "Changed group",
+            &self_id,
+            2,
+            &updated_members,
+        )
+        .await
+        .unwrap();
         let retry = enqueue_outgoing_message(
             &pool,
             OutgoingMessage {

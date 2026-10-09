@@ -7113,6 +7113,76 @@ mod websocket_protocol_tests {
     }
 
     #[tokio::test]
+    async fn receiver_storage_failure_does_not_ack_and_replay_keeps_one_message() {
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-receiver-crash-{}", uuid::Uuid::new_v4()));
+        let pool = crate::db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        let my_id = crate::db::get_user_id(&pool).await.unwrap();
+        let peer = format!("receiver-test-{}", uuid::Uuid::new_v4());
+        let conversation_id = crate::db::stable_direct_conversation_id(&peer, &my_id);
+        let (ws_broadcast, _) = broadcast::channel(8);
+        let state = AppState {
+            pool: pool.clone(),
+            peer_manager: Arc::new(PeerManager::new()),
+            media_token: String::new(),
+            ws_broadcast,
+            #[cfg(feature = "desktop")]
+            app_handle: None,
+        };
+        let payload = serde_json::json!({"msg_type": "text", "from_id": peer, "from_name": "test",
+            "content": "durable receiver", "timestamp": 42, "conversation_id": conversation_id,
+            "client_message_id": "receiver-replay"});
+        sqlx::query(
+            "CREATE TRIGGER fail_local_receipt BEFORE INSERT ON message_receipts
+                     BEGIN SELECT RAISE(ABORT, 'injected receiver storage failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let (sender, mut replies) = tokio::sync::mpsc::channel(8);
+        let failed = CURRENT_PEER_REPLY
+            .scope(
+                sender.clone(),
+                handle_stable_direct_message(&state, serde_json::from_value(payload.clone()).unwrap()),
+            )
+            .await;
+        assert!(failed.is_err());
+        assert!(replies.try_recv().is_err());
+        sqlx::query("DROP TRIGGER fail_local_receipt")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let original = crate::db::get_message_by_client_id(&pool, "receiver-replay")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(CURRENT_PEER_REPLY
+            .scope(
+                sender,
+                handle_stable_direct_message(&state, serde_json::from_value(payload).unwrap())
+            )
+            .await
+            .unwrap());
+        let replayed = crate::db::get_message_by_client_id(&pool, "receiver-replay")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(original.id, replayed.id);
+        let ack: serde_json::Value = serde_json::from_str(&replies.try_recv().unwrap()).unwrap();
+        assert_eq!(ack["message_ids"], serde_json::json!(["receiver-replay"]));
+        assert!(crate::db::get_message_receipts(&pool, "receiver-replay")
+            .await
+            .unwrap()[0]
+            .delivered_at
+            .is_some());
+        drop(state);
+        pool.close().await;
+        crate::db::remove_test_database(&pool, &app_dir).await;
+    }
+
+    #[tokio::test]
     async fn current_ack_precedes_large_history_and_history_uses_highest_receipt() {
         let peer_id = format!("backlog-peer-{}", uuid::Uuid::new_v4());
         let app_dir = std::env::temp_dir().join(format!("xchat-ack-backlog-{}", uuid::Uuid::new_v4()));
@@ -8126,6 +8196,56 @@ mod websocket_protocol_tests {
         crate::db::remove_test_database(&pool, &app_dir).await;
     }
 
+    #[test]
+    fn phase_one_receive_crash_child() {
+        let Ok(directory) = std::env::var("XCHAT_RECEIVE_CRASH_DIR") else {
+            return;
+        };
+        let step = std::env::var("XCHAT_RECEIVE_CRASH_STEP").unwrap();
+        let transfer = std::env::var("XCHAT_RECEIVE_CRASH_TRANSFER").unwrap();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let app_dir = std::path::PathBuf::from(directory);
+            let pool = crate::db::init_db_standalone(Some(app_dir.clone()))
+                .await
+                .unwrap();
+            let downloads =
+                std::path::PathBuf::from(crate::db::get_download_path(&pool).await.unwrap());
+            let manifest =
+                crate::network::conversation_file::load_parallel_manifest(&downloads, &transfer)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            let partial = crate::network::conversation_file::merge_parallel_parts(
+                &downloads,
+                &manifest,
+                |phase| {
+                    if step == "verifying"
+                        && matches!(
+                            phase,
+                            crate::network::conversation_file::ReceiveProcessingPhase::Verifying
+                        )
+                    {
+                        std::process::exit(92);
+                    }
+                },
+            )
+            .await
+            .unwrap();
+            if step == "published" {
+                let (_, path) = finalize_received_file(&downloads, &manifest.final_file_name, &partial)
+                    .await
+                    .unwrap();
+                tokio::fs::write(
+                    app_dir.join("published-path"),
+                    path.to_string_lossy().as_bytes(),
+                )
+                .await
+                .unwrap();
+            }
+            std::process::exit(92);
+        });
+    }
+
     #[tokio::test]
     async fn parallel_finalize_retry_reuses_materialized_file() {
         let app_dir =
@@ -8134,12 +8254,9 @@ mod websocket_protocol_tests {
             .await
             .unwrap();
         let download_dir = app_dir.join("downloads");
-        crate::db::update_download_path(
-            &pool,
-            download_dir.to_string_lossy().into_owned(),
-        )
-        .await
-        .unwrap();
+        crate::db::update_download_path(&pool, download_dir.to_string_lossy().into_owned())
+            .await
+            .unwrap();
         crate::db::set_auto_download(&pool, true).await.unwrap();
         crate::db::save_or_update_user(
             &pool,
@@ -8183,8 +8300,7 @@ mod websocket_protocol_tests {
             chunks: crate::network::conversation_file::parallel_chunk_ranges(data.len() as u64),
         };
 
-        let response =
-            prepare_parallel_upload_http(State(state.clone()), Json(payload.clone())).await;
+        let response = prepare_parallel_upload_http(State(state.clone()), Json(payload.clone())).await;
         assert!(response.status().is_success());
         let received = crate::network::conversation_file::receive_parallel_chunk(
             &pool,
@@ -8197,24 +8313,66 @@ mod websocket_protocol_tests {
         .unwrap();
         assert!(received.complete);
 
-        // Simulate a crash after the hard link is published but before DB completion.
-        let partial = crate::network::conversation_file::merge_parallel_parts(
-            &download_dir,
-            &received.manifest,
-            |_| {},
-        )
-        .await
-        .unwrap();
-        let (_, first_path) =
-            finalize_received_file(&download_dir, &received.manifest.final_file_name, &partial)
+        drop(state);
+        pool.close().await;
+        // Real process death after merge and after publish, before the DB completion/response.
+        // The next process must reconstruct everything from the database and on-disk manifest.
+        for step in ["verifying", "merged", "published"] {
+            let directory = app_dir.clone();
+            let transfer = transfer_id.clone();
+            let output = tokio::task::spawn_blocking(move || {
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "web_server::websocket_protocol_tests::phase_one_receive_crash_child",
+                        "--nocapture",
+                    ])
+                    .env("XCHAT_RECEIVE_CRASH_DIR", directory)
+                    .env("XCHAT_RECEIVE_CRASH_STEP", step)
+                    .env("XCHAT_RECEIVE_CRASH_TRANSFER", transfer)
+                    .output()
+                    .unwrap()
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(92),
+                "{step}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let first_path = std::path::PathBuf::from(
+            tokio::fs::read_to_string(app_dir.join("published-path"))
                 .await
-                .unwrap();
-
-        let message =
-            finalize_parallel_receive(&state, &download_dir, &received.manifest)
+                .unwrap(),
+        );
+        let pool = crate::db::init_db_standalone(Some(app_dir.clone()))
+            .await
+            .unwrap();
+        let manifest =
+            crate::network::conversation_file::load_parallel_manifest(&download_dir, &transfer_id)
                 .await
+                .unwrap()
                 .unwrap();
+        let (ws_broadcast, _) = broadcast::channel(8);
+        let state = Arc::new(AppState {
+            pool: pool.clone(),
+            peer_manager: Arc::new(PeerManager::new()),
+            media_token: String::new(),
+            ws_broadcast,
+            #[cfg(feature = "desktop")]
+            app_handle: None,
+        });
+        let message = finalize_parallel_receive(&state, &download_dir, &manifest)
+            .await
+            .unwrap();
         assert_eq!(message.file_path.as_deref(), first_path.to_str());
+        assert_eq!(tokio::fs::read(&first_path).await.unwrap(), data);
+        let duplicate = finalize_parallel_receive(&state, &download_dir, &manifest)
+            .await
+            .unwrap();
+        assert_eq!(message.id, duplicate.id);
         let final_files = std::fs::read_dir(&download_dir)
             .unwrap()
             .filter_map(Result::ok)

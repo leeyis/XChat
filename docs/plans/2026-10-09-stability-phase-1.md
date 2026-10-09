@@ -17,7 +17,7 @@
 | S5 验证 | in_progress | T1–T5 针对性测试、desktop/web 检查、隔离运行 |
 | S6 交付 | pending | 最终 diff、实施总结、平台与验证限制 |
 
-## 当前已知事实
+## 实施前的基线事实
 
 - 现有 outbox 含 `message_delivery_attempts`，有原子领取、60 秒租约、退避与同连接关联 ACK；继续复用。
 - `save_conversation_message` 和 `ensure_message_recipients` 各自提交事务，文件任务创建也与正文分离。
@@ -92,6 +92,25 @@
 - 反向回执继续由既有控制调度器发送；ReadAck 成功同时完成 delivery 标记，兼容旧数据库只写 read 标记的记录。
 
 - S4 验证：80 条积压下当前 ACK 优先、低优先通道满时不阻塞、分页 16 条、ReadAck 最高状态及两标记完成、慢写截止时间通过；完整 web lib 152 项通过，desktop lib/bin check 通过。
+
+### S5 当前工作
+
+- Android arm64 在本机 NDK 临时环境下 check 成功，0 错误、9 个现有未使用代码告警。没有改全局环境或 gen/android 文件。
+- 最新生产代码再次执行 desktop lib/bin check；补入接收端存储失败测试和合并校验前退出后，再跑一次 desktop lib 回归以覆盖最终测试集。
+
+- 最终 web lib 158 项通过；desktop lib 182 项通过、2 项交互式截图测试保持原有 ignore。
+- headless 实际 build 通过；独立端口 21289、临时数据库和下载目录、关闭广播，两次强制退出/重启的 health 与 workspace 请求成功，证据见 docs/verification/2026-10-09-phase1-headless-smoke.json。
+- Android 第一次 check 失败：找不到 aarch64-linux-android-clang。已定位本机 NDK 27.1.12297006，使用临时子进程 CC/AR/linker 环境重试，不改全局环境。
+- Codebase graph 已重新索引，修正修改后 snippet 行号陈旧。
+
+- 真实消息子进程退出测试 5 个边界已通过：未提交正文/目标不泄漏，已受理任务可领取，写出无 ACK 不误报，ACK 落盘后不重复投递。
+- 群目标测试已改为真实群成员变更；接收文件测试改为子进程合并完成/发布后直接退出，再读磁盘 manifest 恢复与验证只有一份最终文件。
+- 租约字段迁移显式检测列并传播非重复迁移错误；健康状态追加数据库探测和当前可用发现接口数。
+- 最终 web/desktop 全库回归与 headless 实际构建进行中；隔离 smoke 脚本位于临时目录，数据库/下载目录/端口独立，发现广播关闭。
+
+- S4 提交 7fbfe38（fix(receipts): 优先当前回执并限制历史补发与写等待）。
+- 补足实际子进程退出后的事务/队列恢复、接收端发布后回执前重启、旧表迁移检查。
+- 复核 runtime 数据库健康与网卡缺失的诊断边界，完成最终 desktop/web 回归和隔离 headless 运行。
 
 ### S1 设计收敛
 

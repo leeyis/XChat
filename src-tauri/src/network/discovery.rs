@@ -1711,6 +1711,7 @@ async fn send_fixed_peer_announcements(
 pub async fn start_announcing(
     port: u16, user_id: String, pool: sqlx::Pool<sqlx::Sqlite>,
     ready: tokio::sync::oneshot::Sender<()>,
+    health: tokio::sync::watch::Sender<super::runtime::NetworkHealth>,
 ) -> Result<(), String> {
     ACTIVE_DISCOVERY_PORT.store(port, Ordering::Relaxed);
     let mut settings_changes = discovery_policy::subscribe_settings_changes();
@@ -1735,6 +1736,12 @@ pub async fn start_announcing(
     let _ = ready.send(());
 
     loop {
+        let eligible = snapshot.interfaces.iter().filter(|interface| interface.enabled).count();
+        health.send_if_modified(|health| {
+            if health.eligible_discovery_interfaces == eligible { return false; }
+            health.eligible_discovery_interfaces = eligible;
+            true
+        });
         let username = crate::db::get_username(&pool)
             .await
             .unwrap_or_else(|_| "Unknown".to_string());

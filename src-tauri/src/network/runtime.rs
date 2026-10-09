@@ -33,6 +33,8 @@ pub struct NetworkHealth {
     pub discovery_ready: bool,
     pub announcing: bool,
     pub watchdog_running: bool,
+    pub database_ready: bool,
+    pub eligible_discovery_interfaces: usize,
     pub last_error: Option<String>,
     pub retry_in_seconds: u64,
 }
@@ -47,6 +49,8 @@ impl NetworkHealth {
             discovery_ready: false,
             announcing: false,
             watchdog_running: false,
+            database_ready: false,
+            eligible_discovery_interfaces: 0,
             last_error: None,
             retry_in_seconds: 0,
         }
@@ -173,7 +177,10 @@ async fn run_generation(
     services: &mut Services,
     stop: &mut watch::Receiver<bool>,
 ) -> Result<(), String> {
-    super::conversation_file::recover_abandoned_uploads(&config.pool).await?;
+    super::conversation_file::recover_abandoned_uploads(&config.pool)
+        .await
+        .map_err(|error| format!("database recovery: {error}"))?;
+    health.send_modify(|h| h.database_ready = true);
     let tcp = tokio::net::TcpListener::bind(("0.0.0.0", config.port))
         .await
         .map_err(|e| format!("http bind port={}: {e}", config.port))?;
@@ -239,6 +246,7 @@ async fn run_generation(
 
     // No advertisements until both receiving paths are accepting work.
     let announce_config = config.clone();
+    let announce_health = health.clone();
     let (announce_ready, announce_wait) = oneshot::channel();
     services.spawn(async move {
         (
@@ -248,6 +256,7 @@ async fn run_generation(
                 announce_config.user_id,
                 announce_config.pool,
                 announce_ready,
+                announce_health,
             )
             .await,
         )
@@ -262,6 +271,14 @@ async fn run_generation(
         )
         .await;
         ("watchdog", Ok(()))
+    });
+    let database_pool = config.pool.clone();
+    let database_health = health.clone();
+    services.spawn(async move {
+        (
+            "database",
+            monitor_database(&database_pool, &database_health).await,
+        )
     });
     tokio::select! {
         _ = stopped(stop) => return Ok(()),
@@ -300,6 +317,7 @@ async fn supervise(
             h.generation += 1;
             h.retry_in_seconds = 0;
             h.stop_services();
+            h.database_ready = false;
         });
         let started = tokio::time::Instant::now();
         let mut services = Services::new();
@@ -341,7 +359,29 @@ async fn supervise(
         h.state = "stopped".into();
         h.retry_in_seconds = 0;
         h.stop_services();
+        h.database_ready = false;
     });
+}
+
+async fn monitor_database(
+    pool: &Pool<Sqlite>,
+    health: &watch::Sender<NetworkHealth>,
+) -> Result<(), String> {
+    loop {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            sqlx::query("SELECT value FROM settings WHERE key = 'user_id'").fetch_optional(pool),
+        )
+        .await;
+        let error = match result {
+            Ok(Ok(_)) => continue,
+            Ok(Err(error)) => format!("database health failed: {error}"),
+            Err(_) => "database health timeout".to_string(),
+        };
+        health.send_modify(|h| h.database_ready = false);
+        return Err(error);
+    }
 }
 
 #[cfg(test)]
@@ -398,6 +438,7 @@ mod tests {
                 .unwrap();
         assert_eq!(reported["state"], "ready");
         assert_eq!(reported["generation"], ready.generation);
+        assert_eq!(reported["database_ready"], true);
         let user_id = crate::db::get_user_id(&pool).await.unwrap();
         let (mut socket, _) = tokio_tungstenite::connect_async(format!(
             "ws://127.0.0.1:{port}/ws?target_id={user_id}"
@@ -451,5 +492,19 @@ mod tests {
         assert!(services.is_empty());
         assert_eq!(retry_delay(1), Duration::from_secs(1));
         assert_eq!(retry_delay(100), Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn database_failure_is_reported_instead_of_remaining_ready() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let (health, _) = watch::channel(NetworkHealth::starting(18888));
+        health.send_modify(|h| h.database_ready = true);
+        pool.close().await;
+        let error = tokio::time::timeout(Duration::from_secs(7), monitor_database(&pool, &health))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("database health failed"));
+        assert!(!health.borrow().database_ready);
     }
 }

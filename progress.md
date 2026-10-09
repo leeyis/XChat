@@ -1,3 +1,10 @@
+## 2026-10-09 阶段 1 / S5 验收补强
+
+- web lib 最终 158 项通过；desktop lib 首轮 182 项通过/2 项原有交互测试忽略，最终新增用例回归正在结束。
+- desktop lib/bin check、web build、Android arm64 check 均通过；Android 首次 NDK 不在 PATH 的失败已用本机 NDK 临时环境解决。
+- 隔离 headless 两次启动/强制退出重启/health+workspace 返回成功，证据保存 docs/verification/2026-10-09-phase1-headless-smoke.json。
+- 真实子进程退出、接收端存储失败不 ACK、文件发布恢复、旧表迁移已覆盖。新增健康信息说明位于待交付实施报告。
+
 ## 2026-10-09 阶段 1 / S4
 
 - 当前 ACK 与历史回执分离完成；历史分页/最高 ReadAck/满队列不阻塞/慢写超时已验证。
