@@ -38,6 +38,7 @@ pub struct Peer {
 pub struct PeerManager {
     peers: Arc<RwLock<HashMap<String, Peer>>>, // key 是 UUID
     pub(crate) connections: Arc<crate::network::peer_connection::ConnectionRegistry>,
+    pub(crate) outbox: Arc<std::sync::Mutex<crate::network::outbox::ScheduleState>>,
 }
 
 fn reconcile_verified_peer_endpoints(
@@ -59,6 +60,7 @@ impl PeerManager {
         Self {
             peers: Arc::new(RwLock::new(HashMap::new())),
             connections: Arc::new(crate::network::peer_connection::ConnectionRegistry::default()),
+            outbox: Arc::new(std::sync::Mutex::new(Default::default())),
         }
     }
 

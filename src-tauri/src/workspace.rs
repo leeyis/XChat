@@ -25,6 +25,8 @@ pub use sync::{get_sync, WorkspaceSync};
 // ponytail: text sends are rare; shard this lock by client_message_id if throughput matters.
 static MESSAGE_WRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static DELIVERY_NETWORK_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+static BACKGROUND_DELIVERY_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(3);
+static RESEND_WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(16);
 static RESEND_NETWORK_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 const CONTROL_RESEND_BUDGET: std::time::Duration = std::time::Duration::from_secs(4);
 static RESEND_PEERS: std::sync::LazyLock<std::sync::Mutex<BTreeSet<String>>> =
@@ -1533,6 +1535,40 @@ pub async fn resend_for_peer(
     peer_id: &str,
     peer_addr: &str,
 ) -> Result<(), String> {
+    let Ok(_worker) = RESEND_WORKERS.try_acquire() else {
+        return Ok(());
+    };
+    resend_for_peer_inner(pool, peer_manager, peer_id, peer_addr).await
+}
+
+pub(crate) fn schedule_resend(
+    pool: &Pool<Sqlite>,
+    manager: &PeerManager,
+    peer_id: &str,
+    address: &str,
+) -> bool {
+    let Ok(worker) = RESEND_WORKERS.try_acquire() else {
+        return false;
+    };
+    let pool = pool.clone();
+    let manager = manager.clone();
+    let peer_id = peer_id.to_owned();
+    let address = address.to_owned();
+    tokio::spawn(async move {
+        let _worker = worker;
+        if let Err(error) = resend_for_peer_inner(&pool, &manager, &peer_id, &address).await {
+            eprintln!("[Outbox] 补发失败 {peer_id}: {error}");
+        }
+    });
+    true
+}
+
+async fn resend_for_peer_inner(
+    pool: &Pool<Sqlite>,
+    peer_manager: &PeerManager,
+    peer_id: &str,
+    peer_addr: &str,
+) -> Result<(), String> {
     let self_id = db::get_user_id(pool).await?;
     let key = format!("{self_id}:{peer_id}");
     {
@@ -1544,7 +1580,15 @@ pub async fn resend_for_peer(
     let _peer_guard = ResendPeerGuard(key);
     // Payload attempts have their own fair network semaphore. Never hold a control
     // slot while delivering them: slow sync/recall/receipt traffic must not delay text.
-    for message in db::get_due_messages_for_peer(pool, peer_id).await? {
+    for message in db::get_due_messages_for_peer(pool, peer_id)
+        .await?
+        .into_iter()
+        .take(1)
+    {
+        // Reserve one of the four payload slots for a new foreground send.
+        let Ok(_background) = BACKGROUND_DELIVERY_SLOTS.try_acquire() else {
+            break;
+        };
         if let Some(client_message_id) = message.client_message_id.as_deref() {
             if let Err(error) =
                 deliver_stored_message(pool, peer_manager, peer_id, client_message_id, false).await
@@ -1617,7 +1661,10 @@ pub async fn resend_for_peer(
                 .into_iter()
                 .take(16)
             {
-                if receipt.read_at.is_none() && receipt.delivered_at.is_some() && receipt.delivery_ack_sent_at.is_none() {
+                if receipt.read_at.is_none()
+                    && receipt.delivered_at.is_some()
+                    && receipt.delivery_ack_sent_at.is_none()
+                {
                     let ack = ProtocolMessage::DeliveryAck {
                         conversation_id: receipt.conversation_id.clone(),
                         from_id: receipt.reader_id.clone(),
@@ -1637,7 +1684,10 @@ pub async fn resend_for_peer(
                         .await?;
                     }
                 }
-                if receipt.read_at.is_some() && (receipt.read_ack_sent_at.is_none() || receipt.delivery_ack_sent_at.is_none()) {
+                if receipt.read_at.is_some()
+                    && (receipt.read_ack_sent_at.is_none()
+                        || receipt.delivery_ack_sent_at.is_none())
+                {
                     let ack = ProtocolMessage::ReadAck {
                         conversation_id: receipt.conversation_id,
                         from_id: receipt.reader_id.clone(),

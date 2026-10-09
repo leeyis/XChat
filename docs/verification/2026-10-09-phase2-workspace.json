@@ -1,0 +1,104 @@
+{
+  "label": "phase2-workspace-9f318df",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "cpu_count": 12,
+  "binary_sha256": "6cb715acb0930270ca73bd5325e80e5846324b737a8201c6754976c69c08d7c1",
+  "fixture": {
+    "offline_peers": 300,
+    "historical_files": 100,
+    "samples": 20
+  },
+  "mode": "incremental",
+  "database_directory": "C:\\Users\\wangy\\AppData\\Local\\Temp\\xchat-phase2-benchmark-mn3ghaik",
+  "port": 30787,
+  "elapsed_ms": {
+    "mean": 16.723,
+    "p50": 10.8515,
+    "p95": 38.384,
+    "max": 43.748
+  },
+  "response_bytes_mean": 253,
+  "samples": [
+    {
+      "elapsed_ms": 8.78,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 11.035,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 10.668,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 10.519,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 13.662,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 9.315,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 8.997,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 20.232,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 23.21,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 23.029,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 43.748,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 18.496,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 13.866,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 8.433,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 36.293,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 9.283,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 8.863,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 9.404,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 8.244,
+      "response_bytes": 253
+    },
+    {
+      "elapsed_ms": 38.384,
+      "response_bytes": 253
+    }
+  ],
+  "limits": "Local Windows loopback workspace polling; not a LAN or file-throughput claim."
+}

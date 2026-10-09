@@ -2368,17 +2368,8 @@ async fn offline_scan_tick(
         if let Err(error) = super::conversation_file::recover_abandoned_uploads(pool).await {
             eprintln!("[UDP] 文件任务恢复失败: {error}");
         }
-        for peer in peer_manager.get_all_peers() {
-            if !peer.is_offline {
-                super::peer_connection::schedule_validation(pool, peer_manager, &peer.id);
-            }
-            let pool = pool.clone();
-            let manager = peer_manager.clone();
-            tokio::spawn(async move {
-                if let Err(error) = crate::workspace::resend_for_peer(&pool, &manager, &peer.id, &peer.addr).await {
-                    eprintln!("[UDP] 队列补发失败 {}: {error}", peer.id);
-                }
-            });
+        if let Err(error) = super::outbox::schedule_due(pool, peer_manager, tick).await {
+            eprintln!("[UDP] 到期队列调度失败: {error}");
         }
     }
 

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 const VERIFIED_TTL: u64 = 30;
 const CANDIDATE_TTL: u64 = 90;
 const MAX_CANDIDATES: usize = 6;
+static VALIDATION_WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerConnectionStatus {
@@ -591,6 +592,9 @@ pub async fn rediscover_peers(
 }
 
 pub fn schedule_validation(pool: &Pool<Sqlite>, manager: &PeerManager, peer_id: &str) {
+    let Ok(worker) = VALIDATION_WORKERS.try_acquire() else {
+        return;
+    };
     let resume_pending = {
         let mut entries = manager.connections.entries.lock().unwrap();
         let Some(entry) = entries.get_mut(peer_id) else {
@@ -614,6 +618,7 @@ pub fn schedule_validation(pool: &Pool<Sqlite>, manager: &PeerManager, peer_id: 
     let manager = manager.clone();
     let peer_id = peer_id.to_string();
     tokio::spawn(async move {
+        let _worker = worker;
         let result = resolve_peer_connection_with_visibility(
             &pool,
             &manager,
