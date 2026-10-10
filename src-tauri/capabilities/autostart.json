@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "autostart",
+  "description": "Allow the desktop settings page to manage launch at login",
+  "platforms": ["windows", "macOS", "linux"],
+  "windows": ["main"],
+  "permissions": [
+    "allow-autostart"
+  ]
+}

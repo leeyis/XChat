@@ -81,6 +81,10 @@ fn main() {
             lanchat::commands::send_file,
             lanchat::commands::get_settings,
             lanchat::commands::update_settings,
+            #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+            lanchat::commands::get_autostart_enabled,
+            #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+            lanchat::commands::set_autostart_enabled,
             lanchat::commands::get_language,
             lanchat::commands::set_language,
             lanchat::commands::get_theme_list,

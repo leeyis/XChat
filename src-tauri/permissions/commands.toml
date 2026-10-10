@@ -4,6 +4,11 @@ description = "Allows reading the current username"
 commands.allow = ["get_my_name"]
 
 [[permission]]
+identifier = "allow-autostart"
+description = "Read and change launch at login for the current desktop user"
+commands.allow = ["get_autostart_enabled", "set_autostart_enabled"]
+
+[[permission]]
 identifier = "allow-send-voice-message"
 description = "Send a recorded voice message through the durable attachment queue"
 commands.allow = ["send_voice_message"]

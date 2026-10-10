@@ -24,6 +24,36 @@ pub struct PeerState {
     pub manager: Arc<PeerManager>,
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+fn autostart_launcher(_app: &AppHandle) -> Result<auto_launch::AutoLaunch, String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    #[cfg(target_os = "linux")]
+    let executable = _app.env().appimage.unwrap_or(executable);
+    crate::autostart::launcher("Xchat", &executable)
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+#[tauri::command]
+pub async fn get_autostart_enabled(app: AppHandle) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        autostart_launcher(&app)?
+            .is_enabled()
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+#[tauri::command]
+pub async fn set_autostart_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::autostart::set_enabled(&autostart_launcher(&app)?, enabled)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn get_task_center(state: State<'_, DbState>, before: Option<i64>) -> Result<crate::tasks::TaskPage, String> {

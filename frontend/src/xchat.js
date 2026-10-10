@@ -233,6 +233,7 @@ function toSeconds(value) {
 function humanPlatform() {
   const agent = globalThis.navigator?.userAgent || "";
   if (/Android/i.test(agent)) return "android";
+  if (/iPad|iPhone|iPod/i.test(agent)) return "ios";
   if (/Macintosh|Mac OS X/i.test(agent)) return "macos";
   if (/Windows/i.test(agent)) return "windows";
   if (/Linux/i.test(agent)) return "linux";
@@ -270,6 +271,7 @@ export function runtimeCapabilities(runtime, supplied = {}, legacy = false) {
     nativeVoiceRecorder: runtime === "tauri" && platform === "android",
   };
   const capabilities = { ...defaults, ...supplied };
+  capabilities.autostart = runtime === "tauri" && desktopCapture;
   // This native WebView integration is implemented only by the Android host.
   capabilities.nativeVideoFullscreen = runtime === "tauri" && platform === "android";
   capabilities.nativeFileOpen = runtime === "tauri";
@@ -715,6 +717,12 @@ export function peerConnectionStatus(device = {}, refreshing = false) {
   return device?.connection?.status || (device?.is_offline ? "missing" : "stale");
 }
 
+export function sortDevicesOnlineFirst(devices) {
+  return [...devices].sort(
+    (left, right) => Number(Boolean(left.is_offline)) - Number(Boolean(right.is_offline)),
+  );
+}
+
 export function fileMessageActions(file = {}, capabilities = {}) {
   const available = localFileAvailable(file) &&
     ["accepted", "completed", "sent", "delivered", "read"].includes(fileStatus(file));
@@ -1074,6 +1082,8 @@ export function normalizeSettings(raw = {}) {
     theme: raw.theme ?? raw.current_theme ?? storage.get("xchat.theme") ?? "system",
     language: raw.language ?? storage.get("xchat.language") ?? "zh-CN",
     notifications_enabled: Boolean(raw.notifications_enabled ?? true),
+    autostart_enabled: typeof raw.autostart_enabled === "boolean" ? raw.autostart_enabled : null,
+    autostart_error: Boolean(raw.autostart_error),
     download_path: raw.download_path ?? "",
     auto_download: Boolean(raw.auto_download ?? false),
     max_parallel_channels,
@@ -1097,6 +1107,7 @@ export const SETTINGS_PATCH_KEYS = [
   "theme",
   "language",
   "notifications_enabled",
+  "autostart_enabled",
   "download_path",
   "auto_download",
   "max_parallel_channels",
@@ -1332,7 +1343,23 @@ export class TauriAdapter {
   runDiagnostics(request) { return this.invoke("run_connection_diagnostics", { request }); }
 
   async getSnapshot() {
-    return this.workspaceSync.getSnapshot();
+    if (!runtimeCapabilities(this.runtime).autostart) return this.workspaceSync.getSnapshot();
+    const [snapshot, autostart] = await Promise.all([
+      this.workspaceSync.getSnapshot(),
+      this.getAutostartState(),
+    ]);
+    // Autostart belongs to this desktop, not the shared database or sync cursor.
+    return { ...snapshot, settings: { ...snapshot.settings, ...autostart } };
+  }
+
+  async getAutostartState() {
+    try {
+      const enabled = await this.invoke("get_autostart_enabled");
+      if (typeof enabled !== "boolean") throw new Error("Invalid autostart state");
+      return { autostart_enabled: enabled, autostart_error: false };
+    } catch {
+      return { autostart_enabled: null, autostart_error: true };
+    }
   }
 
   async getFullSnapshot() {
@@ -1853,6 +1880,10 @@ export class TauriAdapter {
   }
 
   async patchSettings(patch, current) {
+    if (patch.autostart_enabled !== undefined &&
+        (!runtimeCapabilities(this.runtime).autostart || typeof patch.autostart_enabled !== "boolean")) {
+      throw new TransportError(uiCopy("开机自启动仅适用于桌面客户端", "Autostart is only available in the desktop app"));
+    }
     if (patch.name !== undefined) {
       await this.invoke("update_my_name", { newName: patch.name });
     }
@@ -1904,6 +1935,19 @@ export class TauriAdapter {
         value: patch.capture_shortcut,
       });
       storage.set("xchat.captureShortcut", patch.capture_shortcut);
+    }
+    if (patch.autostart_enabled !== undefined) {
+      const before = await this.getAutostartState();
+      if (before.autostart_enabled !== patch.autostart_enabled) {
+        await this.invoke("set_autostart_enabled", { enabled: patch.autostart_enabled });
+      }
+      const state = await this.getAutostartState();
+      if (state.autostart_enabled !== patch.autostart_enabled) {
+        throw new TransportError(uiCopy(
+          "无法确认开机自启动设置已生效，请稍后重试",
+          "Unable to confirm the autostart setting. Please try again.",
+        ));
+      }
     }
   }
 
@@ -2525,6 +2569,9 @@ export class HttpWsAdapter {
   discardStagedAttachment() {}
 
   async patchSettings(patch, current) {
+    if (patch.autostart_enabled !== undefined) {
+      throw new TransportError(uiCopy("开机自启动仅适用于桌面客户端", "Autostart is only available in the desktop app"));
+    }
     if (patch.name !== undefined) {
       await this.json("/api/update_my_name", "POST", { name: patch.name });
     }
@@ -3959,11 +4006,21 @@ export function createXChatModule() {
       }
       case "settings.patch":
         await adapter.patchSettings(action.patch, snapshot.settings);
+        if (action.patch.autostart_enabled !== undefined) refreshSequence += 1;
         if (action.patch.theme !== undefined) storage.set("xchat.theme", action.patch.theme);
         if (action.patch.language !== undefined) {
           storage.set("xchat.language", action.patch.language);
         }
-        patch({ settings: { ...snapshot.settings, ...action.patch } });
+        patch({ settings: {
+          ...snapshot.settings,
+          ...action.patch,
+          ...(action.patch.autostart_enabled !== undefined ? { autostart_error: false } : {}),
+        } });
+        if (action.patch.autostart_enabled !== undefined) {
+          addNotice(action.patch.autostart_enabled
+            ? uiCopy("设置已保存 · 下次登录电脑时将自动启动 XChat", "Settings saved · XChat will launch when you log in")
+            : uiCopy("设置已保存 · 已关闭开机自启动", "Settings saved · Autostart is off"), "success");
+        }
         if (action.patch.notifications_enabled !== undefined) {
           refreshSequence += 1;
           if (!action.patch.notifications_enabled) {

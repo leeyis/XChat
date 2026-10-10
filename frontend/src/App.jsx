@@ -44,6 +44,7 @@ import {
   settingsFormDirty,
   settingsPatch,
   shortcutLabelFromEvent,
+  sortDevicesOnlineFirst,
   validServerPort,
   withDiscoveryInterfaceSelection,
 } from "./xchat.js";
@@ -187,6 +188,7 @@ const copy = {
     settingsSections: {
       identity: { label: "身份", icon: "user" },
       appearance: { label: "外观", icon: "appearance" },
+      startup: { label: "启动", icon: "power" },
       notification: { label: "通知", icon: "bell" },
       download: { label: "下载与传输", icon: "download" },
       network: { label: "网络", icon: "network" },
@@ -326,6 +328,11 @@ const copy = {
     simplifiedChinese: "简体中文",
     english: "English",
     notification: "通知",
+    startup: "启动",
+    autostart: "开机自启动",
+    autostartHint: "登录电脑后自动启动 XChat。保存后生效，仅限本机桌面客户端。",
+    autostartLoading: "正在读取系统自启动设置…",
+    autostartReadFailed: "无法读取系统自启动设置，正在重试。",
     newMessageNotification: "新消息通知",
     permissionManagedBySystem: "权限由系统管理",
     platformUnavailable: "当前平台不可用",
@@ -560,6 +567,7 @@ const copy = {
     settingsSections: {
       identity: { label: "Identity", icon: "user" },
       appearance: { label: "Appearance", icon: "appearance" },
+      startup: { label: "Startup", icon: "power" },
       notification: { label: "Notifications", icon: "bell" },
       download: { label: "Downloads & transfers", icon: "download" },
       network: { label: "Network", icon: "network" },
@@ -702,6 +710,11 @@ const copy = {
     simplifiedChinese: "Simplified Chinese",
     english: "English",
     notification: "Notifications",
+    startup: "Startup",
+    autostart: "Launch at login",
+    autostartHint: "Launch XChat when you log in. Takes effect after saving, on this desktop only.",
+    autostartLoading: "Reading system autostart settings…",
+    autostartReadFailed: "Unable to read system autostart settings. Retrying.",
     newMessageNotification: "New message notifications",
     permissionManagedBySystem: "Permission is managed by the system",
     platformUnavailable: "Unavailable on this platform",
@@ -847,7 +860,7 @@ const copy = {
 // 这里必须列全所有分节，漏掉就等于桌面端也把它删了。
 // shortcut 保留在列表里，窄屏由 .settings-shortcut 隐藏。
 const SETTINGS_GROUPS = [
-  ["identity", "appearance", "notification"],
+  ["identity", "appearance", "startup", "notification"],
   ["download", "network", "diagnostics", "backup", "shortcut"],
   ["about"],
 ];
@@ -917,6 +930,9 @@ function Icon({ name, size = 20, spin = false }) {
       break;
     case "bell":
       body = <><path d="M6 17h12l-1.2-2V10a4.8 4.8 0 0 0-9.6 0v5Z" /><path d="M10 20h4" /></>;
+      break;
+    case "power":
+      body = <path d="M12 3v9M6.3 5.7a8 8 0 1 0 11.4 0" />;
       break;
     case "network":
       body = <><circle cx="12" cy="5" r="2" /><circle cx="5" cy="18" r="2" /><circle cx="19" cy="18" r="2" /><path d="m10.8 6.8-4.6 9.4M13.2 6.8l4.6 9.4M7 18h10" /></>;
@@ -4256,6 +4272,8 @@ function SettingsWorkspace({
 }) {
   const [form, setForm] = useState(state.settings);
   const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const autostartEdited = useRef(false);
   const [ipLoading, setIpLoading] = useState(false);
   const [availableIps, setAvailableIps] = useState([]);
   const [ipDropdownOpen, setIpDropdownOpen] = useState(false);
@@ -4279,7 +4297,12 @@ function SettingsWorkspace({
     };
   }, []);
   useEffect(() => {
-    if (!dirty) setForm(state.settings);
+    if (!dirty) {
+      autostartEdited.current = false;
+      setForm(state.settings);
+    } else if (!autostartEdited.current) {
+      setForm((current) => ({ ...current, autostart_enabled: state.settings.autostart_enabled }));
+    }
   }, [dirty, state.settings]);
   useEffect(
     () => () => onLanguagePreview(null),
@@ -4299,6 +4322,7 @@ function SettingsWorkspace({
     onActiveSection(active);
   };
   const change = (key, value) => {
+    if (key === "autostart_enabled") autostartEdited.current = value !== state.settings.autostart_enabled;
     setForm((current) => {
       const next = { ...current, [key]: value };
       setDirty(settingsFormDirty(next, state.settings));
@@ -4392,10 +4416,17 @@ function SettingsWorkspace({
           className="primary-button"
           onClick={async () => {
             const patch = settingsPatch(form, state.settings);
-            const result = await workspace.dispatch({ type: "settings.patch", patch });
-            if (result.ok) setDirty(false);
+            if (!autostartEdited.current) delete patch.autostart_enabled;
+            setSaving(true);
+            try {
+              const result = await workspace.dispatch({ type: "settings.patch", patch });
+              if (result.ok) setDirty(false);
+            } finally {
+              setSaving(false);
+            }
           }}
-          disabled={!dirty || !portValid}
+          disabled={!dirty || !portValid || saving}
+          aria-busy={saving}
         >
           {labels.saveSettings}
         </button>
@@ -4500,6 +4531,26 @@ function SettingsWorkspace({
               <option value="zh-CN">{labels.simplifiedChinese}</option>
               <option value="en">{labels.english}</option>
             </select>
+          </SettingRow>
+        </section>
+        <section className="settings-section" id="settings-startup">
+          <h2>{labels.startup}</h2>
+          <SettingRow
+            label={labels.autostart}
+            detail={!state.capabilities.autostart
+              ? labels.platformUnavailable
+              : state.settings.autostart_error
+                ? labels.autostartReadFailed
+                : state.settings.autostart_enabled === null
+                  ? labels.autostartLoading
+                  : labels.autostartHint}
+          >
+            <input
+              type="checkbox"
+              checked={form.autostart_enabled === true}
+              disabled={!state.capabilities.autostart || state.settings.autostart_enabled === null || saving}
+              onChange={(event) => change("autostart_enabled", event.target.checked)}
+            />
           </SettingRow>
         </section>
         <section className="settings-section" id="settings-notification">
@@ -5141,8 +5192,8 @@ function GroupModal({ state, workspace, labels, onClose, onAddDevice }) {
         />
       </label>
       <p className="helper">{labels.groupHelper}</p>
-      <div className="member-picker">
-        {state.devices.map((device) => (
+      <div className="member-picker group-member-picker">
+        {sortDevicesOnlineFirst(state.devices).map((device) => (
           <label className="member-row selectable" key={device.id}>
             <input
               type="checkbox"
@@ -5159,6 +5210,10 @@ function GroupModal({ state, workspace, labels, onClose, onAddDevice }) {
             <span>
               <b>{displayName(device, labels)}</b>
               <small>{device.addr || device.id}</small>
+            </span>
+            <span className={`member-presence ${device.is_offline ? "is-offline" : "is-online"}`}>
+              <i aria-hidden="true" />
+              {device.is_offline ? labels.offline : labels.online}
             </span>
           </label>
         ))}

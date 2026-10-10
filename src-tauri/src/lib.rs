@@ -1,6 +1,11 @@
 // lib.rs
 #[cfg(feature = "desktop")]
 pub mod commands;
+#[cfg(all(
+    feature = "desktop",
+    any(target_os = "windows", target_os = "macos", target_os = "linux")
+))]
+pub mod autostart;
 // 截图编辑器依赖桌面窗口 API 与 xcap，移动端不编译。
 #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
 pub mod capture_editor;
@@ -70,6 +75,10 @@ pub fn run() {
             commands::send_file,
             commands::get_settings,
             commands::update_settings,
+            #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+            commands::get_autostart_enabled,
+            #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+            commands::set_autostart_enabled,
             commands::get_language,
             commands::set_language,
             commands::get_theme_list,

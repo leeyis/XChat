@@ -2965,6 +2965,13 @@ input[type="checkbox"]:disabled { cursor: not-allowed; opacity: .42; }
 
 .member-row.selectable input { align-self: center; }
 
+.group-member-picker .member-row { grid-template-columns: 22px 34px minmax(0, 1fr) auto; }
+.group-member-picker .member-row > span > b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-member-picker .member-presence { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.group-member-picker .member-presence i { width: 7px; height: 7px; flex: none; border: 1.5px solid currentColor; border-radius: 50%; }
+.group-member-picker .member-presence.is-online { color: var(--success); }
+.group-member-picker .member-presence.is-online i { border: 0; background: currentColor; }
+
 .endpoint-list {
   display: grid;
   gap: 0;
