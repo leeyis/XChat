@@ -7,6 +7,13 @@ fn main() {
     // 传给 clang，因此这里改读 CARGO_CFG_TARGET_OS。
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
+    if target_os == "macos" {
+        // generate_context! embeds Info.plist into the development executable;
+        // keep permission edits from leaving an old permission-less binary cached.
+        println!("cargo:rerun-if-changed=Info.plist");
+        println!("cargo:rerun-if-changed=Entitlements.plist");
+    }
+
     if target_os == "windows" {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("windows-app-manifest.xml");

@@ -32,9 +32,9 @@ test('native fold keeps independent positions and does not call hide or minimize
   const full={isConnected:true,offsetWidth:501,parentElement:{offsetHeight:80}};
   await adapter.layout(full,false);await adapter.idle();
   const original={...f.point};
-  assert.equal(f.size.width,533);assert.equal(f.point.y,-180);
+  assert.equal(f.size.width,501,'native bounds fit the pill without an outer frame');assert.equal(f.point.y,-180);
   await adapter.layout({isConnected:true,offsetWidth:180,parentElement:{offsetHeight:76}},true);await adapter.idle();
-  assert.equal(f.size.width,212);
+  assert.equal(f.size.width,180);
   await adapter.drag();assert.equal(f.point.x,-900);
   await adapter.layout(full,false);await adapter.idle();
   assert.deepEqual({...f.point},original);
@@ -49,7 +49,7 @@ test('native layout coalesces rapid collapse/restore and ignores disposed work',
   const f=nativeFixture(),adapter=createNativePanelAdapter(f.api,e=>f.errors.push(e));
   const node={isConnected:true,offsetWidth:500,parentElement:{offsetHeight:80}};
   void adapter.layout(node,false);void adapter.layout({...node,offsetWidth:180},true);void adapter.layout(node,false);
-  await adapter.idle();assert.equal(f.size.width,532);
+  await adapter.idle();assert.equal(f.size.width,500);
   adapter.dispose();const count=f.calls.length;await adapter.layout(node,true);await adapter.idle();assert.equal(f.calls.length,count);
   assert.deepEqual(f.errors,[]);
   assert.equal(nearestMonitor({x:-1700,y:0},[f.monitor]).position.x,-1600);

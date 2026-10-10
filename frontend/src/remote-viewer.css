@@ -1,0 +1,84 @@
+/* Approved remote-v3: the receiving desktop owns its own window, chat stays in the main app. */
+html.remote-viewer-window,html.remote-viewer-window body,html.remote-viewer-window #root{width:100%;height:100%;min-width:0;min-height:0;margin:0;overflow:hidden}
+.remote-viewer{display:flex;flex-direction:column;height:100dvh;min-width:0;min-height:0;background:#252d31;color:var(--fg);overflow:hidden}
+.remote-viewer:fullscreen{width:100%;height:100%;background:#252d31}
+.remote-viewer .remote-viewer-heading{height:43px;min-height:43px;padding:0 16px;display:flex;align-items:center;gap:10px;background:var(--bg);border-bottom:1px solid var(--border);font-size:12px}
+.remote-viewer-heading strong{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-viewer-heading>span{color:var(--muted);font-size:11px}
+.remote-viewer-heading>.ra-tool{margin-left:auto;font-size:11px;min-height:28px;padding:3px 8px}
+.remote-session .ra-button.quiet{background:transparent;border-color:transparent}
+.remote-session .ra-button.quiet:hover:not(:disabled){background:color-mix(in oklch,var(--fg) 4%,var(--surface));color:var(--fg);border-color:transparent}
+.remote-session .ra-button.danger:hover:not(:disabled){color:var(--danger)}
+.remote-session .ra-button.selected{color:var(--accent);background:color-mix(in oklch,var(--accent) 8%,var(--surface));border-color:color-mix(in oklch,var(--accent) 20%,var(--border))}
+.remote-session .ra-button.icon-only{padding:7px;width:34px}
+.remote-session .ra-button.icon-only>span:empty{display:none}
+.remote-viewer-tools{position:relative;z-index:4;display:flex;align-items:center;flex:none;gap:6px;padding:10px 18px;min-height:60px;background:var(--surface);border-bottom:1px solid var(--border)}
+.remote-viewer-tools .ra-tool{font-size:12px;padding:6px 10px;min-height:34px}
+.remote-screen-name,.remote-scale-choice{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);white-space:nowrap}
+.remote-screen-name{color:var(--fg);min-width:0}
+.remote-viewer-tools select{min-height:34px;max-width:185px;font:12px var(--font-body);padding:6px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--fg)}
+.remote-viewer-tools select:disabled{opacity:1;color:var(--muted);cursor:default}
+.remote-divider{display:block;flex:none;width:1px;height:21px;background:var(--border);margin:0 5px}
+.remote-flex{flex:1;min-width:0}
+.remote-control-state{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--accent);white-space:nowrap}
+.remote-status-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}
+.remote-status-dot.offline{background:var(--muted)}
+.remote-viewer-canvas{position:relative;flex:1;display:flex;min-height:0;min-width:0;background:#252d31}
+.remote-viewer-audio-notice{display:flex;align-items:center;gap:10px;padding:6px 18px;background:var(--surface);color:var(--muted);font-size:12px;border-bottom:1px solid var(--border)}
+.remote-viewer-audio-notice>.ra-icon{color:var(--accent);width:17px;height:17px}
+.remote-viewer-audio-notice .ra-tool{margin-left:auto;min-height:30px;font-size:12px;padding:4px 9px}
+.remote-viewer.remote-session .remote-video-viewport{padding:26px 32px;background:#252d31;width:100%;color:#b8c6c0}
+.remote-viewer .remote-video-viewport.actual{padding:0}
+.remote-viewer .remote-video-viewport video{object-fit:contain;outline:none}
+.remote-viewer .remote-video-cover,.remote-viewer .remote-video-cover.paused{background:#252d31;color:#d3ded7}
+.remote-viewer-metrics{min-height:35px;flex:none;display:flex;align-items:center;gap:18px;padding:6px 20px;background:#222a2e;color:#a8b9b5;border-top:1px solid #ffffff08;font-size:11px}
+.remote-viewer-metrics>span,.remote-viewer-metrics>button{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.remote-viewer-metrics>button{padding:0;border:0;background:none;color:inherit;font:inherit;cursor:pointer}
+.remote-viewer-metrics>button .ra-icon{width:15px;height:15px}
+.remote-viewer-metrics>small{margin-left:auto;font-size:10px;color:#839c93;white-space:nowrap}
+.remote-viewer:fullscreen .remote-viewer-heading,.remote-viewer.is-fullscreen .remote-viewer-heading{display:none}
+.remote-info-popover{position:absolute;top:calc(100% + 9px);right:18px;width:322px;max-height:calc(100dvh - 125px);overflow:auto;z-index:8;padding:18px;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:var(--fg);box-shadow:0 13px 40px #17251f33}
+.remote-info-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+.remote-info-head strong{font-size:14px;font-weight:600}
+.remote-info-head .ra-button{width:25px;min-height:25px;padding:3px}
+.remote-info-tabs{display:flex;gap:22px;margin-bottom:18px;border-bottom:1px solid var(--border)}
+.remote-info-tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:none;color:var(--muted);padding:0 0 9px;font:12px var(--font-body);cursor:pointer}
+.remote-info-tabs button[aria-selected=true]{border-color:var(--accent);color:var(--accent)}
+.remote-latency{display:flex;align-items:baseline;gap:4px;font-size:12px;color:var(--muted);margin-bottom:22px}
+.remote-latency>.ra-icon{color:var(--accent);align-self:center;margin-right:4px}
+.remote-latency>strong{margin-left:auto;font:25px/1.2 var(--font-mono);color:var(--fg)}
+.remote-latency>small{font-size:11px}
+.remote-info-popover dl{margin:0;display:grid;gap:10px;font-size:11px}
+.remote-info-popover dl>div{display:grid;grid-template-columns:minmax(85px,1fr) minmax(0,1.6fr);gap:12px}
+.remote-info-popover dt{color:var(--muted)}
+.remote-info-popover dd{margin:0;text-align:right;overflow-wrap:anywhere;line-height:1.5}
+.remote-info-popover hr{border:0;border-top:1px solid var(--border);margin:18px 0}
+.remote-info-note{font-size:10px;color:var(--muted);line-height:1.8;margin:17px 0 0}
+.remote-viewer-ended,.remote-viewer-loading{margin:auto;max-width:430px;text-align:center;padding:30px;color:#b1c2b8}
+.remote-viewer-ended>.ra-icon,.remote-viewer-loading>.ra-icon{margin:0 auto 22px;width:40px!important;height:40px!important;color:#86a994}
+.remote-viewer-ended h2,.remote-viewer-loading h1{font-size:20px;font-weight:500;color:#e3ebe2}
+.remote-viewer-ended p,.remote-viewer-loading p{font-size:12px;line-height:1.8;margin:0 0 25px}
+.remote-chat-anchor{flex:0 0 auto;min-width:0}
+.remote-chat-anchor:empty{display:none}
+.remote-chat-session-bar{display:flex;align-items:center;gap:13px;padding:16px 22px;background:color-mix(in oklch,var(--accent) 4%,var(--surface));border-bottom:1px solid color-mix(in oklch,var(--accent) 15%,var(--border));flex-wrap:wrap}
+.remote-chat-session-emblem{display:grid;place-items:center;width:37px;height:37px;flex:none;border:1px solid color-mix(in oklch,var(--accent) 18%,var(--border));border-radius:9px;color:var(--accent);background:var(--surface)}
+.remote-chat-session-copy{flex:1;min-width:180px}
+.remote-chat-session-copy>strong{font-size:12px;font-weight:550;display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.remote-chat-session-copy>p{display:flex;align-items:center;gap:6px;margin:5px 0 0;font-size:10px;color:var(--muted);line-height:1.6}
+.remote-chat-session-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.remote-chat-session-actions .ra-button{font-size:11px;min-height:33px;padding:6px 10px}
+.remote-chat-session-actions .ra-button.icon-only{padding:6px;width:32px}
+.remote-chat-notice{margin:0;padding:8px 22px;background:color-mix(in oklch,var(--danger) 5%,var(--surface));color:var(--danger);font-size:11px;line-height:1.7}
+.remote-chat-voice{border-top:1px solid color-mix(in oklch,var(--accent) 15%,var(--border));background:color-mix(in oklch,var(--accent) 4%,var(--surface))}
+.remote-chat-voice-line{min-height:51px;display:flex;align-items:center;gap:10px;padding:10px 22px;flex-wrap:wrap}
+.remote-chat-voice-line>.ra-icon{color:var(--accent);width:17px;height:17px}
+.remote-chat-voice-line>strong{font-size:11px;font-weight:500;white-space:nowrap}
+.remote-chat-voice-line>span{font-size:10px;color:var(--muted)}
+.remote-chat-voice-line .ra-button{font-size:10px;min-height:29px;padding:4px 8px}
+.remote-chat-voice-line .ra-button.icon-only{width:29px;padding:4px}
+.remote-chat-audio-notice{margin:0;padding:0 22px 10px;display:flex;gap:12px;align-items:center;color:var(--muted);font-size:11px;line-height:1.7}
+.remote-browser-sharing{position:fixed;inset:0;z-index:75;pointer-events:none}
+.remote-browser-sharing>.ra-floating-panel{pointer-events:auto}
+@media(max-width:1100px){.remote-viewer-tools{padding:9px 12px;gap:3px}.remote-viewer-tools .ra-tool{font-size:11px;padding:6px 8px}.remote-viewer-tools select{max-width:155px}.remote-control-state{display:none}.remote-scale-choice>span{display:none}.remote-chat-session-bar{padding:14px 17px}.remote-chat-session-copy{min-width:150px}}
+@media(max-width:860px){.remote-viewer-tools{flex-wrap:wrap;gap:5px}.remote-quality-tool{display:none!important}.remote-viewer-tools .remote-flex{flex-basis:40px}.remote-divider{margin:0 2px}.remote-viewer.remote-session .remote-video-viewport{padding:15px}.remote-chat-session-bar .remote-chat-session-actions{margin-left:auto}.remote-chat-voice-line{gap:7px;padding:10px 16px}.remote-info-popover{right:12px}.remote-viewer-metrics{gap:12px;font-size:10px}}
+@media(max-width:560px){.remote-viewer-heading>span{display:none}.remote-viewer-tools{padding:7px 9px}.remote-viewer-tools .ra-tool{min-height:34px}.remote-viewer-tools select{min-height:34px}.remote-viewer-tools .remote-divider{display:none}.remote-screen-name>.ra-icon{display:none}.remote-viewer-tools .remote-screen-name select{max-width:135px}.remote-viewer-tools .remote-flex{flex-basis:0}.remote-viewer.remote-session .remote-video-viewport{padding:8px}.remote-viewer-metrics{padding:6px 10px;gap:7px 10px;flex-wrap:wrap}.remote-viewer-metrics>small{font-size:9px}.remote-info-popover{right:9px;width:min(322px,calc(100vw - 18px));max-height:calc(100dvh - 174px)}.remote-chat-session-bar{padding:12px 14px;gap:9px}.remote-chat-session-copy{flex-basis:calc(100% - 50px);min-width:0}.remote-chat-session-actions{padding-left:45px}.remote-chat-voice-line>span{font-size:9px}.remote-chat-voice-line .remote-flex{display:none}}

@@ -13,5 +13,7 @@ test("permission never survives pause, ending, ownership loss or revocation",()=
  assert.equal(remoteInputAllowed(session),true);
  for(const patch of [{phase:"waiting"},{phase:"disconnected"},{local_host:true},{paused:true},{grant:null}])assert.equal(remoteInputAllowed({...session,...patch}),false);
  assert.equal(remoteInputAllowed(session,false),false);
- assert.equal(remoteQuality({fps:120,preset:"fluent"}).maxFramerate,20);
+ assert.equal(remoteQuality({fps:120,preset:"fluent"}).maxFramerate,30);
+ assert.equal(remoteQuality({}).maxFramerate,30);
+ for(const fps of [10,20,30,60])assert.equal(remoteQuality({fps}).maxFramerate,fps);
 });

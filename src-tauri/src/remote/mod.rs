@@ -5,6 +5,10 @@ pub mod http;
 mod input;
 pub mod model;
 mod platform;
+mod capture;
+mod capture_stream;
+#[cfg(all(feature = "desktop", target_os = "windows"))]
+mod capture_shared;
 use crate::{db, peers::PeerManager};
 use model::*;
 use serde::{Deserialize, Serialize};
@@ -195,6 +199,7 @@ struct State {
     actors: HashMap<String, Actor>,
     session: Option<Session>,
     held: input::Held,
+    capture_stream: capture_stream::TicketBook,
 }
 pub struct Hub {
     pool: Pool<Sqlite>,
@@ -204,6 +209,7 @@ pub struct Hub {
     wake: tokio::sync::Notify,
     client: reqwest::Client,
     capture: Arc<tokio::sync::Semaphore>,
+    native_capture: capture::Capture,
 }
 fn registry() -> &'static Mutex<HashMap<String, Arc<Hub>>> {
     static HUBS: OnceLock<Mutex<HashMap<String, Arc<Hub>>>> = OnceLock::new();
@@ -237,6 +243,7 @@ pub async fn hub(pool: &Pool<Sqlite>, peers: &Arc<PeerManager>) -> Result<Arc<Hu
             .build()
             .map_err(|e| e.to_string())?,
         capture: Arc::new(tokio::sync::Semaphore::new(1)),
+        native_capture: capture::Capture::default(),
     });
     let mut all = registry().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = all.get(&scope) {
@@ -275,12 +282,22 @@ impl Hub {
         }
         Ok(session)
     }
-    pub async fn frame(self: &Arc<Self>, actor: &str, id: &str, revision: u64) -> Result<Vec<u8>> {
+    pub async fn frame(
+        self: &Arc<Self>,
+        actor: &str,
+        id: &str,
+        revision: u64,
+        format: Option<&str>,
+        request_keyframe: bool,
+    ) -> Result<Vec<u8>> {
+        if !matches!(format, None | Some("jpeg") | Some("rgba-v1") | Some("hevc-v1")) {
+            return Err("不支持的屏幕帧格式".into());
+        }
         let _permit = self
             .capture
             .clone()
             .try_acquire_owned()
-            .map_err(|_| "正在处理上一帧")?;
+            .map_err(|_| "remote_capture_busy")?;
         let (screen, quality) = {
             let state = self.lock();
             let session = Self::native_session(&state, actor, id)
@@ -293,9 +310,19 @@ impl Hub {
                 session.view.quality.clone(),
             )
         };
-        let bytes = tokio::task::spawn_blocking(move || platform::frame(&screen, &quality))
-            .await
-            .map_err(|e| e.to_string())??;
+        let bytes = if format == Some("hevc-v1") {
+            self.native_capture
+                .hevc_frame(format!("{id}:{revision}"), screen, quality, request_keyframe)
+                .await?
+        } else if format == Some("rgba-v1") {
+            self.native_capture
+                .frame(format!("{id}:{revision}"), screen, quality)
+                .await?
+        } else {
+            tokio::task::spawn_blocking(move || platform::frame(&screen, &quality))
+                .await
+                .map_err(|e| e.to_string())??
+        };
         let state = self.lock();
         let session = Self::native_session(&state, actor, id)
             .map_err(|e| format!("remote_state_changed: {e}"))?;
@@ -357,7 +384,31 @@ impl Hub {
         Ok(serde_json::json!({"actor":token,"native_host":native,"self_id":self.self_id}))
     }
     pub fn poll(&self, actor: &str, id: Option<&str>, after: u64) -> Result<serde_json::Value> {
+        Self::poll_state(&mut self.lock(), actor, id, after)
+    }
+    #[cfg(any(feature = "desktop", test))]
+    pub fn poll_viewer(&self, actor: &str, id: &str, after: u64) -> Result<serde_json::Value> {
         let mut state = self.lock();
+        if !state.actors.contains_key(actor) {
+            return Err("远程页面身份已失效".into());
+        }
+        // Validate before renewing either lease or acknowledging signals, while
+        // holding the same lock. An old viewer may share the new session's actor.
+        if !state.session.as_ref().is_some_and(|session| {
+            session.view.id == id
+                && session.owner.as_deref() == Some(actor)
+                && !session.view.local_host
+        }) {
+            return Ok(serde_json::json!({"session":null,"owned":false,"signals":[]}));
+        }
+        Self::poll_state(&mut state, actor, Some(id), after)
+    }
+    fn poll_state(
+        state: &mut State,
+        actor: &str,
+        id: Option<&str>,
+        after: u64,
+    ) -> Result<serde_json::Value> {
         state
             .actors
             .get_mut(actor)
@@ -993,6 +1044,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn viewer_poll_cannot_renew_or_acknowledge_another_session() {
+        let hub = Hub {
+            pool: sqlx::sqlite::SqlitePoolOptions::new()
+                .connect_lazy("sqlite::memory:")
+                .unwrap(),
+            peers: Arc::new(PeerManager::new()),
+            self_id: "self".into(),
+            state: Mutex::new(State::default()),
+            wake: tokio::sync::Notify::new(),
+            client: reqwest::Client::new(),
+            capture: Arc::new(tokio::sync::Semaphore::new(1)),
+            native_capture: capture::Capture::default(),
+        };
+        let old_id = session().view.id;
+        let mut current = session();
+        current.view.local_host = false;
+        current.view.grant = Some("current-control-grant".into());
+        let current_id = current.view.id.clone();
+        let stale = Instant::now() - Duration::from_secs(9);
+        current.owner_seen = stale;
+        current.event(Wire::Ready).unwrap();
+        current.event(Wire::Ready).unwrap();
+        {
+            let mut state = hub.lock();
+            for actor in ["owner", "observer"] {
+                state.actors.insert(
+                    actor.into(),
+                    Actor {
+                        // Controllers do not need native screen capture support.
+                        native: false,
+                        seen: stale,
+                    },
+                );
+            }
+            state.session = Some(current);
+        }
+        for (actor, id) in [("owner", &old_id), ("observer", &current_id)] {
+            let result = hub.poll_viewer(actor, id, u64::MAX).unwrap();
+            assert_eq!(
+                result,
+                serde_json::json!({"session":null,"owned":false,"signals":[]})
+            );
+            let state = hub.lock();
+            assert_eq!(state.actors[actor].seen, stale);
+            let current = state.session.as_ref().unwrap();
+            assert_eq!(current.owner_seen, stale);
+            assert_eq!(current.events.len(), 2);
+        }
+        hub.lock().session.as_mut().unwrap().view.local_host = true;
+        assert!(hub.poll_viewer("owner", &current_id, u64::MAX).unwrap()["session"].is_null());
+        {
+            let mut state = hub.lock();
+            assert_eq!(state.actors["owner"].seen, stale);
+            let current = state.session.as_mut().unwrap();
+            assert_eq!(current.owner_seen, stale);
+            assert_eq!(current.events.len(), 2);
+            current.view.local_host = false;
+        }
+        assert!(hub.poll_viewer("missing", &current_id, 0).is_err());
+
+        // Main-window polling without an ID still renews ownership, but leaves
+        // the viewer's signal queue untouched as it did before scoped polling.
+        let main = hub.poll("owner", None, u64::MAX).unwrap();
+        assert_eq!(main["session"]["id"], current_id);
+        assert_eq!(main["owned"], true);
+        assert_eq!(main["signals"], serde_json::json!([]));
+        {
+            let mut state = hub.lock();
+            assert!(state.actors["owner"].seen > stale);
+            let current = state.session.as_mut().unwrap();
+            assert!(current.owner_seen > stale);
+            assert_eq!(current.events.len(), 2);
+            current.owner_seen = stale;
+            state.actors.get_mut("owner").unwrap().seen = stale;
+        }
+        let viewer = hub.poll_viewer("owner", &current_id, 1).unwrap();
+        assert_eq!(viewer["session"]["id"], current_id);
+        assert_eq!(viewer["session"]["grant"], "current-control-grant");
+        assert_eq!(viewer["signals"].as_array().unwrap().len(), 1);
+        assert_eq!(viewer["signals"][0]["sequence"], 2);
+        {
+            let mut state = hub.lock();
+            assert!(state.actors["owner"].seen > stale);
+            let current = state.session.as_mut().unwrap();
+            assert!(current.owner_seen > stale);
+            assert_eq!(current.events.len(), 1);
+            current.view.stop("ended");
+        }
+        // The matching window must still observe terminal state to tear down.
+        assert_eq!(
+            hub.poll_viewer("owner", &current_id, 2).unwrap()["session"]["phase"],
+            "ended"
+        );
+    }
+
+    #[tokio::test]
     async fn host_offer_requires_current_revision_and_cannot_restore_revoked_control() {
         let hub = Hub {
             pool: sqlx::sqlite::SqlitePoolOptions::new()
@@ -1004,6 +1151,7 @@ mod tests {
             wake: tokio::sync::Notify::new(),
             client: reqwest::Client::new(),
             capture: Arc::new(tokio::sync::Semaphore::new(1)),
+            native_capture: capture::Capture::default(),
         };
         let mut session = session();
         session.view.native_host = true;
@@ -1093,6 +1241,7 @@ mod tests {
             wake: tokio::sync::Notify::new(),
             client: reqwest::Client::new(),
             capture: Arc::new(tokio::sync::Semaphore::new(1)),
+            native_capture: capture::Capture::default(),
         };
         let session = session();
         let id = session.view.id.clone();

@@ -21,6 +21,9 @@ export function RemoteIcon({name='screen',size=18}) {
     shield:<><path d="M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6Z"/><path d="m8 12 3 3 5-6"/></>,
     chat:<path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 3v-3H3V6a2 2 0 0 1 2-2Z"/>,
     close:<path d="m6 6 12 12M6 18 18 6"/>,hide:<path d="M5 12h14"/>,
+    info:<><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></>,
+    signal:<path d="M5 19v-4m5 4v-8m5 8V7m5 12V3"/>,
+    external:<><path d="M14 3h7v7M21 3 11 13"/><path d="M10 3H4a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-6"/></>,
     grip:<>{[5,12,19].map(y=><g key={y}><circle cx="9" cy={y} r="1"/><circle cx="15" cy={y} r="1"/></g>)}</>,
   };
   return <svg className="ra-icon" viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]||paths.screen}</svg>;

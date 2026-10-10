@@ -26,8 +26,31 @@ test("slow hangup cannot stop the microphone belonging to an immediately rediall
   state.voice={sender:{replaceTrack(track){return track?Promise.resolve():new Promise(done=>{finishDetach=done;});}}};
   const hangingUp=RemoteMedia.prototype.syncVoice.call(state);
   assert.equal(old.getTracks()[0].ended,true);assert.equal(state.microphone,null);
+  await new Promise(resolve=>setImmediate(resolve));
   state.session.voice={stage:"active",id:"next-call",local_muted:false};
-  await RemoteMedia.prototype.syncVoice.call(state);
-  finishDetach();await hangingUp;
+  const redialled=RemoteMedia.prototype.syncVoice.call(state);
+  finishDetach();await hangingUp;await redialled;
   assert.equal(state.microphone,next);assert.equal(next.getTracks()[0].ended,false);
+});
+
+test("a late prior capture may briefly hold the worker without ending a new session",async()=>{
+  let calls=0,released=0,failed=0;
+  const state={closed:false,native:true,session:{id:'next',revision:3,paused:false,quality:{fps:30}},
+    hevc:{async capture(){return false;}},
+    frameReader:{async read(){if(++calls===1)throw new Error('remote_capture_busy');state.closed=true;return{bytes:new ArrayBuffer(0),release(){released++;}};}},
+    fail(){failed++;state.closed=true;},
+  };
+  await RemoteMedia.prototype.captureLoop.call(state);
+  assert.equal(calls,2);assert.equal(released,1);assert.equal(failed,0);
+});
+
+test("an indefinitely busy capture worker ends after the bounded retry deadline",async()=>{
+  let failed;
+  const state={closed:false,native:true,captureBusySince:performance.now()-6000,
+    session:{id:'next',revision:3,paused:false},hevc:{async capture(){return false;}},
+    frameReader:{async read(){throw new Error('remote_capture_busy');}},
+    fail(error){failed=error;state.closed=true;},
+  };
+  await RemoteMedia.prototype.captureLoop.call(state);
+  assert.match(failed.message,/remote_capture_busy/);
 });

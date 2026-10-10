@@ -1,29 +1,33 @@
 import {remoteAccepted,remoteInputAllowed,remoteQuality} from "./remote-model.js";
+import {createNativeFrameReader,decodeNativeFrame,presentNativeFrame,preferRemoteVideoCodecs} from "./remote-capture.js";
+import {remoteMediaMetrics} from "./remote-metrics.js";
+import {readRemoteTelemetry,remoteTelemetry} from "./remote-telemetry.js";
+import {watchRemoteConnection} from "./remote-connection.js";
+import {attachRemoteVoice,syncRemoteVoice} from "./remote-voice.js";
+import {RemoteHevcMedia} from "./remote-hevc-media.js";
 
 const stop=stream=>stream?.getTracks().forEach(track=>track.stop());
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 
 export class RemoteMedia {
-  constructor({session,native,browserStream,signal,frame,input,changed,failed,voiceFailed}) {
-    Object.assign(this,{session,native,signal,frame,input,changed,failed,voiceFailed});
+  constructor({session,native,browserStream,signal,frame,openCaptureStream,input,changed,failed,voiceFailed,localInfo}) {
+    Object.assign(this,{session,native,signal,frame,openCaptureStream,input,changed,failed,voiceFailed,localInfo});
     this.closed=false;this.audioEpoch=0;this.inputSequence=0;this.inputQueue=[];this.inputWorking=false;this.heldInputs=new Set();
     this.localScreen=browserStream||null;this.remoteScreen=new MediaStream();this.microphone=null;
     this.speaker=true;this.audio=new Audio();this.audio.autoplay=true;this.audio.playsInline=true;
     this.pc=new RTCPeerConnection({iceServers:[],bundlePolicy:"max-bundle"});
+    this.rtpScreen=this.remoteScreen;this.hevc=new RemoteHevcMedia(this);
     this.pc.ontrack=event=>{
       if(this.closed)return;
       if(event.track.kind==="video"){
-        this.remoteScreen.getTracks().forEach(track=>this.remoteScreen.removeTrack(track));
-        this.remoteScreen.addTrack(event.track);this.changed();
+        this.rtpScreen.getTracks().forEach(track=>this.rtpScreen.removeTrack(track));
+        this.rtpScreen.addTrack(event.track);
+        if(!this.hevc.receiving)this.remoteScreen=this.rtpScreen;
+        this.changed();
       } else {this.audio.srcObject=new MediaStream([event.track]);void this.playAudio();}
     };
     this.pc.ondatachannel=event=>this.bindChannel(event.channel);
-    this.pc.onconnectionstatechange=()=>{
-      if(this.closed)return;
-      if(this.pc.connectionState==="connected")void this.signal({type:"ready"}).catch(e=>this.fail(e));
-      if(["failed","closed","disconnected"].includes(this.pc.connectionState))this.fail(new Error("远程连接已中断，请重新发起协助"));
-      this.changed();
-    };
+    this.connection=watchRemoteConnection(this);
     this.statsTimer=setInterval(()=>void this.stats(),2000);
     this.inputKeepAlive=setInterval(()=>{if(this.holdingInput)this.sendInput({type:"keep_alive"});},350);
     this.ready=this.initialize().catch(error=>this.fail(error));
@@ -31,8 +35,10 @@ export class RemoteMedia {
   async initialize() {
     if(this.session.local_host){
       if(this.native){
+        this.frameReader=createNativeFrameReader({frame:this.frame,sessionId:this.session.id});
         this.canvas=document.createElement("canvas");this.canvas.width=1280;this.canvas.height=720;
         this.localScreen=this.canvas.captureStream(0);
+        this.localScreen.getVideoTracks()[0].contentHint="detail";
         this.changed();void this.captureLoop();
       } else if(!this.localScreen?.getVideoTracks().some(t=>t.readyState==="live"))throw new Error("共享屏幕已经关闭，请重新选择");
       const source=this.localScreen;
@@ -41,6 +47,7 @@ export class RemoteMedia {
     if(this.closed)return;
     if(this.session.initiator){
       this.video=this.pc.addTransceiver("video",{direction:"sendrecv"});
+      preferRemoteVideoCodecs(this.video);
       this.voice=this.pc.addTransceiver("audio",{direction:"sendrecv"});
       this.bindChannel(this.pc.createDataChannel("xchat-control",{ordered:true}));
       await this.attachTracks();await this.pc.setLocalDescription(await this.pc.createOffer());
@@ -61,6 +68,7 @@ export class RemoteMedia {
         if(this.session.initiator||this.pc.signalingState!=="stable")throw new Error("远程会话描述顺序错误");
         await this.pc.setRemoteDescription({type:"offer",sdp:body.sdp});
         this.video=this.pc.getTransceivers().find(t=>t.receiver.track.kind==="video");
+        preferRemoteVideoCodecs(this.video);
         this.voice=this.pc.getTransceivers().find(t=>t.receiver.track.kind==="audio");
         if(!this.video||!this.voice)throw new Error("对方未提供完整的屏幕/语音通道");
         this.video.direction="sendrecv";this.voice.direction="sendrecv";
@@ -73,12 +81,13 @@ export class RemoteMedia {
   async attachTracks() {
     if(this.closed)return;
     await this.video?.sender.replaceTrack(this.session.local_host?this.localScreen?.getVideoTracks()[0]||null:null);
-    await this.voice?.sender.replaceTrack(this.microphone?.getAudioTracks()[0]||null);
+    await attachRemoteVoice(this);
   }
   update(session) {
     const prior=this.session;this.session=session;
-    if(prior.grant!==session.grant){this.inputSequence=0;this.inputQueue=[];this.holdingInput=false;this.heldInputs.clear();}
+    if(prior.grant!==session.grant){this.inputSuspended=false;this.inputSequence=0;this.inputQueue=[];this.holdingInput=false;this.heldInputs.clear();}
     if(!remoteAccepted(session)){this.close();return;}
+    this.hevc.update(session,prior);
     if(session.local_host){
       this.localScreen?.getVideoTracks().forEach(track=>track.enabled=!session.paused);
       if(this.native&&prior.screen?.id!==session.screen?.id){this.clearCanvas();}
@@ -94,15 +103,30 @@ export class RemoteMedia {
       const began=performance.now(),session=this.session;
       if(!session.paused){
         try {
-          const bytes=await this.frame(session.revision);if(this.closed)break;
-          if(this.session.revision!==session.revision)continue;
-          const bitmap=await createImageBitmap(new Blob([bytes],{type:"image/jpeg"}));
-          if(this.closed||this.session.revision!==session.revision){bitmap.close();continue;}
-          if(this.canvas.width!==bitmap.width||this.canvas.height!==bitmap.height){this.canvas.width=bitmap.width;this.canvas.height=bitmap.height;}
-          this.canvas.getContext("2d").drawImage(bitmap,0,0);bitmap.close();this.localScreen.getVideoTracks()[0]?.requestFrame?.();
-        }catch(error){if(!this.closed&&!this.session.paused&&session.revision===this.session.revision&&!String(error).includes("remote_state_changed")){this.fail(error);break;}}
+          if(await this.hevc.capture(session.revision)){this.captureBusySince=null;continue;}
+          if(this.closed)break;
+          const received=await this.frameReader.read(session.revision);
+          this.captureBusySince=null;
+          try{
+            if(this.closed)break;
+            if(this.session.revision!==session.revision)continue;
+            const frame=decodeNativeFrame(received.bytes),presented=performance.now();
+            if(presentNativeFrame(this.canvas,this.localScreen.getVideoTracks()[0],frame)){
+              this.captureMetrics={captureBackend:frame.captureBackend,captureMs:frame.captureMs,bridgeMs:frame.nativeMs===null?null:Math.max(0,presented-began-frame.nativeMs),canvasMs:performance.now()-presented,sourceWidth:frame.sourceWidth,sourceHeight:frame.sourceHeight,frameTransport:received.transport};
+            }
+          }finally{received.release();}
+        }catch(error){
+          if(/remote_capture_busy|正在处理上一帧/.test(String(error))&&!this.closed){
+            this.captureBusySince??=performance.now();
+            if(performance.now()-this.captureBusySince<5000){await delay(25);continue;}
+          }
+          if(!this.closed&&!this.session.paused&&session.revision===this.session.revision&&!String(error).includes("remote_state_changed")){this.fail(error);break;}
+          if(!this.closed)await delay(50);
+        }
       }
-      await delay(Math.max(8,1000/remoteQuality(session.quality).maxFramerate-(performance.now()-began)));
+      // Native requests are paced on their dedicated Rust worker. setTimeout
+      // here would reduce an occluded/minimized WebView to roughly 1 fps.
+      if(session.paused||!this.native)await delay(Math.max(8,1000/remoteQuality(session.quality).maxFramerate-(performance.now()-began)));
     }
   }
   async changeBrowserScreen(stream) {
@@ -110,24 +134,7 @@ export class RemoteMedia {
     await this.video?.sender.replaceTrack(stream.getVideoTracks()[0]);stop(old);
     stream.getVideoTracks()[0].addEventListener("ended",()=>{if(!this.closed&&this.localScreen===stream)this.fail(new Error("屏幕共享已停止"));},{once:true});this.changed();
   }
-  async syncVoice(deviceId=this.inputDevice) {
-    const epoch=++this.audioEpoch,call=this.session.voice.id;
-    if(this.session.voice.stage!=="active"){
-      const previous=this.microphone;this.microphone=null;stop(previous);this.changed();
-      await this.voice?.sender.replaceTrack(null).catch(()=>{});return;
-    }
-    if(this.microphone&&deviceId===this.inputDevice)return;
-    try {
-      const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,...(deviceId?{deviceId:{exact:deviceId}}:{})},video:false});
-      if(this.closed||epoch!==this.audioEpoch||this.session.voice.stage!=="active"||this.session.voice.id!==call){stop(stream);return;}
-      stream.getAudioTracks().forEach(track=>track.enabled=!this.session.voice.local_muted);
-      await this.voice?.sender.replaceTrack(stream.getAudioTracks()[0]);
-      if(this.closed||epoch!==this.audioEpoch){stop(stream);return;}
-      const old=this.microphone;this.microphone=stream;this.inputDevice=deviceId;stop(old);
-      stream.getAudioTracks()[0].addEventListener("ended",()=>{if(!this.closed&&this.microphone===stream)void this.voiceFailed(new Error("麦克风已断开，可重新发起语音"));},{once:true});
-      this.changed();
-    }catch(error){if(!this.closed&&epoch===this.audioEpoch)await this.voiceFailed(new Error(`麦克风不可用：${error.message}`));}
-  }
+  syncVoice(deviceId=this.inputDevice) {return syncRemoteVoice(this,deviceId);}
   async playAudio() {
     try{await this.audio.play();this.audioBlocked=false;}catch{this.audioBlocked=true;}this.changed();
   }
@@ -136,20 +143,34 @@ export class RemoteMedia {
   async applyQuality(){
     const sender=this.video?.sender;if(!sender||this.closed||!this.session.local_host)return;
     try{const parameters=sender.getParameters();if(!parameters.encodings?.length)return;
-      Object.assign(parameters.encodings[0],remoteQuality(this.session.quality));await sender.setParameters(parameters);
+      Object.assign(parameters.encodings[0],remoteQuality(this.session.quality));
+      parameters.degradationPreference="maintain-resolution";
+      await sender.setParameters(parameters);
       const track=this.localScreen?.getVideoTracks()[0];if(track&&!this.native)await track.applyConstraints({frameRate:{max:remoteQuality(this.session.quality).maxFramerate}});
     }catch{/* Browser congestion control remains active when a codec cannot apply a hint. */}
   }
   bindChannel(channel){
-    if(this.channel&&this.channel!==channel){channel.close();return;}this.channel=channel;
+    if(this.hevc?.bindChannel(channel))return;
+    if(channel.label!=="xchat-control"){channel.close();return;}
+    if(this.channel&&this.channel!==channel&&this.channel.readyState!=="closed"){channel.close();return;}this.channel=channel;
     channel.onmessage=event=>{
-      if(this.closed||!this.native||!this.session.local_host||this.session.paused||typeof event.data!=="string"||event.data.length>2048)return;
+      if(this.closed||typeof event.data!=="string"||event.data.length>4096)return;
+      if(this.hevc?.handleControl(event.data))return;
+      if(event.data.length>2048)return;
+      if(!this.session.local_host){
+        const info=readRemoteTelemetry(event.data);
+        if(info){this.hostMetrics=info;this.metrics={...this.metrics,...info};this.changed();}
+        return;
+      }
+      if(!this.native||this.session.paused||this.inputSuspended)return;
       try{const packet=JSON.parse(event.data);if(packet.grant!==this.session.grant||!packet.grant)return;
         if(this.inputQueue.length>=64)throw new Error("远程输入积压，已收回控制");
         this.inputQueue.push(packet);void this.drainInput();
       }catch(error){void this.revokeInput(error);}
     };
-    channel.onclose=()=>{if(!this.closed)this.fail(new Error("远程操作通道已断开"));};
+    this.connection.bind(channel);
+    channel.addEventListener?.("open",()=>this.hevc?.controlOpen());
+    if(channel.readyState==="open")this.hevc?.controlOpen();
   }
   async revokeInput(error){this.inputQueue=[];this.changed({inputError:error.message});await this.signal({type:"control",allow:false}).catch(()=>{});}
   async drainInput(){
@@ -158,7 +179,7 @@ export class RemoteMedia {
     finally{this.inputWorking=false;}
   }
   sendInput(event){
-    if(!remoteInputAllowed(this.session)||this.channel?.readyState!=="open")return false;
+    if(this.inputSuspended||!remoteInputAllowed(this.session)||this.channel?.readyState!=="open")return false;
     if(this.channel.bufferedAmount>65536)return false;
     if(event.type==="release")this.heldInputs.clear();
     else if(event.type==="key"||event.type==="button"){const key=event.type+(event.code??event.button);if(event.down)this.heldInputs.add(key);else this.heldInputs.delete(key);}
@@ -167,20 +188,21 @@ export class RemoteMedia {
   }
   async stats(){
     if(this.closed)return;
-    try{const reports=await this.pc.getStats();let info={};
-      reports.forEach(report=>{
-        if(report.type==="candidate-pair"&&report.state==="succeeded"&&report.nominated)info.rtt=report.currentRoundTripTime!=null?Math.round(report.currentRoundTripTime*1000):null;
-        if(report.type===(this.session.local_host?"outbound-rtp":"inbound-rtp")&&report.kind==="video")Object.assign(info,{fps:report.framesPerSecond??null,width:report.frameWidth,height:report.frameHeight,bytes:report.bytesSent??report.bytesReceived});
-      });
-      if(this.previousStats&&info.bytes!=null)info.kbps=Math.max(0,Math.round((info.bytes-this.previousStats.bytes)*8/(performance.now()-this.previousStats.time)));
-      if(info.bytes!=null)this.previousStats={bytes:info.bytes,time:performance.now()};this.metrics=info;this.changed();
+    try{const reports=await this.pc.getStats();if(this.closed)return;
+      const {info,sample}=remoteMediaMetrics(reports,this.session.local_host,this.previousStats);
+      this.previousStats=sample;this.metrics={...info,...this.captureMetrics,...this.hostMetrics,...this.hevc?.stats()};
+      if(this.session.local_host&&this.channel?.readyState==="open"&&this.channel.bufferedAmount<16384)this.channel.send(remoteTelemetry(this.metrics,this.localInfo));
+      this.changed();
     }catch{}
   }
   fail(error){if(this.closed)return;this.failed(error);this.close();}
   close(){
     if(this.closed)return;this.closed=true;this.audioEpoch++;clearInterval(this.statsTimer);clearInterval(this.inputKeepAlive);
-    this.pc.onconnectionstatechange=null;if(this.channel)this.channel.onclose=null;
+    this.frameReader?.close();
+    this.hevc?.close();
+    this.connection?.dispose();this.pc.onconnectionstatechange=null;if(this.channel)this.channel.onclose=null;
     this.channel?.close();this.pc.close();stop(this.localScreen);stop(this.microphone);stop(this.remoteScreen);
+    if(this.rtpScreen!==this.remoteScreen)stop(this.rtpScreen);
     this.audio.pause();this.audio.srcObject=null;this.inputQueue=[];this.changed();
   }
 }

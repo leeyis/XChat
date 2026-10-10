@@ -18,6 +18,8 @@ if (requestedView === "capture-editor" || requestedView === "capture-pin") {
   render(CaptureEditor, { mode: requestedView === "capture-pin" ? "pin" : "editor" });
 } else if (requestedView === "remote-toolbar") {
   import("./RemoteToolbar.jsx").then(({ default: Toolbar }) => render(Toolbar));
+} else if (requestedView === "remote-viewer") {
+  import("./RemoteViewer.jsx").then(({ default: Viewer }) => render(Viewer));
 } else {
   import("./App.jsx").then(({ default: App }) => render(App));
 }

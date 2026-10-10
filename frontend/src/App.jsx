@@ -3457,6 +3457,7 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
           </button>
         </div>
       </header>
+      {conversation.kind === "direct" && <div className="remote-chat-anchor" data-remote-peer={conversation.peer_id} data-remote-slot="session" />}
       {!announcementHidden && (
         <button className="announcement-banner" onClick={() => setAnnouncementOpen(true)}>
           <span className="announcement-mark">📢</span>
@@ -3641,6 +3642,7 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
           </Fragment>
         ))}
       </div>
+      {conversation.kind === "direct" && <div className="remote-chat-anchor" data-remote-peer={conversation.peer_id} data-remote-slot="voice" />}
       {selection ? <footer className="message-selection-toolbar">
         <button onClick={() => setSelection(null)}>{labels.cancel}</button>
         <span>{labels.locale === "en" ? "Selected" : "已选"} {selection.length}</span>
@@ -5671,6 +5673,19 @@ export default function App({ workspace }) {
     );
     if (direct) openConversation(direct.id);
   };
+
+  useLayoutEffect(() => {
+    const focusRemoteChat = (event) => {
+      const direct = workspace.getSnapshot().conversations.find(item => item.kind === "direct" && item.peer_id === event.detail?.peerId);
+      if (!direct) return;
+      setMobileList(false);
+      setInfoOpen(false);
+      workspace.dispatch({ type: "navigation.open", section: "chat" });
+      workspace.dispatch({ type: "conversation.open", id: direct.id });
+    };
+    window.addEventListener("xchat:remote-chat", focusRemoteChat);
+    return () => window.removeEventListener("xchat:remote-chat", focusRemoteChat);
+  }, [workspace]);
 
   return (
     <section className={shellClass} data-od-id="xchat-desktop-app">

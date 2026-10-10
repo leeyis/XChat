@@ -15,5 +15,5 @@ export function remoteDuration(start,now=Date.now()) {
   return `${String(Math.floor(seconds/60)).padStart(2,"0")}:${String(seconds%60).padStart(2,"0")}`;
 }
 export function remoteQuality(quality={}) {
-  return {maxFramerate:[10,20,30].includes(quality.fps)?quality.fps:20,maxBitrate:quality.preset==="fluent"?900000:quality.preset==="clear"?5000000:2500000};
+  return {maxFramerate:[10,20,30,60].includes(quality.fps)?quality.fps:30,maxBitrate:quality.preset==="fluent"?900000:quality.preset==="clear"?5000000:2500000};
 }

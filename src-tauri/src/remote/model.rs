@@ -45,7 +45,7 @@ impl Default for Quality {
     fn default() -> Self {
         Self {
             preset: "auto".into(),
-            fps: 20,
+            fps: 30,
             reduced_color: false,
         }
     }
@@ -53,7 +53,7 @@ impl Default for Quality {
 impl Quality {
     pub fn validate(&self) -> Result<()> {
         if !["auto", "fluent", "clear"].contains(&self.preset.as_str())
-            || ![10, 20, 30].contains(&self.fps)
+            || ![10, 20, 30, 60].contains(&self.fps)
         {
             return Err("画质设置无效".into());
         }

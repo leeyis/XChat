@@ -63,7 +63,7 @@ export function createNativePanelAdapter(api,onError=()=>{}) {
   return {
     layout(node,collapsed) {
       if(!alive||!node.isConnected)return;
-      requested={mode:collapsed?'compact':'full',size:{width:Math.ceil(node.offsetWidth)+32,height:Math.ceil(node.parentElement.offsetHeight)}};
+      requested={mode:collapsed?'compact':'full',size:{width:Math.ceil(node.offsetWidth),height:Math.ceil(node.parentElement.offsetHeight)}};
       return schedule();
     },
     async drag() {if(!alive)return;try{await win.startDragging();if(alive)await settle();}catch(e){if(alive)onError(String(e));}},

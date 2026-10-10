@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "remote-viewer",
+  "description": "Scoped remote desktop, voice and fullscreen controls for an accepted session",
+  "windows": ["remote-viewer-*"],
+  "permissions": [
+    "core:window:allow-set-fullscreen", "core:window:allow-is-fullscreen",
+    "core:window:allow-close", "core:window:allow-set-focus",
+    "core:event:allow-listen", "core:event:allow-unlisten", "core:event:allow-emit-to",
+    "allow-remote-viewer"
+  ]
+}

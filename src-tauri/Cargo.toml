@@ -22,7 +22,7 @@ required-features = ["web"]
 [features]
 default = ["desktop"]
 custom-protocol = ["tauri/custom-protocol"]
-desktop = ["tauri", "tauri-plugin-shell", "tauri-plugin-fs", "tauri-plugin-dialog", "tauri-plugin-sql", "tauri-plugin-log", "tauri-plugin-single-instance", "tauri-plugin-opener", "tauri-plugin-global-shortcut", "auto-launch", "tauri-build", "sysinfo", "clipboard-rs", "wl-clipboard-rs", "xcap"]
+desktop = ["tauri", "tauri-plugin-shell", "tauri-plugin-fs", "tauri-plugin-dialog", "tauri-plugin-sql", "tauri-plugin-log", "tauri-plugin-single-instance", "tauri-plugin-opener", "tauri-plugin-global-shortcut", "auto-launch", "tauri-build", "sysinfo", "clipboard-rs", "wl-clipboard-rs", "xcap", "windows", "windows-core", "webview2-com", "windows-core-061"]
 web = ["sysinfo"]
 
 [build-dependencies]
@@ -92,6 +92,12 @@ ndk-context = "0.1"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
+webview2-com = { version = "=0.38.2", optional = true }
+# Match Tauri/Wry's WebView2 ABI; DXGI uses the independent 0.62 bindings below.
+windows-core-061 = { package = "windows-core", version = "0.61", optional = true }
+# Media Foundation callbacks use the same COM implementation ABI as windows 0.62.
+windows-core = { version = "0.62", optional = true }
+windows = { version = "0.62", optional = true, features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Power", "Win32_System_Variant"] }
 windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock", "Win32_System_IO", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_StationsAndDesktops"] }
 
 # Wayland 剪贴板 - 仅 Linux 桌面端

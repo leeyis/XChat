@@ -438,7 +438,7 @@ struct UpdateDeviceRequest {
 }
 
 #[derive(Clone)]
-struct ServerLifetime(tokio::sync::watch::Receiver<()>);
+pub(crate) struct ServerLifetime(pub(crate) tokio::sync::watch::Receiver<()>);
 
 async fn cancel_stopped_request(
     axum::Extension(mut lifetime): axum::Extension<ServerLifetime>,
@@ -6765,6 +6765,18 @@ async fn delete_user_http(
 /// 获取媒体访问 Token（供 Tauri command 读取后传给前端）
 pub fn get_media_token() -> String {
     MEDIA_TOKEN.lock().unwrap().clone()
+}
+
+/// Native-only issuer reads the actual running listener's port and generation
+/// together. Neither value is accepted from a browser's capture-stream request.
+#[cfg(feature = "desktop")]
+pub(crate) fn remote_capture_endpoint() -> Result<(u16, String), String> {
+    let generation = MEDIA_TOKEN.lock().unwrap_or_else(|error| error.into_inner());
+    let port = MEDIA_PORT.load(std::sync::atomic::Ordering::Acquire);
+    if port == 0 || generation.is_empty() {
+        return Err("remote_stream_unavailable: local network service has not started".into());
+    }
+    Ok((port, generation.clone()))
 }
 
 #[cfg(test)]

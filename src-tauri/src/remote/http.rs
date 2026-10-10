@@ -71,6 +71,7 @@ async fn local_only(request: Request, next: Next) -> Response {
 }
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
+        .merge(capture_stream::routes())
         .merge(
             Router::new()
                 .route("/api/remote/ui/bootstrap", post(bootstrap))
