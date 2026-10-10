@@ -1,0 +1,1452 @@
+{
+  "date": "2026-10-10",
+  "baseline": "726e3da",
+  "scope": "Phase 3 remote assistance prototype second review; no production remote/capture/input behavior",
+  "url": "http://127.0.0.1:18893/xchat-desktop-prototype.html?review=phase3&p3=remote&revision=2",
+  "interactionMethod": "Chrome MCP Streamable HTTP at 127.0.0.1:12306/mcp; MAIN-world UI scripts; actual prototype in a separate review window",
+  "interaction": {
+    "time": "2026-10-10T00:35:28.023Z",
+    "viewport": [
+      1426,
+      907
+    ],
+    "results": [
+      {
+        "name": "入口明确区分请求协助与请求控制",
+        "passed": true
+      },
+      {
+        "name": "请求协助选择我的屏幕且控制默认关闭",
+        "passed": true
+      },
+      {
+        "name": "求助方等待时没有共享画面",
+        "passed": true
+      },
+      {
+        "name": "协助方收到正确方向的请求",
+        "passed": true
+      },
+      {
+        "name": "接受协助后查看Eason且不能控制",
+        "passed": true
+      },
+      {
+        "name": "仅查看升级需等待授权",
+        "passed": true
+      },
+      {
+        "name": "控制授权由Eason授予张三",
+        "passed": true
+      },
+      {
+        "name": "拒绝升级维持仅查看",
+        "passed": true
+      },
+      {
+        "name": "共享方可明确授予本次控制",
+        "passed": true
+      },
+      {
+        "name": "共享方即时收回控制",
+        "passed": true
+      },
+      {
+        "name": "求助方向重试仍共享本机且不继承控制",
+        "passed": true
+      },
+      {
+        "name": "求助时明确勾选的权限告知协助方",
+        "passed": true
+      },
+      {
+        "name": "协助方接受已明确授权的控制",
+        "passed": true
+      },
+      {
+        "name": "控制请求不选择或共享自己的屏幕",
+        "passed": true
+      },
+      {
+        "name": "被控方选择屏幕并有三种回应",
+        "passed": true
+      },
+      {
+        "name": "对方降级同意后只查看张三",
+        "passed": true
+      },
+      {
+        "name": "直接控制路径无需重复申请",
+        "passed": true
+      },
+      {
+        "name": "授权后示意桌面可响应操作",
+        "passed": true
+      },
+      {
+        "name": "协助方可以主动释放控制",
+        "passed": true
+      },
+      {
+        "name": "原始比例可滚动查看",
+        "passed": true
+      },
+      {
+        "name": "画质刷新色彩设置保存",
+        "passed": true
+      },
+      {
+        "name": "全屏桌面展开",
+        "passed": true
+      },
+      {
+        "name": "Esc退出展开桌面",
+        "passed": true
+      },
+      {
+        "name": "协助沟通保留本地演示消息",
+        "passed": true
+      },
+      {
+        "name": "沟通面板可收起",
+        "passed": true
+      },
+      {
+        "name": "沟通面板重开保留消息",
+        "passed": true
+      },
+      {
+        "name": "共享方始终可见收回暂停和结束",
+        "passed": true
+      },
+      {
+        "name": "暂停隐藏桌面并收回控制",
+        "passed": true
+      },
+      {
+        "name": "恢复只查看不继承控制",
+        "passed": true
+      },
+      {
+        "name": "共享方切换屏幕收回控制",
+        "passed": true
+      },
+      {
+        "name": "网络波动提示与画质处理入口",
+        "passed": true
+      },
+      {
+        "name": "断线隐藏桌面并清理展开状态",
+        "passed": true
+      },
+      {
+        "name": "断线重试仍请求控制对方",
+        "passed": true
+      },
+      {
+        "name": "锁屏不保留共享画面",
+        "passed": true
+      },
+      {
+        "name": "拒绝不建立会话",
+        "passed": true
+      },
+      {
+        "name": "发起方可以取消请求",
+        "passed": true
+      },
+      {
+        "name": "连接中取消不被迟到回调激活",
+        "passed": true
+      },
+      {
+        "name": "请求超时可重新发起",
+        "passed": true
+      },
+      {
+        "name": "超时重试保持求助方向",
+        "passed": true
+      },
+      {
+        "name": "不可用时禁用两个发起入口：offline",
+        "passed": true
+      },
+      {
+        "name": "不可用时禁用两个发起入口：unsupported",
+        "passed": true
+      },
+      {
+        "name": "不可用时禁用两个发起入口：busy",
+        "passed": true
+      },
+      {
+        "name": "离开远程页面恢复正常布局",
+        "passed": true
+      },
+      {
+        "name": "返回保留当前远程会话",
+        "passed": true
+      },
+      {
+        "name": "诊断入口保留",
+        "passed": true
+      },
+      {
+        "name": "备份入口保留",
+        "passed": true
+      },
+      {
+        "name": "退出评审清理远程扩展布局",
+        "passed": true
+      },
+      {
+        "name": "截图入口与资源仍存在",
+        "passed": true
+      }
+    ],
+    "passed": 48,
+    "failed": 0
+  },
+  "responsive": {
+    "time": "2026-10-10T00:37:53.937Z",
+    "results": [
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "双入口",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "请求协助对话框",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "请求控制对话框",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "等待回应",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "接收控制请求",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "共享方控制中",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 56,
+          "right": 1000,
+          "width": 944
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "共享暂停",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 56,
+          "right": 1000,
+          "width": 944
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "协助方桌面",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 56,
+          "right": 1000,
+          "width": 944
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "展开桌面",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 0,
+          "right": 1000,
+          "width": 1000
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "画质对话框",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 56,
+          "right": 1000,
+          "width": 944
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "tasks",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "diagnostics",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "backup",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "双入口",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "请求协助对话框",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "请求控制对话框",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "等待回应",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "接收控制请求",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "共享方控制中",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 56,
+          "right": 1000,
+          "width": 944
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "共享暂停",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 56,
+          "right": 1000,
+          "width": 944
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "协助方桌面",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 56,
+          "right": 1000,
+          "width": 944
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "展开桌面",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 0,
+          "right": 1000,
+          "width": 1000
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "画质对话框",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 56,
+          "right": 1000,
+          "width": 944
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "tasks",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "diagnostics",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 1000,
+        "theme": "light",
+        "state": "backup",
+        "actualViewport": 1000,
+        "documentWidth": 1000,
+        "root": {
+          "left": 266,
+          "right": 1000,
+          "width": 734
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "双入口",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "请求协助对话框",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "请求控制对话框",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "等待回应",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "接收控制请求",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "共享方控制中",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "共享暂停",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "协助方桌面",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "展开桌面",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 0,
+          "right": 860,
+          "width": 860
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "画质对话框",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "tasks",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "diagnostics",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "backup",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "双入口",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "请求协助对话框",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "请求控制对话框",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "等待回应",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "接收控制请求",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "共享方控制中",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "共享暂停",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "协助方桌面",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "展开桌面",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 0,
+          "right": 860,
+          "width": 860
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "画质对话框",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "tasks",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "diagnostics",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 860,
+        "theme": "light",
+        "state": "backup",
+        "actualViewport": 860,
+        "documentWidth": 860,
+        "root": {
+          "left": 56,
+          "right": 860,
+          "width": 804
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "双入口",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "请求协助对话框",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "请求控制对话框",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "等待回应",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "接收控制请求",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "共享方控制中",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "共享暂停",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "协助方桌面",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "展开桌面",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 0,
+          "right": 390.3999938964844,
+          "width": 390.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "画质对话框",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "tasks",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "diagnostics",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "backup",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "双入口",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "请求协助对话框",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "请求控制对话框",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "等待回应",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "接收控制请求",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "共享方控制中",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "共享暂停",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "协助方桌面",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "展开桌面",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 0,
+          "right": 390.3999938964844,
+          "width": 390.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "画质对话框",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "tasks",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "diagnostics",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "state": "backup",
+        "actualViewport": 390,
+        "documentWidth": 390,
+        "root": {
+          "left": 56,
+          "right": 390.3999938964844,
+          "width": 334.3999938964844
+        },
+        "dialogFits": true,
+        "controlsFit": true,
+        "passed": true
+      }
+    ],
+    "passed": 78,
+    "failed": 0
+  },
+  "keyboardMethod": "chrome_keyboard Escape twice, with state probes between events",
+  "keyboard": {
+    "RA_V2_KEYBOARD_READY": {
+      "dialogOpen": true,
+      "expanded": true,
+      "focusInDialog": true
+    },
+    "RA_V2_ESCAPE_MODAL": {
+      "dialogClosed": true,
+      "expanded": true
+    },
+    "RA_V2_ESCAPE_EXPANDED": {
+      "dialogClosed": true,
+      "expanded": false
+    }
+  },
+  "exceptionCount": 0,
+  "exceptions": [],
+  "visualMethod": "Independent headless Chrome profile, temporary HTML copy using current server assets, animations disabled, 2400 ms virtual time; narrow view via a 390x844 iframe; not MCP screenshots",
+  "visuals": [
+    {
+      "scene": "entry",
+      "path": "docs/verification/2026-10-10-remote-v2-entry.png",
+      "sha256": "27927124e0f4b7c80ded68b12d1d1a497625b506956119beede5ad3803683219"
+    },
+    {
+      "scene": "help-request",
+      "path": "docs/verification/2026-10-10-remote-v2-help-request.png",
+      "sha256": "b1f30e7deeb3fae9df9f119deb821184d6c89c6250e2985a6b9f9acda7932865"
+    },
+    {
+      "scene": "control-consent",
+      "path": "docs/verification/2026-10-10-remote-v2-control-consent.png",
+      "sha256": "ed020bdffcfb6e6fe3862e82de5f8bbfa305ca05f2cecf27ffb614c09a694d3c"
+    },
+    {
+      "scene": "desktop",
+      "path": "docs/verification/2026-10-10-remote-v2-desktop.png",
+      "sha256": "f1794fd8e678382426c6f267d1533775ab0b2f54cd36932fed5fa9584044a4b2"
+    },
+    {
+      "scene": "host-dark",
+      "path": "docs/verification/2026-10-10-remote-v2-host-dark.png",
+      "sha256": "fd43b7caef51787a58b0143e7badf135d770a1393250a096c66f5ff049d2ef29"
+    },
+    {
+      "scene": "narrow",
+      "path": "docs/verification/2026-10-10-remote-v2-narrow.png",
+      "sha256": "e999658963d8c5c7ac0d08266d2116b3271600689eb8a3e43200e6e31f0864b0"
+    }
+  ],
+  "sha256": {
+    "ui-ref/xchat-desktop-prototype.html": "63cab637c7203f15e63bf99ee375f8fc7dd4d034ae0174cfdc836d586cf7b8e6",
+    "ui-ref/assets/stability-phase3-review.js": "bf97f072a530263d4db107cddde433af4c2e301f3b91acfc39511ce4a1a480eb",
+    "ui-ref/assets/stability-phase3-review.css": "ab20dc0f1cda82eeb831b4febf5eeb18bc24b8c123bef12160280a23fefd3d8d",
+    "ui-ref/assets/remote-assist-v2.css": "ed011debdf8717ac2bfe8d6fab0fcf88ce685fd57943525200c125ab527401fd",
+    "docs/verification/2026-10-10-remote-v2-interaction-check.js": "7cf8d5b27bc1f70b6353151efaceb5bae22ce772b88c46a255a5fb3757d4bd87",
+    "docs/verification/2026-10-10-remote-v2-responsive-check.js": "fd0df5bdd0deff018d1c0a67b8aaa504d04c14cad57faf7a23904203e13e3537"
+  },
+  "limits": [
+    "All remote desktop content, frame rates, network values and messages are fixtures.",
+    "No real device connection, capture, input injection, operating-system fullscreen, backup, or production Tauri/Rust build was exercised.",
+    "Earlier cached-page failures were resolved by versioning the JS resource and reloading. This report records the rerun against the new dual-entry DOM.",
+    "First-round phase 3 tests remain historical and do not cover the revised remote flow."
+  ]
+}
