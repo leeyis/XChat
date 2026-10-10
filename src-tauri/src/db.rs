@@ -655,6 +655,7 @@ async fn init_db_with_path_and_machine_name(
     .await?;
 
     crate::voice::init_schema(&pool).await?;
+    crate::tasks::init_schema(&pool).await?;
 
     // 初始化配置；旧版自动生成名只迁移一次，用户自定义名称不覆盖。
     let username =
@@ -2990,6 +2991,7 @@ pub async fn claim_message_delivery(
              lease_until = excluded.lease_until,
              state = 'sending', last_error = NULL
          WHERE message_delivery_attempts.lease_until <= ?
+           AND message_delivery_attempts.state != 'cancelled'
            AND (? OR message_delivery_attempts.next_retry_at <= ?)
          RETURNING *",
     )
@@ -3011,7 +3013,7 @@ pub async fn mark_delivery_written(
     pool: &Pool<Sqlite>,
     attempt: &MessageDeliveryAttempt,
 ) -> Result<(), String> {
-    sqlx::query(
+    let updated = sqlx::query(
         "UPDATE message_delivery_attempts
          SET last_written_at = ?, state = 'awaiting_ack'
          WHERE message_client_id = ? AND reader_id = ? AND lease_token = ?",
@@ -3023,8 +3025,16 @@ pub async fn mark_delivery_written(
     .execute(pool)
     .await
     .map_err(|error| format!("记录消息已写出失败: {error}"))?;
+    if updated.rows_affected() == 0 { return Ok(()); }
     mark_message_status_by_client_id(pool, &attempt.message_client_id, "sent").await?;
     Ok(())
+}
+
+pub async fn message_delivery_is_current(pool: &Pool<Sqlite>, attempt: &MessageDeliveryAttempt) -> Result<bool, String> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM message_delivery_attempts WHERE message_client_id=? AND reader_id=?
+        AND lease_token=? AND lease_until > strftime('%s','now') AND state IN ('sending','awaiting_ack'))")
+        .bind(&attempt.message_client_id).bind(&attempt.reader_id).bind(&attempt.lease_token)
+        .fetch_one(pool).await.map_err(|e| e.to_string())
 }
 
 fn delivery_retry_delay(attempt: &MessageDeliveryAttempt) -> i64 {
@@ -3108,7 +3118,8 @@ pub async fn get_due_messages_for_peer(
            ON a.message_client_id = r.message_client_id AND a.reader_id = r.reader_id
          WHERE r.reader_id = ? AND r.delivered_at IS NULL AND r.read_at IS NULL
            AND COALESCE(m.status, '') NOT IN ('recalled', 'delivered', 'read')
-           AND m.msg_type IN ('text', 'quote', 'announcement')
+            AND m.msg_type IN ('text', 'quote', 'announcement')
+            AND COALESCE(a.state, '') != 'cancelled'
            AND COALESCE(a.next_retry_at, 0) <= ? AND COALESCE(a.lease_until, 0) <= ?
          ORDER BY COALESCE(a.next_retry_at, 0), m.timestamp, m.id LIMIT 4",
     )
@@ -3251,7 +3262,7 @@ pub async fn save_message_receipt(
         "UPDATE message_delivery_attempts
          SET state = 'delivered', last_error = NULL, lease_token = NULL,
              lease_until = 0, next_retry_at = 0
-         WHERE message_client_id = ? AND reader_id = ?",
+         WHERE message_client_id = ? AND reader_id = ? AND state != 'cancelled'",
     )
     .bind(message_client_id)
     .bind(reader_id)

@@ -74,6 +74,7 @@
     "allow-dismiss-strong-reminder",
     "allow-send-conversation-file",
     "allow-send-voice-message",
+    "allow-task-center",
     "allow-retry-conversation-file",
     "allow-get-conversation-messages",
     "allow-mark-messages-read",

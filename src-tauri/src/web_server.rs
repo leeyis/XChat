@@ -79,6 +79,51 @@ pub struct AppState {
 
 type ApiResponse = axum::response::Response;
 
+#[derive(Deserialize)]
+struct TaskPageQuery { before: Option<i64> }
+
+async fn task_center_http(State(state): State<Arc<AppState>>, Query(query): Query<TaskPageQuery>) -> ApiResponse {
+    match crate::tasks::list(&state.pool, query.before).await {
+        Ok(page) => Json(page).into_response(), Err(error) => backend_error(error),
+    }
+}
+
+async fn task_action_http(State(state): State<Arc<AppState>>, Json(request): Json<crate::tasks::TaskAction>) -> ApiResponse {
+    match crate::tasks::act(&state.pool, &state.peer_manager, request).await {
+        Ok(()) => Json(serde_json::json!({"ok":true})).into_response(), Err(error) => backend_error(error),
+    }
+}
+
+async fn replace_task_source_http(State(state): State<Arc<AppState>>, Path(id): Path<i64>, mut multipart: Multipart) -> ApiResponse {
+    let result = async {
+        let message = crate::db::get_file_message_by_id(&state.pool, id).await?.ok_or("任务不存在")?;
+        if message.sender_id != crate::db::get_user_id(&state.pool).await? { return Err("只能恢复本机发送的文件".to_string()); }
+        let size = message.file_size.ok_or("任务没有文件大小")?;
+        if size < 0 || size as u64 > MAX_BROWSER_UPLOAD_BYTES { return Err("文件大小超出浏览器上传范围".into()); }
+        let root = std::path::PathBuf::from(crate::db::get_download_path(&state.pool).await?).join(".xchat-task-picks");
+        tokio::fs::create_dir_all(&root).await.map_err(|e| e.to_string())?;
+        let path = root.join(uuid::Uuid::new_v4().to_string());
+        let restored = async {
+            use tokio::io::AsyncWriteExt;
+            let mut field = multipart.next_field().await.map_err(|e| e.to_string())?.ok_or("请选择源文件")?;
+            if field.name() != Some("file") { return Err("请选择源文件".into()); }
+            let mut output = tokio::fs::File::create(&path).await.map_err(|e| e.to_string())?;
+            let mut bytes = 0u64;
+            while let Some(chunk) = field.chunk().await.map_err(|e| e.to_string())? {
+                bytes = bytes.saturating_add(chunk.len() as u64);
+                if bytes > size as u64 { return Err("所选文件大小不同，不能续传".into()); }
+                output.write_all(&chunk).await.map_err(|e| e.to_string())?;
+            }
+            output.sync_all().await.map_err(|e| e.to_string())?; drop(output);
+            if bytes != size as u64 { return Err("所选文件大小不同，不能续传".into()); }
+            crate::tasks::replace_source(&state.pool, id, path.to_str().ok_or("路径无效")?).await
+        }.await;
+        let _ = tokio::fs::remove_file(path).await;
+        restored
+    }.await;
+    match result { Ok(()) => Json(serde_json::json!({"ok":true})).into_response(), Err(error) => backend_error(error) }
+}
+
 async fn send_voice_http(
     State(state): State<Arc<AppState>>,
     Json(request): Json<crate::voice::SendVoiceRequest>,
@@ -465,6 +510,7 @@ pub async fn serve_listener(
         .expose_headers([header::CONTENT_RANGE, header::ACCEPT_RANGES])
         .allow_credentials(false); // 明确设置不需要凭证
 
+    let diagnostic_health = health.clone();
     let app = Router::new()
         .route("/", get(serve_index))
         .route("/api/health", get(move || {
@@ -473,6 +519,16 @@ pub async fn serve_listener(
         }))
         .route("/api/workspace", get(get_workspace_http))
         .route("/api/workspace/sync", get(sync_workspace_http))
+        .route("/api/tasks", get(task_center_http).post(task_action_http))
+        .route("/api/tasks/:id/source", post(replace_task_source_http).layer(DefaultBodyLimit::disable()))
+        .route("/api/diagnostics", post(move |State(state): State<Arc<AppState>>, Json(request): Json<crate::diagnostics::DiagnosticRequest>| {
+            let health = diagnostic_health.borrow().clone();
+            async move {
+                match crate::diagnostics::run(&state.pool, &state.peer_manager, Some(health), request).await {
+                    Ok(report) => Json(report).into_response(), Err(error) => backend_error(error),
+                }
+            }
+        }))
         .route(
             "/api/settings/preference",
             post(update_workspace_preference_http),

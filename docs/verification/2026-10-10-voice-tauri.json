@@ -1,0 +1,13 @@
+{
+  "result": "passed",
+  "runtime": "Tauri WebView2",
+  "recording": [
+    1,
+    "voice",
+    "8a349d5f-973d-46c9-9d66-c1f4367d47e3",
+    1989,
+    "audio/webm"
+  ],
+  "permissions": "send_voice_message + get_workspace_media_source allowed",
+  "exceptions": []
+}

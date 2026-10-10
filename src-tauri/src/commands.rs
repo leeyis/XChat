@@ -26,6 +26,31 @@ pub struct PeerState {
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
+pub async fn get_task_center(state: State<'_, DbState>, before: Option<i64>) -> Result<crate::tasks::TaskPage, String> {
+    crate::tasks::list(&state.pool, before).await
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+pub async fn run_task_action(state: State<'_, DbState>, peers: State<'_, PeerState>, request: crate::tasks::TaskAction) -> Result<(), String> {
+    crate::tasks::act(&state.pool, &peers.manager, request).await
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+pub async fn replace_task_source(state: State<'_, DbState>, message_id: i64, path: String) -> Result<(), String> {
+    crate::tasks::replace_source(&state.pool, message_id, &path).await
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+pub async fn run_connection_diagnostics(app: AppHandle, state: State<'_, DbState>, peers: State<'_, PeerState>, request: crate::diagnostics::DiagnosticRequest) -> Result<crate::diagnostics::Report, String> {
+    let health = app.try_state::<crate::network::runtime::NetworkRuntime>().map(|r| r.health());
+    crate::diagnostics::run(&state.pool, &peers.manager, health, request).await
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
 pub async fn refresh_peer_connection(
     state: State<'_, DbState>,
     peers: State<'_, PeerState>,

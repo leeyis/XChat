@@ -417,6 +417,8 @@ async fn message_view(
             .collect::<Vec<_>>();
         let state = if matches!(status.as_str(), "delivered" | "read") {
             status.as_str()
+        } else if !pending.is_empty() && pending.iter().all(|attempt| attempt.state == "cancelled") {
+            "cancelled"
         } else if pending
             .iter()
             .any(|attempt| attempt.lease_until > now() && attempt.state == "sending")
@@ -1114,7 +1116,7 @@ fn initial_send_status(_kind: &str, _no_one_online: bool) -> &'static str {
     "pending"
 }
 
-async fn deliver_stored_message(
+pub(crate) async fn deliver_stored_message(
     pool: &Pool<Sqlite>,
     peer_manager: &PeerManager,
     peer_id: &str,
@@ -1190,6 +1192,7 @@ async fn deliver_stored_message(
                 .map_err(|error| error.to_string())?,
             )
         };
+        if !db::message_delivery_is_current(pool, &attempt).await? { return Ok(()); }
         let connection = match messaging::write_delivery_message(
             &address,
             peer_id,

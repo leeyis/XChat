@@ -469,9 +469,6 @@ pub(crate) async fn send_path_identified(
             )
         })
         .collect();
-    // Keep full-file reads out of the command path; recipients share one lazy digest.
-    let parallel_hash = deferred_file_sha256(source.path.clone());
-
     let client_message_id = client_message_id.to_string();
     let receiver_id = (conversation.kind == "direct")
         .then_some(conversation.peer_id.as_deref())
@@ -532,6 +529,11 @@ pub(crate) async fn send_path_identified(
         return Ok(ConversationFileSendResult { message: enqueued.message, transfers: enqueued.transfers });
     }
     let message = enqueued.message;
+    crate::tasks::remember_source(pool, message.id, &source.path).await?;
+    // Recipients and recovery metadata share one bounded digest reader. Uploads can start immediately.
+    let parallel_hash = recorded_file_sha256(pool, message.id, source.path.clone());
+    let saved_hash = parallel_hash.clone();
+    tokio::spawn(async move { let _ = saved_hash.await; });
     let transfers = enqueued.transfers;
     let mut jobs = Vec::with_capacity(online_addresses.len());
     for transfer in &transfers {
@@ -929,6 +931,7 @@ pub async fn retry_message(
         .as_deref()
         .ok_or_else(|| "source file path is missing".to_string())?;
     let source = validate_source(source_path).await?;
+    crate::tasks::source_unchanged(pool, message_id, source_path).await?;
     if message.file_size != Some(source.size) {
         return Err("source file size changed".to_string());
     }
@@ -972,6 +975,8 @@ pub async fn retry_message(
     if retry_recipients.is_empty() {
         return Err("file message has no failed recipients to retry".to_string());
     }
+    sqlx::query("DELETE FROM task_hidden WHERE message_id=?")
+        .bind(message_id).execute(pool).await.map_err(|e| e.to_string())?;
 
     let peers: HashMap<_, _> = peer_manager
         .get_all_peers()
@@ -996,7 +1001,7 @@ pub async fn retry_message(
             )
         })
         .collect();
-    let parallel_hash = deferred_file_sha256(source.path.clone());
+    let parallel_hash = recorded_file_sha256(pool, message_id, source.path.clone());
     let group_sync = group_sync_message(&conversation, &members)?;
     let mut transfers = Vec::with_capacity(retry_recipients.len());
     let mut jobs = Vec::new();
@@ -1138,12 +1143,13 @@ async fn prepare_resume_job(
         .as_deref()
         .ok_or_else(|| "source file path is missing".to_string())?;
     let source = validate_source(source_path).await?;
+    crate::tasks::source_unchanged(pool, message_id, source_path).await?;
     if source.size != transfer.bytes_total {
         return Err("source file size changed".to_string());
     }
     let file_sha256 = upload_plan
         .is_parallel()
-        .then(|| deferred_file_sha256(source.path.clone()));
+        .then(|| recorded_file_sha256(pool, message_id, source.path.clone()));
 
     Ok(UploadJob {
         transfer_id: transfer.id.clone(),
@@ -2313,10 +2319,20 @@ pub(crate) fn parallel_manifests_match(
     false
 }
 
+#[cfg(test)]
 fn deferred_file_sha256(path: String) -> FileSha256 {
     async move { sha256_file(Path::new(&path)).await }
         .boxed()
         .shared()
+}
+
+fn recorded_file_sha256(pool: &Pool<Sqlite>, message_id: i64, path: String) -> FileSha256 {
+    let pool = pool.clone();
+    async move {
+        let digest = sha256_file(Path::new(&path)).await?;
+        crate::tasks::pin_digest(&pool, message_id, &path, &digest).await?;
+        Ok(digest)
+    }.boxed().shared()
 }
 
 pub(crate) async fn sha256_file(path: &Path) -> Result<String, String> {

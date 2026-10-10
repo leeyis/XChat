@@ -1,0 +1,43 @@
+{
+  "result": "passed",
+  "checks": [
+    "real durable task rows",
+    "text cancel",
+    "file cancel",
+    "wrong source blocked",
+    "same source restored",
+    "stable message ID",
+    "file retry waits for offline peer",
+    "peer identity check",
+    "default address redaction",
+    "diagnostic production UI"
+  ],
+  "layouts": [
+    {
+      "width": 1280,
+      "left": 56,
+      "right": 1280,
+      "height": 850,
+      "navBottom": 296,
+      "scroll": 1280
+    },
+    {
+      "width": 860,
+      "left": 56,
+      "right": 860,
+      "height": 850,
+      "navBottom": 296,
+      "scroll": 860
+    },
+    {
+      "width": 390,
+      "left": 0,
+      "right": 390,
+      "height": 795,
+      "navBottom": 850,
+      "scroll": 390
+    }
+  ],
+  "exceptions": [],
+  "evidence_dir": "C:\\Users\\wangy\\AppData\\Local\\Temp\\xchat-p3-e2e-s197n1pm"
+}

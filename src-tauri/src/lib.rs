@@ -30,6 +30,8 @@ pub mod utils;
 pub mod web_server;
 pub mod workspace;
 pub mod voice;
+pub mod tasks;
+pub mod diagnostics;
 
 // 仅在桌面端编译时包含 Tauri 运行函数
 #[cfg(feature = "desktop")]
@@ -121,6 +123,10 @@ pub fn run() {
             commands::dismiss_strong_reminder,
             commands::send_conversation_file,
             commands::send_voice_message,
+            commands::get_task_center,
+            commands::run_task_action,
+            commands::replace_task_source,
+            commands::run_connection_diagnostics,
             commands::retry_conversation_file,
             commands::get_conversation_messages,
             commands::mark_messages_read,

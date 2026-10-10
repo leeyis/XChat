@@ -643,6 +643,15 @@ export function fileStatus(file = {}) {
   return file.file_status || file.status || "";
 }
 
+export function formatSize(bytes) {
+  const value = Number(bytes || 0);
+  if (!value) return "—";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`;
+  return `${(value / 1024 ** 3).toFixed(1)} GB`;
+}
+
 function fileExtension(file = {}) {
   const name = file.file_name ?? file.name ?? file.content ?? "";
   return String(name).split(".").pop()?.toLocaleLowerCase() || "";
@@ -1303,6 +1312,15 @@ export class TauriAdapter {
     return this.tauri.core.invoke(command, payload);
   }
 
+  getTasks(before = null) { return this.invoke("get_task_center", { before }); }
+  actTask(request) { return this.invoke("run_task_action", { request }); }
+  async replaceTaskSource(messageId) {
+    const path = await this.tauri.dialog.open({ multiple: false, directory: false, title: "选择原始文件（将校验内容）" });
+    if (!path) return { cancelled: true };
+    return this.invoke("replace_task_source", { messageId, path });
+  }
+  runDiagnostics(request) { return this.invoke("run_connection_diagnostics", { request }); }
+
   async getSnapshot() {
     return this.workspaceSync.getSnapshot();
   }
@@ -1920,6 +1938,14 @@ export class HttpWsAdapter {
       body: JSON.stringify(body),
     });
   }
+
+  getTasks(before = null) { return this.request(`/api/tasks${before == null ? "" : `?before=${encodeURIComponent(before)}`}`); }
+  actTask(request) { return this.json("/api/tasks", "POST", request); }
+  replaceTaskSource(messageId, file) {
+    const body = new FormData(); body.append("file", file, file.name);
+    return this.request(`/api/tasks/${encodeURIComponent(messageId)}/source`, { method: "POST", body });
+  }
+  runDiagnostics(request) { return this.json("/api/diagnostics", "POST", request); }
 
   async getSnapshot() {
     return this.workspaceSync.getSnapshot();
@@ -3170,6 +3196,14 @@ export function createXChatModule() {
       case "navigation.open":
         patch({ activeSection: action.section });
         return;
+      case "tasks.list": return adapter.getTasks(action.before ?? null);
+      case "tasks.act": {
+        const result = await adapter.actTask(action.request); scheduleRefresh(); return result;
+      }
+      case "tasks.replaceSource": {
+        const result = await adapter.replaceTaskSource(action.messageId, action.file); scheduleRefresh(); return result;
+      }
+      case "diagnostics.run": return adapter.runDiagnostics(action.request);
       case "conversation.open": {
         const conversation = snapshot.conversations.find((item) => item.id === action.id);
         if (!conversation) return;

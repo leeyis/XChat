@@ -18,6 +18,7 @@ import {
   fileKind,
   fileStatus,
   fileProcessingPhase,
+  formatSize,
   groupMentionCandidates,
   groupAvatarRows,
   insertTextAtSelection,
@@ -47,6 +48,8 @@ import {
   withDiscoveryInterfaceSelection,
 } from "./xchat.js";
 import { VoiceComposer, VoiceBubble } from "./VoiceMessage.jsx";
+import TaskCenter, { StabilityIcon } from "./TaskCenter.jsx";
+import ConnectionDiagnostics from "./ConnectionDiagnostics.jsx";
 import CaptureEditor from "./CaptureEditor.jsx";
 import CaptureWorkspace from "./CaptureWorkspace.jsx";
 import { createChatScrollController } from "./chat-scroll.js";
@@ -185,6 +188,7 @@ const copy = {
       notification: { label: "通知", icon: "bell" },
       download: { label: "下载与传输", icon: "download" },
       network: { label: "网络", icon: "network" },
+      diagnostics: { label: "连接诊断", icon: "diagnostics" },
       shortcut: { label: "快捷键", icon: "keyboard" },
       about: { label: "关于", icon: "info" },
     },
@@ -555,6 +559,7 @@ const copy = {
       notification: { label: "Notifications", icon: "bell" },
       download: { label: "Downloads & transfers", icon: "download" },
       network: { label: "Network", icon: "network" },
+      diagnostics: { label: "Connection diagnostics", icon: "diagnostics" },
       shortcut: { label: "Shortcuts", icon: "keyboard" },
       about: { label: "About", icon: "info" },
     },
@@ -837,11 +842,12 @@ const copy = {
 // shortcut 保留在列表里，窄屏由 .settings-shortcut 隐藏。
 const SETTINGS_GROUPS = [
   ["identity", "appearance", "notification"],
-  ["download", "network", "shortcut"],
+  ["download", "network", "diagnostics", "shortcut"],
   ["about"],
 ];
 
 function Icon({ name, size = 20, spin = false }) {
+  if (["tasks", "diagnostics"].includes(name)) return <StabilityIcon name={name}/>;
   let body;
   switch (name) {
     case "chat":
@@ -1219,15 +1225,6 @@ function appVersion() {
     : "0.1.13";
 }
 
-function formatSize(bytes) {
-  const value = Number(bytes || 0);
-  if (!value) return "—";
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`;
-  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`;
-  return `${(value / 1024 ** 3).toFixed(1)} GB`;
-}
-
 function formatRate(bytesPerSecond) {
   return `${Number(bytesPerSecond) > 0 ? formatSize(bytesPerSecond) : "0 B"}/s`;
 }
@@ -1428,6 +1425,7 @@ function Rail({ state, labels, onOpen }) {
     ["chat", labels.chat],
     ["hosts", labels.hosts],
     ["files", labels.files],
+    ["tasks", labels.locale === "en" ? "Task center" : "任务中心"],
   ];
   return (
     <aside className="rail" data-od-id="primary-navigation">
@@ -4777,6 +4775,7 @@ function SettingsWorkspace({
             </div>
           )}
         </section>
+        <ConnectionDiagnostics state={state} workspace={workspace}/>
         <section className="settings-section" id="settings-shortcut">
           <h2>{labels.shortcuts}</h2>
           <SettingRow
@@ -5614,7 +5613,7 @@ export default function App({ workspace }) {
     <section className={shellClass} data-od-id="xchat-desktop-app">
       {(state.capabilities.capture || !globalThis.window?.__TAURI__) && <CaptureWorkspace workspace={workspace} english={language === "en"} captureShortcut={state.settings.capture_shortcut} />}
       <Rail state={state} labels={labels} onOpen={openSection} />
-      <ListPane
+      {state.activeSection !== "tasks" && <ListPane
         state={state}
         workspace={workspace}
         labels={labels}
@@ -5628,7 +5627,8 @@ export default function App({ workspace }) {
         onFileFilter={(value) => { setFileFilter(value); setMobileList(false); }}
         settingsSection={settingsSection}
         onSettingsSection={openSettingsSection}
-      />
+      />}
+      {state.activeSection === "tasks" && <TaskCenter state={state} workspace={workspace} onConversation={openConversation} onDiagnostics={() => { openSection("settings"); openSettingsSection("diagnostics"); }}/>}
       {state.activeSection === "chat" && (
         <ChatWorkspace
           state={state}

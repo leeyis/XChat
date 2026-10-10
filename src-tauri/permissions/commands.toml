@@ -9,6 +9,11 @@ description = "Send a recorded voice message through the durable attachment queu
 commands.allow = ["send_voice_message"]
 
 [[permission]]
+identifier = "allow-task-center"
+description = "Read and manage local durable tasks and run connection diagnostics."
+commands.allow = ["get_task_center", "run_task_action", "replace_task_source", "run_connection_diagnostics"]
+
+[[permission]]
 identifier = "allow-get-my-id"
 description = "Allows reading the current user ID"
 commands.allow = ["get_my_id"]
