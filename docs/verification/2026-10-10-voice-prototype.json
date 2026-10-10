@@ -1,0 +1,2542 @@
+{
+  "archivedAt": "2026-10-10T01:51:59.999644+00:00",
+  "baseCommit": "0b1e461",
+  "scope": "Prototype only: remove duplicate refresh, remote two-way voice states, voice message recording/send states and local sample playback.",
+  "chromeMcp": {
+    "endpoint": "http://127.0.0.1:12306/mcp",
+    "method": "Direct Streamable HTTP client, dedicated prototype tab",
+    "remoteRegression": {
+      "time": "2026-10-10T01:32:50.986Z",
+      "viewport": [
+        1427,
+        907
+      ],
+      "results": [
+        {
+          "name": "入口明确区分请求协助与请求控制",
+          "passed": true
+        },
+        {
+          "name": "请求协助选择我的屏幕且控制默认关闭",
+          "passed": true
+        },
+        {
+          "name": "求助方等待时没有共享画面",
+          "passed": true
+        },
+        {
+          "name": "协助方收到正确方向的请求",
+          "passed": true
+        },
+        {
+          "name": "接受协助后查看Eason且不能控制",
+          "passed": true
+        },
+        {
+          "name": "仅查看升级需等待授权",
+          "passed": true
+        },
+        {
+          "name": "控制授权由Eason授予张三",
+          "passed": true
+        },
+        {
+          "name": "拒绝升级维持仅查看",
+          "passed": true
+        },
+        {
+          "name": "共享方可明确授予本次控制",
+          "passed": true
+        },
+        {
+          "name": "共享方即时收回控制",
+          "passed": true
+        },
+        {
+          "name": "求助方向重试仍共享本机且不继承控制",
+          "passed": true
+        },
+        {
+          "name": "求助时明确勾选的权限告知协助方",
+          "passed": true
+        },
+        {
+          "name": "协助方接受已明确授权的控制",
+          "passed": true
+        },
+        {
+          "name": "控制请求不选择或共享自己的屏幕",
+          "passed": true
+        },
+        {
+          "name": "被控方选择屏幕并有三种回应",
+          "passed": true
+        },
+        {
+          "name": "对方降级同意后只查看张三",
+          "passed": true
+        },
+        {
+          "name": "直接控制路径无需重复申请",
+          "passed": true
+        },
+        {
+          "name": "授权后示意桌面可响应操作",
+          "passed": true
+        },
+        {
+          "name": "协助方可以主动释放控制",
+          "passed": true
+        },
+        {
+          "name": "原始比例可滚动查看",
+          "passed": true
+        },
+        {
+          "name": "画质刷新色彩设置保存",
+          "passed": true
+        },
+        {
+          "name": "全屏桌面展开",
+          "passed": true
+        },
+        {
+          "name": "Esc退出展开桌面",
+          "passed": true
+        },
+        {
+          "name": "协助沟通保留本地演示消息",
+          "passed": true
+        },
+        {
+          "name": "沟通面板可收起",
+          "passed": true
+        },
+        {
+          "name": "沟通面板重开保留消息",
+          "passed": true
+        },
+        {
+          "name": "共享方始终可见收回暂停和结束",
+          "passed": true
+        },
+        {
+          "name": "暂停隐藏桌面并收回控制",
+          "passed": true
+        },
+        {
+          "name": "恢复只查看不继承控制",
+          "passed": true
+        },
+        {
+          "name": "共享方切换屏幕收回控制",
+          "passed": true
+        },
+        {
+          "name": "网络波动提示与画质处理入口",
+          "passed": true
+        },
+        {
+          "name": "断线隐藏桌面并清理展开状态",
+          "passed": true
+        },
+        {
+          "name": "断线重试仍请求控制对方",
+          "passed": true
+        },
+        {
+          "name": "锁屏不保留共享画面",
+          "passed": true
+        },
+        {
+          "name": "拒绝不建立会话",
+          "passed": true
+        },
+        {
+          "name": "发起方可以取消请求",
+          "passed": true
+        },
+        {
+          "name": "连接中取消不被迟到回调激活",
+          "passed": true
+        },
+        {
+          "name": "请求超时可重新发起",
+          "passed": true
+        },
+        {
+          "name": "超时重试保持求助方向",
+          "passed": true
+        },
+        {
+          "name": "不可用时禁用两个发起入口：offline",
+          "passed": true
+        },
+        {
+          "name": "不可用时禁用两个发起入口：unsupported",
+          "passed": true
+        },
+        {
+          "name": "不可用时禁用两个发起入口：busy",
+          "passed": true
+        },
+        {
+          "name": "离开远程页面恢复正常布局",
+          "passed": true
+        },
+        {
+          "name": "返回保留当前远程会话",
+          "passed": true
+        },
+        {
+          "name": "诊断入口保留",
+          "passed": true
+        },
+        {
+          "name": "备份入口保留",
+          "passed": true
+        },
+        {
+          "name": "退出评审清理远程扩展布局",
+          "passed": true
+        },
+        {
+          "name": "截图入口与资源仍存在",
+          "passed": true
+        }
+      ],
+      "passed": 48,
+      "failed": 0
+    }
+  },
+  "isolatedChrome": {
+    "method": "Independent headless Chrome CDP, fresh profile; muted local audio playback; no microphone access",
+    "checks": {
+      "remoteRegression": {
+        "time": "2026-10-10T01:42:48.084Z",
+        "viewport": [
+          1440,
+          1000
+        ],
+        "results": [
+          {
+            "name": "入口明确区分请求协助与请求控制",
+            "passed": true
+          },
+          {
+            "name": "请求协助选择我的屏幕且控制默认关闭",
+            "passed": true
+          },
+          {
+            "name": "求助方等待时没有共享画面",
+            "passed": true
+          },
+          {
+            "name": "协助方收到正确方向的请求",
+            "passed": true
+          },
+          {
+            "name": "接受协助后查看Eason且不能控制",
+            "passed": true
+          },
+          {
+            "name": "仅查看升级需等待授权",
+            "passed": true
+          },
+          {
+            "name": "控制授权由Eason授予张三",
+            "passed": true
+          },
+          {
+            "name": "拒绝升级维持仅查看",
+            "passed": true
+          },
+          {
+            "name": "共享方可明确授予本次控制",
+            "passed": true
+          },
+          {
+            "name": "共享方即时收回控制",
+            "passed": true
+          },
+          {
+            "name": "求助方向重试仍共享本机且不继承控制",
+            "passed": true
+          },
+          {
+            "name": "求助时明确勾选的权限告知协助方",
+            "passed": true
+          },
+          {
+            "name": "协助方接受已明确授权的控制",
+            "passed": true
+          },
+          {
+            "name": "控制请求不选择或共享自己的屏幕",
+            "passed": true
+          },
+          {
+            "name": "被控方选择屏幕并有三种回应",
+            "passed": true
+          },
+          {
+            "name": "对方降级同意后只查看张三",
+            "passed": true
+          },
+          {
+            "name": "直接控制路径无需重复申请",
+            "passed": true
+          },
+          {
+            "name": "授权后示意桌面可响应操作",
+            "passed": true
+          },
+          {
+            "name": "协助方可以主动释放控制",
+            "passed": true
+          },
+          {
+            "name": "原始比例可滚动查看",
+            "passed": true
+          },
+          {
+            "name": "画质刷新色彩设置保存",
+            "passed": true
+          },
+          {
+            "name": "全屏桌面展开",
+            "passed": true
+          },
+          {
+            "name": "Esc退出展开桌面",
+            "passed": true
+          },
+          {
+            "name": "协助沟通保留本地演示消息",
+            "passed": true
+          },
+          {
+            "name": "沟通面板可收起",
+            "passed": true
+          },
+          {
+            "name": "沟通面板重开保留消息",
+            "passed": true
+          },
+          {
+            "name": "共享方始终可见收回暂停和结束",
+            "passed": true
+          },
+          {
+            "name": "暂停隐藏桌面并收回控制",
+            "passed": true
+          },
+          {
+            "name": "恢复只查看不继承控制",
+            "passed": true
+          },
+          {
+            "name": "共享方切换屏幕收回控制",
+            "passed": true
+          },
+          {
+            "name": "网络波动提示与画质处理入口",
+            "passed": true
+          },
+          {
+            "name": "断线隐藏桌面并清理展开状态",
+            "passed": true
+          },
+          {
+            "name": "断线重试仍请求控制对方",
+            "passed": true
+          },
+          {
+            "name": "锁屏不保留共享画面",
+            "passed": true
+          },
+          {
+            "name": "拒绝不建立会话",
+            "passed": true
+          },
+          {
+            "name": "发起方可以取消请求",
+            "passed": true
+          },
+          {
+            "name": "连接中取消不被迟到回调激活",
+            "passed": true
+          },
+          {
+            "name": "请求超时可重新发起",
+            "passed": true
+          },
+          {
+            "name": "超时重试保持求助方向",
+            "passed": true
+          },
+          {
+            "name": "不可用时禁用两个发起入口：offline",
+            "passed": true
+          },
+          {
+            "name": "不可用时禁用两个发起入口：unsupported",
+            "passed": true
+          },
+          {
+            "name": "不可用时禁用两个发起入口：busy",
+            "passed": true
+          },
+          {
+            "name": "离开远程页面恢复正常布局",
+            "passed": true
+          },
+          {
+            "name": "返回保留当前远程会话",
+            "passed": true
+          },
+          {
+            "name": "诊断入口保留",
+            "passed": true
+          },
+          {
+            "name": "备份入口保留",
+            "passed": true
+          },
+          {
+            "name": "退出评审清理远程扩展布局",
+            "passed": true
+          },
+          {
+            "name": "截图入口与资源仍存在",
+            "passed": true
+          }
+        ],
+        "passed": 48,
+        "failed": 0
+      },
+      "voiceInteraction": {
+        "time": "2026-10-10T01:42:58.481Z",
+        "results": [
+          {
+            "name": "两种请求中可直接邀请双向语音",
+            "passed": true
+          },
+          {
+            "name": "接受前无通话条或远程画面",
+            "passed": true
+          },
+          {
+            "name": "接收方明确选择加入语音",
+            "passed": true
+          },
+          {
+            "name": "仅查看也能双向通话",
+            "passed": true
+          },
+          {
+            "name": "共享方可关闭自己的麦克风",
+            "passed": true
+          },
+          {
+            "name": "对方静音不改变本机麦克风",
+            "passed": true
+          },
+          {
+            "name": "关闭扬声器保留本机麦克风",
+            "passed": true
+          },
+          {
+            "name": "扬声器开关按双方分别保存",
+            "passed": true
+          },
+          {
+            "name": "音频设备选择不影响对端",
+            "passed": true
+          },
+          {
+            "name": "本端音频设备选择保留",
+            "passed": true
+          },
+          {
+            "name": "暂停画面仍可双向语音",
+            "passed": true
+          },
+          {
+            "name": "收回控制保留语音",
+            "passed": true
+          },
+          {
+            "name": "切换屏幕保留语音",
+            "passed": true
+          },
+          {
+            "name": "收起文字沟通仍显示语音操作",
+            "passed": true
+          },
+          {
+            "name": "展开桌面仍可静音和挂断",
+            "passed": true
+          },
+          {
+            "name": "挂断语音不停止远程画面",
+            "passed": true
+          },
+          {
+            "name": "任一方可重新呼叫",
+            "passed": true
+          },
+          {
+            "name": "接收方有明确接听与拒绝入口",
+            "passed": true
+          },
+          {
+            "name": "拒绝方反馈方向正确",
+            "passed": true
+          },
+          {
+            "name": "呼叫方看见未接听",
+            "passed": true
+          },
+          {
+            "name": "中途接听后通话恢复",
+            "passed": true
+          },
+          {
+            "name": "麦克风不可用不阻断远程画面",
+            "passed": true
+          },
+          {
+            "name": "处理音频故障后可重新邀请",
+            "passed": true
+          },
+          {
+            "name": "语音掉线保留远程协助",
+            "passed": true
+          },
+          {
+            "name": "呼叫可取消",
+            "passed": true
+          },
+          {
+            "name": "锁屏同时结束共享与通话",
+            "passed": true
+          },
+          {
+            "name": "发起人可只邀请协助",
+            "passed": true
+          },
+          {
+            "name": "求助方向可中途接通语音",
+            "passed": true
+          },
+          {
+            "name": "接收方可接受控制但不加入语音",
+            "passed": true
+          },
+          {
+            "name": "求助方向也能随请求直接通话",
+            "passed": true
+          },
+          {
+            "name": "结束协助清理通话工具",
+            "passed": true
+          },
+          {
+            "name": "重连仍需重新选择语音",
+            "passed": true
+          },
+          {
+            "name": "拒绝远程请求不会开始语音",
+            "passed": true
+          },
+          {
+            "name": "顶栏重复刷新按钮已从DOM移除",
+            "passed": true
+          },
+          {
+            "name": "更多抽屉保留刷新设备地址",
+            "passed": true
+          },
+          {
+            "name": "更多中的刷新动作仍可完成",
+            "passed": true
+          },
+          {
+            "name": "语音入口紧邻发送按钮",
+            "passed": true
+          },
+          {
+            "name": "录制显示取消波形发送箭头",
+            "passed": true
+          },
+          {
+            "name": "取消录制保留文字草稿",
+            "passed": true
+          },
+          {
+            "name": "语音独立加入聊天并保留文字草稿",
+            "passed": true
+          },
+          {
+            "name": "发送语音显示送达状态",
+            "passed": true
+          },
+          {
+            "name": "60秒上限停留待发送而不自动发出",
+            "passed": true
+          },
+          {
+            "name": "切换会话停止录制且无消息串入",
+            "passed": true
+          },
+          {
+            "name": "返回会话保留已发与已收语音",
+            "passed": true
+          },
+          {
+            "name": "麦克风权限失败有可恢复提示",
+            "passed": true
+          },
+          {
+            "name": "修复权限后可重试录制",
+            "passed": true
+          },
+          {
+            "name": "发送重试沿用原语音条目",
+            "passed": true
+          },
+          {
+            "name": "接收语音可直接播放本地音频",
+            "passed": true
+          },
+          {
+            "name": "播放后清除该语音未听标记",
+            "passed": true
+          },
+          {
+            "name": "再次点击暂停播放",
+            "passed": true
+          },
+          {
+            "name": "同时只播放一条语音",
+            "passed": true
+          },
+          {
+            "name": "切换会话停止播放",
+            "passed": true
+          },
+          {
+            "name": "文件缺失保留消息并提供重新接收",
+            "passed": true
+          },
+          {
+            "name": "重新接收后恢复播放入口",
+            "passed": true
+          },
+          {
+            "name": "截图入口及原截图脚本保持存在",
+            "passed": true
+          }
+        ],
+        "passed": 55,
+        "failed": 0
+      },
+      "responsive": {
+        "time": "2026-10-10T01:44:57.971Z",
+        "results": [
+          {
+            "width": 1000,
+            "theme": "light",
+            "state": "双入口",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "light",
+            "state": "请求协助对话框",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "light",
+            "state": "请求控制对话框",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "light",
+            "state": "等待回应",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "light",
+            "state": "接收控制请求",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "light",
+            "state": "共享方控制中",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 56,
+              "right": 1000,
+              "width": 944,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "light",
+            "state": "共享暂停",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 56,
+              "right": 1000,
+              "width": 944,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "light",
+            "state": "协助方桌面",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 56,
+              "right": 1000,
+              "width": 944,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "light",
+            "state": "展开桌面",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 0,
+              "right": 1000,
+              "width": 1000,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "light",
+            "state": "画质对话框",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 56,
+              "right": 1000,
+              "width": 944,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "light",
+            "state": "tasks",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "light",
+            "state": "diagnostics",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "light",
+            "state": "backup",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "light",
+            "state": "聊天语音入口",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "light",
+            "state": "录制语音",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "light",
+            "state": "录音权限失败",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "dark",
+            "state": "双入口",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "dark",
+            "state": "请求协助对话框",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "dark",
+            "state": "请求控制对话框",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "dark",
+            "state": "等待回应",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "dark",
+            "state": "接收控制请求",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "dark",
+            "state": "共享方控制中",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 56,
+              "right": 1000,
+              "width": 944,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "dark",
+            "state": "共享暂停",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 56,
+              "right": 1000,
+              "width": 944,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "dark",
+            "state": "协助方桌面",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 56,
+              "right": 1000,
+              "width": 944,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "dark",
+            "state": "展开桌面",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 0,
+              "right": 1000,
+              "width": 1000,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "dark",
+            "state": "画质对话框",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 56,
+              "right": 1000,
+              "width": 944,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "dark",
+            "state": "tasks",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "dark",
+            "state": "diagnostics",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "dark",
+            "state": "backup",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "dark",
+            "state": "聊天语音入口",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "dark",
+            "state": "录制语音",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 1000,
+            "theme": "dark",
+            "state": "录音权限失败",
+            "actualViewport": 1000,
+            "documentWidth": 1000,
+            "root": {
+              "left": 266,
+              "right": 1000,
+              "width": 734,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "light",
+            "state": "双入口",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "light",
+            "state": "请求协助对话框",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "light",
+            "state": "请求控制对话框",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "light",
+            "state": "等待回应",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "light",
+            "state": "接收控制请求",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "light",
+            "state": "共享方控制中",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "light",
+            "state": "共享暂停",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "light",
+            "state": "协助方桌面",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "light",
+            "state": "展开桌面",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 0,
+              "right": 860,
+              "width": 860,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "light",
+            "state": "画质对话框",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "light",
+            "state": "tasks",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "light",
+            "state": "diagnostics",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "light",
+            "state": "backup",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "light",
+            "state": "聊天语音入口",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 336,
+              "right": 860,
+              "width": 524,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "light",
+            "state": "录制语音",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 336,
+              "right": 860,
+              "width": 524,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "light",
+            "state": "录音权限失败",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 336,
+              "right": 860,
+              "width": 524,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "dark",
+            "state": "双入口",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "dark",
+            "state": "请求协助对话框",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "dark",
+            "state": "请求控制对话框",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "dark",
+            "state": "等待回应",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "dark",
+            "state": "接收控制请求",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "dark",
+            "state": "共享方控制中",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "dark",
+            "state": "共享暂停",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "dark",
+            "state": "协助方桌面",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "dark",
+            "state": "展开桌面",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 0,
+              "right": 860,
+              "width": 860,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "dark",
+            "state": "画质对话框",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "dark",
+            "state": "tasks",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "dark",
+            "state": "diagnostics",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "dark",
+            "state": "backup",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 56,
+              "right": 860,
+              "width": 804,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "dark",
+            "state": "聊天语音入口",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 336,
+              "right": 860,
+              "width": 524,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "dark",
+            "state": "录制语音",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 336,
+              "right": 860,
+              "width": 524,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 860,
+            "theme": "dark",
+            "state": "录音权限失败",
+            "actualViewport": 860,
+            "documentWidth": 860,
+            "root": {
+              "left": 336,
+              "right": 860,
+              "width": 524,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "light",
+            "state": "双入口",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "light",
+            "state": "请求协助对话框",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "light",
+            "state": "请求控制对话框",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "light",
+            "state": "等待回应",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "light",
+            "state": "接收控制请求",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "light",
+            "state": "共享方控制中",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "light",
+            "state": "共享暂停",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "light",
+            "state": "协助方桌面",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "light",
+            "state": "展开桌面",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 0,
+              "right": 390,
+              "width": 390,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "light",
+            "state": "画质对话框",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "light",
+            "state": "tasks",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "light",
+            "state": "diagnostics",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "light",
+            "state": "backup",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "light",
+            "state": "聊天语音入口",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "light",
+            "state": "录制语音",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "light",
+            "state": "录音权限失败",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "dark",
+            "state": "双入口",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "dark",
+            "state": "请求协助对话框",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "dark",
+            "state": "请求控制对话框",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "dark",
+            "state": "等待回应",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "dark",
+            "state": "接收控制请求",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "dark",
+            "state": "共享方控制中",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "dark",
+            "state": "共享暂停",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "dark",
+            "state": "协助方桌面",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "dark",
+            "state": "展开桌面",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 0,
+              "right": 390,
+              "width": 390,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "dark",
+            "state": "画质对话框",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "dark",
+            "state": "tasks",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "dark",
+            "state": "diagnostics",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "dark",
+            "state": "backup",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 40,
+              "height": 804
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "dark",
+            "state": "聊天语音入口",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "dark",
+            "state": "录制语音",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          },
+          {
+            "width": 390,
+            "theme": "dark",
+            "state": "录音权限失败",
+            "actualViewport": 390,
+            "documentWidth": 390,
+            "root": {
+              "left": 56,
+              "right": 390,
+              "width": 334,
+              "top": 0,
+              "height": 844
+            },
+            "dialogFits": true,
+            "controlsFit": true,
+            "chatUsable": true,
+            "overflow": [],
+            "passed": true
+          }
+        ],
+        "passed": 96,
+        "failed": 0
+      }
+    },
+    "runtimeExceptions": []
+  },
+  "visuals": {
+    "method": "Independent headless Chrome, fresh profiles, same prototype resources, animations disabled; 390px iframe for narrow captures",
+    "captures": [
+      {
+        "scene": "call",
+        "path": "docs/verification/2026-10-10-voice-call.png",
+        "sha256": "c49b1429bc126837bac081545fe03ec3c26a8f597ad36e3db85a3728a1ee1f29"
+      },
+      {
+        "scene": "call-dark",
+        "path": "docs/verification/2026-10-10-voice-call-dark.png",
+        "sha256": "6c8783385818429fb74ac80d0c9e5d6cdbe1749c35e1849dda485cf39c3b2352"
+      },
+      {
+        "scene": "call-narrow",
+        "path": "docs/verification/2026-10-10-voice-call-narrow.png",
+        "sha256": "a60efe9ea6b9a3e3230808a0ce9f909ce5a0419044243d4736cf21273b446a58"
+      },
+      {
+        "scene": "chat",
+        "path": "docs/verification/2026-10-10-voice-chat.png",
+        "sha256": "d424c5ae8a90c08bedd1a070d5baa306301d4981889dab11931a837da67a0112"
+      },
+      {
+        "scene": "recording",
+        "path": "docs/verification/2026-10-10-voice-recording.png",
+        "sha256": "876e7473961ff5ef9b7d53c5a3352caeeb79bf917f2737323ddb60272b3606d1"
+      },
+      {
+        "scene": "recording-narrow",
+        "path": "docs/verification/2026-10-10-voice-recording-narrow.png",
+        "sha256": "16f01daebc3bd90c669fb750f077d704b859104ef296c0b97907b7a7ec42dc72"
+      }
+    ],
+    "manuallyReviewed": true
+  },
+  "audioFixture": {
+    "source": "Locally synthesized Microsoft Huihui Desktop voice, not user microphone recording",
+    "text": "这是一条语音消息演示。文件已经收到，我们一会儿一起检查网络设置。你也可以直接回复语音。",
+    "durationSeconds": 12.733106575963719,
+    "sampleRate": 22050,
+    "channels": 1
+  },
+  "sourceSha256": {
+    "ui-ref/xchat-desktop-prototype.html": "433f75985c91832b8fe7a92b336c7d2a36cc236c10e9444534f85c541d886efc",
+    "ui-ref/assets/stability-phase3-review.js": "e33778b07d9f5fdc53e80a6dbff2a014646a1a4d8afc14887dd812f1d973b0b4",
+    "ui-ref/assets/remote-assist-v2.css": "eff2dae0d10e2d445576b7f9d33b471896b00f1294eab538f522f8c34cc53be1",
+    "ui-ref/assets/voice-messages-review.js": "790c4869c614e7be1be1a5dffcf1e3ec9114471c95cd53a1bb47c06307059249",
+    "ui-ref/assets/voice-messages-review.css": "2bb2a3b4f9c73e490c5954c6db4ad3796a98a7c0579f3a20d2d3ab50511ffe51",
+    "ui-ref/assets/voice-message-demo.wav": "40bf458c4a837091d10f065432444de44cf9576edeeb3411963c3e806da1b3d5",
+    "docs/verification/2026-10-10-remote-v2-interaction-check.js": "7cf8d5b27bc1f70b6353151efaceb5bae22ce772b88c46a255a5fb3757d4bd87",
+    "docs/verification/2026-10-10-voice-interaction-check.js": "13da1e2d79f9d68adf9223750d4480b860acd0e1b42aac2e05035de5ed8990ab",
+    "docs/verification/2026-10-10-voice-responsive-check.js": "ad00c6097425a75b211f264a352b06f8cb273fad6c52a5232e34b2f3117a535d"
+  },
+  "notes": [
+    "The responsive results come from the final strengthened rerun at 2026-10-10T01:44:57.971Z, not the earlier weaker layout run.",
+    "Final HTML changes after functional checks only bump voice asset query versions from 1 to 2 for cache invalidation.",
+    "Sample playback tests mute the audio element; no microphone or physical device access.",
+    "Remote voice, chat recording and transport are simulated. Local WAV playback is real.",
+    "No production implementation, cross-machine audio, echo cancellation, real recording, network performance or platform audio was tested.",
+    "Existing screenshot source/assets are unchanged; the remote regression verifies the screenshot entry still exists, not a complete screenshot functional regression.",
+    "Early background-timer and wrong CDP page-target failures were resolved before isolated reruns; unrelated active-tab console output is excluded."
+  ]
+}

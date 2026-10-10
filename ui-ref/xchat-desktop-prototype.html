@@ -1061,7 +1061,7 @@ applyPrototypeTheme(committedSettings.theme);renderConnectionState();
     $('infoAddress').textContent=peer.address;$('infoVerification').textContent=stateLabel(peer);
     const banner=$('connectionBanner');banner.classList.remove('checking','restored','route-warning','route-error');
     const copy={
-      stale:['设备已被发现，连接仍需验证','点击刷新地址，重新查找并核对这台设备的最新地址。'],
+      stale:['设备已被发现，连接仍需验证','通过右上角“更多”查看设备信息，重新查找并核对最新地址。'],
       discovering:['正在查找对方的最新地址…','正在已启用的网络中重新发现设备。'],
       verifying:['已发现候选地址，正在验证…',`${s.candidate||peer.address} · 核对设备 ID 与消息连接。`],
       updated:['地址已更新，连接已恢复',`${s.previous} → ${peer.address} · 已确认是同一台设备。`],
@@ -1070,7 +1070,7 @@ applyPrototypeTheme(committedSettings.theme);renderConnectionState();
     }[s.state];
     banner.hidden=!copy||(app.classList.contains('header-refresh-review')&&s.state==='updated');
     if(copy){$('connectionTitle').textContent=copy[0];$('connectionText').textContent=copy[1];banner.classList.toggle('checking',busy);banner.classList.toggle('restored',s.state==='updated');banner.classList.toggle('route-error',s.state==='mismatch');}
-    const retry=$('retryConnection');retry.hidden=busy||s.state==='updated';retry.disabled=busy;retry.textContent=s.state==='stale'?'刷新地址':'重新发现';
+    const retry=$('retryConnection');retry.hidden=busy||s.state==='updated'||s.state==='stale';retry.disabled=busy;retry.textContent=s.state==='stale'?'刷新地址':'重新发现';
     drawerRender();
   }
   const originalSelect=selectDevice;
@@ -1549,7 +1549,10 @@ applyPrototypeTheme(committedSettings.theme);renderConnectionState();
 <script src="assets/video-fullscreen-review.js?v=android-3"></script>
 <!-- Stage 3 review only. Screenshot/edit/pin resources above remain unchanged. -->
 <link rel="stylesheet" href="assets/stability-phase3-review.css">
-<link rel="stylesheet" href="assets/remote-assist-v2.css">
-<script src="assets/stability-phase3-review.js?v=remote-v2"></script>
+<link rel="stylesheet" href="assets/remote-assist-v2.css?v=remote-voice-v1">
+<script src="assets/stability-phase3-review.js?v=remote-voice-v1"></script>
+<!-- Voice messages review: ?review=voice-messages. No microphone access. -->
+<link rel="stylesheet" href="assets/voice-messages-review.css?v=2">
+<script src="assets/voice-messages-review.js?v=2"></script>
 </body>
 </html>

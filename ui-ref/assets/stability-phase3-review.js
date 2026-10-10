@@ -31,7 +31,8 @@
   const labels = {sending:'正在发送',source:'需要处理',waiting:'等待上线',confirming:'待确认送达',partial:'部分送达',done:'已完成',cancelled:'已取消',retrying:'正在继续'};
   let enabled = false, page = 'tasks', tasks = initialTasks(), filter = 'all', kind = 'all', query = '', selected = new Set(), detailId = '', epoch = 0;
   let scenario = 'normal', diagnostic = 'issue', diagnosticPeer = 'zhang', backups = [{name:'XChat-2026-10-08.xchatbackup',date:'昨天 18:30',size:'128 MB',contents:'聊天记录、偏好设置'}];
-  const initialRemote = () => ({stage:'idle',mode:'control',permission:'view',offered:'view',screen:'1',quality:'自动',fps:'30',color:'full',scale:'fit',reason:'',controlPending:false,owner:'peer',note:'',expanded:false,chatOpen:true,chatDraft:'',demoOpen:false,startedAt:0,generation:0,chat:[{name:'张三',text:'网络设置这里好像不太对，方便一起看一下吗？'},{name:'Eason',text:'可以，我先看看连接状态。'}]});
+  const initialVoice = () => ({stage:'idle',offered:false,caller:'Eason',startedAt:0,reason:'',muted:{Eason:false,张三:false},deafened:{Eason:false,张三:false},input:{Eason:'default',张三:'default'},output:{Eason:'default',张三:'default'}});
+  const initialRemote = () => ({stage:'idle',mode:'control',permission:'view',offered:'view',screen:'1',quality:'自动',fps:'30',color:'full',scale:'fit',reason:'',controlPending:false,owner:'peer',note:'',expanded:false,chatOpen:true,chatDraft:'',demoOpen:false,startedAt:0,generation:0,voice:initialVoice(),chat:[{name:'张三',text:'网络设置这里好像不太对，方便一起看一下吗？'},{name:'Eason',text:'可以，我先看看连接状态。'}]});
   let role = 'viewer', remote = initialRemote(), backupToken = 0, restoreChoice = 'valid', priorFocus;
   let dialogOperation = '';
   const remotePeople = () => remote.owner==='self' ? {host:'Eason',viewer:'张三'} : {host:'张三',viewer:'Eason'};
@@ -50,7 +51,7 @@
   function renderBar() {
     const options = page === 'diagnostics' ? [['normal','端口不可达'],['healthy','连接正常'],['identity','身份不匹配']]
       : page === 'backup' ? [['normal','正常备份'],['disk','空间不足'],['corrupt','损坏的备份']]
-      : page === 'remote' ? [['normal','可用设备'],['offline','对方离线'],['unsupported','对方不支持'],['busy','对方忙碌'],['timeout','请求超时'],['weak','网络较慢'],['disconnect','会话断线'],['locked','对方锁屏']]
+      : page === 'remote' ? [['normal','可用设备'],['offline','对方离线'],['unsupported','对方不支持'],['busy','对方忙碌'],['timeout','请求超时'],['weak','网络较慢'],['mic-denied','麦克风不可用'],['voice-drop','语音中断'],['disconnect','会话断线'],['locked','对方锁屏']]
       : [['normal','典型任务'],['empty','空列表']];
     bar.innerHTML = `<strong>阶段三 · 交互评审</strong>${Object.entries(pages).map(([key,title]) => `<button data-p3-action="page" data-page="${key}" aria-pressed="${page===key}">${title}</button>`).join('')}<span class="p3-spacer"></span><span class="p3-review-label">演示数据 · 不连接设备</span><select id="p3Scenario" aria-label="演示场景">${options.map(([value,label]) => `<option value="${value}" ${scenario===value?'selected':''}>${label}</option>`).join('')}</select>${page==='remote'?remoteRoleSwitch():''}<button class="p3-theme" data-p3-action="theme">浅 / 深</button><button data-p3-action="reset">重置</button><button class="p3-review-exit" data-p3-action="exit">退出评审</button>`;
   }
@@ -194,6 +195,12 @@
     play:'<path d="m8 4 12 8-12 8Z"/>',
     tune:'<path d="M4 6h16M4 12h16M4 18h16M8 3v6m8 0v6m-6 0v6"/>',
     send:'<path d="m3 3 18 9-18 9 4-9-4-9Zm4 9h14"/>',
+    mic:'<rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/>',
+    micOff:'<path d="m3 3 18 18M9 9v3a3 3 0 0 0 5 2M9 5a3 3 0 0 1 6 0v6M5 10v2a7 7 0 0 0 12 5M19 10v2M12 19v3m-4 0h8"/>',
+    speaker:'<path d="M3 9h4l5-5v16l-5-5H3Z M16 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/>',
+    speakerOff:'<path d="M3 9h4l5-5v16l-5-5H3Zm13 0 6 6m0-6-6 6"/>',
+    phone:'<path d="M7 3H3v3c0 8 7 15 15 15h3v-4l-5-2-2 2a16 16 0 0 1-7-7l2-2Z"/>',
+    hangup:'<path d="M3 15v-4a17 17 0 0 1 18 0v4h-5v-4a14 14 0 0 0-8 0v4Z"/>',
     monitor:paths.screen, shield:paths.shield, chat:paths.chat, lock:paths.lock, close:paths.close, check:paths.check,
   };
   const raIcon = name => `<svg class="ra-icon" viewBox="0 0 24 24" aria-hidden="true">${raPaths[name]||paths.screen}</svg>`;
@@ -208,7 +215,7 @@
     document.body.classList.toggle('p3-remote-live',live);
     document.body.classList.toggle('p3-remote-expanded',live&&remote.expanded);
     clearInterval(remoteTimer);
-    if(live)remoteTimer=setInterval(()=>document.querySelectorAll('[data-ra-elapsed]').forEach(el=>el.textContent=remoteElapsed()),1000);
+    if(live)remoteTimer=setInterval(()=>{document.querySelectorAll('[data-ra-elapsed]').forEach(el=>el.textContent=remoteElapsed());document.querySelectorAll('[data-ra-voice-elapsed]').forEach(el=>el.textContent=voiceElapsed());},1000);
   }
   function remoteRoleSwitch() {
     const idle=remote.stage==='idle';
@@ -225,7 +232,7 @@
     syncRemoteChrome();remoteSidebar();
     if(['active','paused'].includes(remote.stage)){renderRemoteSession();return;}
     const unavailable={offline:['张三暂时离线','对方上线后可发起协助。可以先在聊天中说明问题。'],unsupported:['对方版本暂不支持远程协助','你们仍可正常聊天和传文件。'],busy:['张三正在另一场协助中','对方结束当前协助后，你可以再发起请求。']};
-    root.innerHTML=heading('远程协助','与张三一起，解决电脑上的问题。',`<span class="ra-capability">${raIcon('monitor')}Windows 桌面</span>`)+`<div class="ra-lobby">${remote.stage==='idle'?`<div class="ra-lobby-intro"><span class="ra-kicker">从当前会话开始</span><h2>哪一台电脑需要帮助？</h2><p>两个入口，清楚区分共享和控制的方向。</p></div>${unavailable[scenario]?notice(...unavailable[scenario],'warn',btn('回到聊天','conversation')+btn('检查连接','diagnose')):''}<div class="ra-mode-grid">${remoteModeCard('help')}${remoteModeCard('control')}</div><div class="ra-lobby-foot">${raIcon('shield')}共享哪块屏幕、是否允许操作，都由电脑主人决定。<span>可随时暂停或结束</span></div>`:remoteRequestCard()}</div>`;
+    root.innerHTML=heading('远程协助','与张三一起，解决电脑上的问题。',`<span class="ra-capability">${raIcon('monitor')}Windows 桌面</span>`)+`<div class="ra-lobby">${remote.stage==='idle'?`<div class="ra-lobby-intro"><span class="ra-kicker">从当前会话开始</span><h2>哪一台电脑需要帮助？</h2><p>选择需要帮助的电脑，接通后可双向语音协作。</p></div>${unavailable[scenario]?notice(...unavailable[scenario],'warn',btn('回到聊天','conversation')+btn('检查连接','diagnose')):''}<div class="ra-mode-grid">${remoteModeCard('help')}${remoteModeCard('control')}</div><div class="ra-lobby-foot">${raIcon('shield')}共享哪块屏幕、是否允许操作，都由电脑主人决定。<span>可随时暂停或结束</span></div>`:remoteRequestCard()}</div>`;
   }
   function remoteRequestCard() {
     const people=remotePeople(),recipient=remoteRecipient(),mode=remoteModeLabel();
@@ -245,27 +252,27 @@
   function prepareRemote(mode) {
     if(['offline','unsupported','busy'].includes(scenario))return;
     const help=mode==='help';
-    modal(help?'请求张三远程协助':'请求控制张三的电脑',`<div class="ra-dialog-person"><span class="ra-avatar">张</span><div><b>张三</b><small>DESKTOP-ZHANG · 在线</small></div><span class="ra-dialog-direction">${help?'对方协助我':'我协助对方'}</span></div><p>${help?'选择要共享给张三的屏幕。对方接受后，才会开始共享。':'发送请求后，张三需要选择共享屏幕并明确允许本次控制。'}</p>${help?screenOptions()+`<label class="ra-grant-choice"><input type="checkbox" id="raOfferControl"><span><b>同时允许对方操作我的鼠标和键盘</b><small>仅本次会话；不勾选时只共享画面，之后仍可单独授权。</small></span></label>`:`<div class="ra-scope"><span>${raIcon('monitor')}查看对方共享的屏幕</span><span>${raIcon('control')}请求鼠标与键盘控制</span></div>`}<label class="p3-field ra-note"><span>协助说明 <small>选填</small></span><textarea id="raRequestNote" maxlength="200" rows="2" placeholder="例如：帮我检查一下网络设置">${esc(remote.note)}</textarea></label>`,btn('取消','close')+btn(help?'发送协助邀请':'发送控制请求','remote-send',`data-mode="${mode}"`,'primary'));
+    modal(help?'请求张三远程协助':'请求控制张三的电脑',`<div class="ra-dialog-person"><span class="ra-avatar">张</span><div><b>张三</b><small>DESKTOP-ZHANG · 在线</small></div><span class="ra-dialog-direction">${help?'对方协助我':'我协助对方'}</span></div><p>${help?'选择要共享给张三的屏幕。对方接受后，才会开始共享。':'发送请求后，张三需要选择共享屏幕并明确允许本次控制。'}</p>${help?screenOptions()+`<label class="ra-grant-choice"><input type="checkbox" id="raOfferControl"><span><b>同时允许对方操作我的鼠标和键盘</b><small>仅本次会话；不勾选时只共享画面，之后仍可单独授权。</small></span></label>`:`<div class="ra-scope"><span>${raIcon('monitor')}查看对方共享的屏幕</span><span>${raIcon('control')}请求鼠标与键盘控制</span></div>`}${voiceChoice()}<label class="p3-field ra-note"><span>协助说明 <small>选填</small></span><textarea id="raRequestNote" maxlength="200" rows="2" placeholder="例如：帮我检查一下网络设置">${esc(remote.note)}</textarea></label>`,btn('取消','close')+btn(help?'发送协助邀请':'发送控制请求','remote-send',`data-mode="${mode}"`,'primary'));
   }
   function sendRemote(mode) {
     if(['offline','unsupported','busy'].includes(scenario))return;
     const next=initialRemote();next.mode=mode;next.owner=mode==='help'?'self':'peer';next.stage='waiting';
-    next.screen=dialog.querySelector('[name=p3Screen]:checked')?.value||'1';next.offered=mode==='help'&&byId('raOfferControl')?.checked?'control':'view';next.note=byId('raRequestNote').value.trim();
+    next.screen=dialog.querySelector('[name=p3Screen]:checked')?.value||'1';next.offered=mode==='help'&&byId('raOfferControl')?.checked?'control':'view';next.note=byId('raRequestNote').value.trim();next.voice.offered=!!byId('raOfferVoice')?.checked;
     remote=next;role=mode==='help'?'host':'viewer';closeDialog();render();
   }
   function incomingRemoteConsent() {
     if(remote.stage!=='waiting'||!remoteRecipient())return;
     const help=remote.mode==='help';
-    modal(help?'Eason 请求你远程协助':'Eason 请求控制你的电脑',`<div class="ra-dialog-person"><span class="ra-avatar">E</span><div><b>Eason</b><small>本次会话的请求</small></div></div>${remote.note?`<blockquote class="ra-note-quote">${esc(remote.note)}</blockquote>`:''}<p>${help?'接受后，你将看到 Eason 选定的屏幕。':'先选择要共享的屏幕，再决定本次允许的权限。'}</p>${help?`<div class="ra-scope"><span>${raIcon('monitor')}Eason 的屏幕 ${remote.screen}</span><span>${raIcon('control')}${remote.offered==='control'?'Eason 已明确允许本次鼠标键盘控制':'仅查看，鼠标键盘未授权'}</span></div>`:screenOptions()+`<p class="ra-consent-copy">“允许本次控制”包含所选屏幕的查看与鼠标键盘操作。你可随时收回控制，不共享剪贴板或文件。</p>`}`,btn('拒绝','remote-reject')+(help?btn('接受协助','remote-accept',`data-permission="${remote.offered}"`,'primary'):btn('仅允许查看','remote-accept','data-permission="view"')+btn('允许本次控制','remote-accept','data-permission="control"','primary')));
+    modal(help?'Eason 请求你远程协助':'Eason 请求控制你的电脑',`<div class="ra-dialog-person"><span class="ra-avatar">E</span><div><b>Eason</b><small>本次会话的请求</small></div></div>${remote.note?`<blockquote class="ra-note-quote">${esc(remote.note)}</blockquote>`:''}<p>${help?'接受后，你将看到 Eason 选定的屏幕。':'先选择要共享的屏幕，再决定本次允许的权限。'}</p>${help?`<div class="ra-scope"><span>${raIcon('monitor')}Eason 的屏幕 ${remote.screen}</span><span>${raIcon('control')}${remote.offered==='control'?'Eason 已明确允许本次鼠标键盘控制':'仅查看，鼠标键盘未授权'}</span></div>`:screenOptions()+`<p class="ra-consent-copy">“允许本次控制”包含所选屏幕的查看与鼠标键盘操作。你可随时收回控制，不共享剪贴板或文件。</p>`}${remote.voice.offered?voiceChoice(true):'<p class="p3-sub">本次未附带语音，可在协助中随时发起通话。</p>'}`,btn('拒绝','remote-reject')+(help?btn('接受协助','remote-accept',`data-permission="${remote.offered}"`,'primary'):btn('仅允许查看','remote-accept','data-permission="view"')+btn('允许本次控制','remote-accept','data-permission="control"','primary')));
   }
   function acceptRemote(permission) {
     if(remote.stage!=='waiting'||!remoteRecipient())return;
     if(remote.mode==='control')remote.screen=dialog.querySelector('[name=p3Screen]:checked')?.value||remote.screen;
-    const current=remote,version=++remote.generation;
+    const current=remote,version=++remote.generation,joinVoice=remote.voice.offered&&!!byId('raJoinVoice')?.checked,voiceActor=remoteActor();
     remote.stage='connecting';remote.permission='view';closeDialog();render();
-    after(650,()=>{if(remote!==current||remote.generation!==version||remote.stage!=='connecting')return;remote.permission=permission;remote.stage='active';remote.startedAt=Date.now();render();});
+    after(650,()=>{if(remote!==current||remote.generation!==version||remote.stage!=='connecting')return;remote.permission=permission;remote.stage='active';remote.startedAt=Date.now();if(joinVoice)connectVoice(voiceActor);render();});
   }
-  function stopRemote(stage,reason='') {remote.generation++;remote.stage=stage;remote.reason=reason;remote.permission='view';remote.offered='view';remote.controlPending=false;remote.expanded=false;closeDialog();render();}
+  function stopRemote(stage,reason='') {remote.generation++;remote.stage=stage;remote.reason=reason;remote.permission='view';remote.offered='view';remote.controlPending=false;remote.expanded=false;remote.voice=initialVoice();closeDialog();render();}
   function screenOptions() {return `<div class="ra-screen-options">${[['1','主显示器','1920 × 1080'],['2','扩展显示器','1080 × 1920']].map(([value,name,size])=>`<label class="ra-screen-choice"><input type="radio" name="p3Screen" value="${value}" ${remote.screen===value?'checked':''}><span class="ra-screen-preview ${value==='2'?'portrait':''}"><span></span><b>${value}</b></span><strong>屏幕 ${value} · ${name}</strong><small>${size}</small></label>`).join('')}</div>`;}
   function switchRemoteScreen() {if(role!=='host'||!['active','paused'].includes(remote.stage))return;modal('切换共享屏幕',`<p>由你选择接下来共享的屏幕。切换后收回控制，继续保持仅查看。</p>${screenOptions()}`,btn('取消','close')+btn('共享所选屏幕','remote-screen-confirm','','primary'));}
   function controlConsent() {
@@ -280,10 +287,51 @@
     return `<div class="ra-desktop ${remote.screen==='2'?'portrait':''} ${remote.scale==='actual'?'actual':''} ${remote.color==='reduced'?'reduced':''}" data-od-id="phase3-remote-screen"><div class="ra-desktop-icons"><span>${raIcon('monitor')}此电脑</span><span>${paths.file?icon('file'):''}工作文件</span></div><div class="ra-os-window"><div class="ra-os-title">${raIcon('tune')}设置<span>—　□　×</span></div><div class="ra-os-layout"><aside><div class="ra-os-account"><span>${remotePeople().host.slice(0,1)}</span><b>${remotePeople().host}<small>本地账户</small></b></div><div class="ra-os-search">查找设置</div><p>系统</p><p>蓝牙和设备</p><p class="selected">网络和 Internet</p><p>个性化</p><p>应用</p></aside><section><h2>网络和 Internet</h2><div class="ra-os-network">${raIcon('monitor')}<div><strong>以太网</strong><small>已连接 · 专用网络</small></div></div><div class="ra-os-setting"><b>网络属性</b><small>专用网络　·　已连接</small><span>›</span></div><div class="ra-os-setting"><b>高级网络设置</b><small>网络适配器与连接属性</small><button data-p3-action="remote-demo-open" ${controllable?'':'disabled'} aria-label="在示意桌面中展开网络设置">${remote.demoOpen?'收起':'展开'} ›</button></div>${remote.demoOpen?`<div class="ra-os-adapter"><span class="ra-online"></span>以太网适配器 <small>连接正常　1.0 Gbps</small></div>`:''}<p class="ra-os-assist-note">与 ${remotePeople().viewer} 一起检查当前网络连接</p></section></div></div><div class="ra-os-taskbar"><span class="ra-windows-mark">▦</span><span class="ra-task-search">搜索</span><span>▣　▤　◉</span><small>10:48<br>2026/10/10</small></div><span class="ra-desktop-watermark">示意桌面 · 非真实画面</span>${controllable?`<span class="ra-remote-cursor" aria-hidden="true">➤<small>${remotePeople().viewer}</small></span>`:''}</div>`;
   }
   function remoteChatPanel() {return `<aside class="ra-chat-panel"><div class="ra-chat-head"><h3>会话沟通</h3>${btn('×','remote-chat-toggle','aria-label="收起会话沟通"','ra-chat-close')}</div><div class="ra-chat-note">${raIcon('chat')}协助时，继续把问题说清楚</div><div class="ra-chat-messages">${remote.chat.map(message=>`<div class="ra-chat-message ${message.name===remoteActor()?'mine':''}"><span>${message.name===remoteActor()?'我':message.name}</span><p>${esc(message.text)}</p></div>`).join('')}</div><div class="ra-chat-compose"><textarea id="raChatDraft" rows="3" maxlength="300" aria-label="协助消息" placeholder="说一下你看到的问题…">${esc(remote.chatDraft)}</textarea><div><span>Enter 发送</span>${raButton('发送','remote-chat-send','send','','primary')}</div></div></aside>`;}
+  const voicePeer = () => remoteActor()==='Eason'?'张三':'Eason';
+  function voiceElapsed() {const seconds=Math.max(0,Math.floor((Date.now()-remote.voice.startedAt)/1000));return `${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;}
+  function voiceChoice(incoming=false) {
+    return `<label class="ra-voice-choice"><input type="checkbox" id="${incoming?'raJoinVoice':'raOfferVoice'}" checked><span>${raIcon('phone')}<b>${incoming?'同时接通双向语音':'同时发起语音通话'}</b><small>${incoming?'接受协助后开启麦克风和扬声器；取消勾选可只进行远程协助。':'双方同意后边说边协作；可随时静音或单独挂断语音。'}</small></span></label>`;
+  }
+  function connectVoice(actor) {
+    const v=remote.voice;
+    if(scenario==='mic-denied'){v.stage='error';v.reason=`${actor} 的麦克风权限未开启`;v.startedAt=0;return;}
+    v.stage='active';v.reason='';v.startedAt=Date.now();
+  }
+  function voiceBar() {
+    const v=remote.voice,actor=remoteActor(),peer=voicePeer(),active=v.stage==='active',incoming=v.stage==='ringing'&&v.caller!==actor;
+    let title='边说边协作',copy='开启双向语音，一起看、一起解决。',actions=raButton('语音通话','voice-call','phone','','primary'),participants='';
+    if(active){
+      title=`双向通话 <span data-ra-voice-elapsed>${voiceElapsed()}</span>`;copy=v.deafened[actor]?'扬声器已关闭，你暂时听不到对方':v.muted[actor]?'你的麦克风已关闭，对方听不到你':v.muted[peer]?'对方已静音，你仍可以说话':'双方可以直接说话，无需按住按钮';
+      participants=`<div class="ra-voice-people">${[actor,peer].map(name=>`<span class="${v.muted[name]?'muted':''}" data-voice-person="${name}">${raIcon(v.muted[name]?'micOff':'mic')}${name===actor?'我':name}<small>${v.muted[name]?'已静音':'麦克风开启'}</small></span>`).join('')}</div>`;
+      actions=raButton(v.muted[actor]?'开启麦克风':'关闭麦克风','voice-mic',v.muted[actor]?'micOff':'mic',`aria-pressed="${v.muted[actor]}"`)+raButton(v.deafened[actor]?'开启扬声器':'关闭扬声器','voice-speaker',v.deafened[actor]?'speakerOff':'speaker',`aria-pressed="${v.deafened[actor]}"`)+raButton('音频设置','voice-settings','tune')+raButton('挂断语音','voice-hangup','hangup','','danger');
+    } else if(v.stage==='ringing') {
+      title=incoming?`${v.caller} 邀请你语音通话`:`正在呼叫 ${peer}…`;copy=incoming?'接听后开启麦克风和扬声器，远程权限保持不变。':'等待对方接听，远程画面继续。';
+      actions=incoming?raButton('拒绝','voice-reject','hangup')+raButton('接听语音','voice-accept','phone','','primary'):raButton('取消呼叫','voice-hangup','hangup');
+    } else if(v.stage==='error') {title=v.reason;copy='语音未接通，远程协助仍可继续。检查音频设备后重试。';actions=raButton('音频设置','voice-settings','tune')+raButton('重新呼叫','voice-call','phone','','primary');}
+    else if(v.stage==='ended'||v.stage==='declined') {title=v.stage==='declined'?(v.caller===actor?'对方未接听语音':'已拒绝语音通话'):'语音已结束';copy='远程协助继续，可随时重新发起通话。';}
+    return `<section class="ra-voice-bar ${active?'active':v.stage==='error'?'issue':''}" data-od-id="phase3-remote-voice" aria-label="远程协助语音"><span class="ra-voice-emblem">${raIcon('phone')}</span><div class="ra-voice-summary"><strong>${title}</strong><small>${copy}</small></div>${participants}<div class="ra-voice-actions">${actions}</div></section>`;
+  }
+  function voiceSettings() {
+    const actor=remoteActor(),v=remote.voice;
+    const devices=(id,values,selected)=>`<select id="${id}">${values.map(([value,label])=>`<option value="${value}" ${selected===value?'selected':''}>${label}</option>`).join('')}</select>`;
+    modal('语音设备',`<p>${actor} 的音频设置，只影响自己这端。</p><label class="p3-field"><span>麦克风</span>${devices('raVoiceInput',[['default','系统默认麦克风'],['headset','耳机麦克风'],['usb','USB 麦克风']],v.input[actor])}</label><label class="p3-field"><span>扬声器 / 耳机</span>${devices('raVoiceOutput',[['default','系统默认输出'],['headset','耳机'],['speaker','扬声器']],v.output[actor])}</label><p class="p3-sub">使用耳机能减少回声。麦克风权限不可用时，在系统设置中允许 XChat 使用麦克风后重试。</p><p class="ra-audio-demo">示例设备 · 原型不读取麦克风或播放声音</p>`,btn('取消','close')+btn('应用','voice-settings-save','','primary'));
+  }
+  function handleVoiceAction(action) {
+    if(!['active','paused'].includes(remote.stage))return;
+    const v=remote.voice,actor=remoteActor();
+    if(action==='voice-call') {if(['active','ringing'].includes(v.stage))return;if(['mic-denied','voice-drop'].includes(scenario))scenario='normal';v.stage='ringing';v.caller=actor;v.reason='';render();}
+    else if(action==='voice-accept') {if(v.stage!=='ringing'||v.caller===actor)return;connectVoice(actor);render();}
+    else if(action==='voice-reject') {if(v.stage!=='ringing'||v.caller===actor)return;v.stage='declined';v.startedAt=0;render();}
+    else if(action==='voice-hangup') {if(!['active','ringing'].includes(v.stage))return;v.stage='ended';v.startedAt=0;render();}
+    else if(action==='voice-mic') {if(v.stage!=='active')return;v.muted[actor]=!v.muted[actor];render();root.querySelector('[data-p3-action=voice-mic]')?.focus();}
+    else if(action==='voice-speaker') {if(v.stage!=='active')return;v.deafened[actor]=!v.deafened[actor];render();root.querySelector('[data-p3-action=voice-speaker]')?.focus();}
+    else if(action==='voice-settings')voiceSettings();
+    else if(action==='voice-settings-save') {v.input[actor]=byId('raVoiceInput').value;v.output[actor]=byId('raVoiceOutput').value;closeDialog();render();toast('本端音频设备设置已更新');}
+  }
   function renderRemoteSession() {
     const people=remotePeople(),host=role==='host',paused=remote.stage==='paused',control=remote.permission==='control',slow=scenario==='weak';
     const status=paused?'共享已暂停':control?(host?`${people.viewer} 正在控制我的电脑`:`正在控制 ${people.host} 的电脑`):(host?`${people.viewer} 正在查看我的屏幕`:`正在查看 ${people.host} 的屏幕`);
-    root.innerHTML=`<header class="ra-session-head"><div class="ra-session-identity"><span class="ra-avatar small">${host?people.viewer[0]:people.host[0]}</span><div><h1>${host?(paused?'我的屏幕已暂停共享':'我的屏幕正在共享'):`${people.host}的远程桌面`}</h1><p><span class="ra-online"></span>${remoteActor()} · ${host?'共享方':'协助方'}<span class="ra-dot">·</span><span data-ra-elapsed>${remoteElapsed()}</span></p></div></div><div class="ra-session-head-actions"><span class="ra-session-permission ${control?'control':''}">${raIcon(control?'control':'monitor')}${paused?'已暂停':control?'允许控制':'仅查看'}</span>${raButton('结束协助','remote-end','close','','danger')}</div></header><div class="ra-toolbar"><span class="ra-screen-label">${raIcon('monitor')}屏幕 ${remote.screen}</span>${host?raButton('切换屏幕','remote-screen','monitor'):''}<span class="ra-tool-divider"></span><label class="ra-scale-label">显示<select id="raScale" aria-label="画面缩放"><option value="fit" ${remote.scale==='fit'?'selected':''}>适应窗口</option><option value="actual" ${remote.scale==='actual'?'selected':''}>原始比例 100%</option></select></label>${raButton(remote.quality,'remote-quality','tune')}${raButton(remote.expanded?'退出全屏':'全屏','remote-expand',remote.expanded?'shrink':'expand')}<span class="ra-toolbar-spacer"></span>${!host&&!control&&!paused?raButton(remote.controlPending?'等待授权':'申请控制','remote-control','control',remote.controlPending?'disabled':'','primary'):''}${!host&&control?raButton('释放控制','remote-revoke','control'):''}${host&&!control&&!paused?raButton(remote.controlPending?'处理控制请求':'允许对方控制',remote.controlPending?'control-consent':'remote-offer-control','control','','primary'):''}${raButton('沟通','remote-chat-toggle','chat',`aria-pressed="${remote.chatOpen}"`)}</div>${slow?`<div class="ra-network-warning">${icon('alert')}网络有波动，画面可能稍有延迟。${link('切换为优先流畅','remote-fast')}</div>`:''}<div class="ra-workspace ${remote.chatOpen?'with-chat':''}"><div class="ra-canvas-wrap">${host?`<div class="ra-sharing-strip ${control?'control':''}">${raIcon(control?'control':'monitor')}<strong>${status}</strong><div>${control?raButton('收回控制','remote-revoke','shield','','danger'):''}${raButton(paused?'继续共享':'暂停共享',paused?'remote-resume':'remote-pause',paused?'play':'pause')}${raButton('结束','remote-end','close','','danger')}</div></div>`:`<div class="ra-viewer-status">${raIcon(control?'control':'monitor')}<span>${paused?'对方已暂停共享':control?'鼠标与键盘已获本次授权':'当前仅查看，操作需要对方同意'}</span></div>`}<div class="ra-canvas ${remote.scale==='actual'?'actual':''}">${paused?`<div class="ra-paused">${raIcon('pause')}<h2>画面已暂停共享</h2><p>桌面已隐藏，鼠标键盘权限已收回。</p>${host?btn('继续共享','remote-resume','','primary'):'<span>等待对方继续共享</span>'}</div>`:remoteDesktop()}</div><footer class="ra-connection-strip"><span><i class="ra-online ${slow?'weak':''}"></i>${slow?'网络波动':'局域网直连'}</span><span>${slow?'186':'12'} ms</span><span>${slow?'8':remote.fps} FPS</span><span>${remote.screen==='1'?'1920 × 1080':'1080 × 1920'}</span><span class="ra-connection-right">${paused?'已暂停':remote.quality} · ${remote.scale==='actual'?'100%':'适应窗口'}</span></footer></div>${remote.chatOpen?remoteChatPanel():''}</div>`;
+    root.innerHTML=`<header class="ra-session-head"><div class="ra-session-identity"><span class="ra-avatar small">${host?people.viewer[0]:people.host[0]}</span><div><h1>${host?(paused?'我的屏幕已暂停共享':'我的屏幕正在共享'):`${people.host}的远程桌面`}</h1><p><span class="ra-online"></span>${remoteActor()} · ${host?'共享方':'协助方'}<span class="ra-dot">·</span><span data-ra-elapsed>${remoteElapsed()}</span></p></div></div><div class="ra-session-head-actions"><span class="ra-session-permission ${control?'control':''}">${raIcon(control?'control':'monitor')}${paused?'已暂停':control?'允许控制':'仅查看'}</span>${raButton('结束协助','remote-end','close','','danger')}</div></header><div class="ra-toolbar"><span class="ra-screen-label">${raIcon('monitor')}屏幕 ${remote.screen}</span>${host?raButton('切换屏幕','remote-screen','monitor'):''}<span class="ra-tool-divider"></span><label class="ra-scale-label">显示<select id="raScale" aria-label="画面缩放"><option value="fit" ${remote.scale==='fit'?'selected':''}>适应窗口</option><option value="actual" ${remote.scale==='actual'?'selected':''}>原始比例 100%</option></select></label>${raButton(remote.quality,'remote-quality','tune')}${raButton(remote.expanded?'退出全屏':'全屏','remote-expand',remote.expanded?'shrink':'expand')}<span class="ra-toolbar-spacer"></span>${!host&&!control&&!paused?raButton(remote.controlPending?'等待授权':'申请控制','remote-control','control',remote.controlPending?'disabled':'','primary'):''}${!host&&control?raButton('释放控制','remote-revoke','control'):''}${host&&!control&&!paused?raButton(remote.controlPending?'处理控制请求':'允许对方控制',remote.controlPending?'control-consent':'remote-offer-control','control','','primary'):''}${raButton('沟通','remote-chat-toggle','chat',`aria-pressed="${remote.chatOpen}"`)}</div>${voiceBar()}${slow?`<div class="ra-network-warning">${icon('alert')}网络有波动，画面可能稍有延迟。${link('切换为优先流畅','remote-fast')}</div>`:''}<div class="ra-workspace ${remote.chatOpen?'with-chat':''}"><div class="ra-canvas-wrap">${host?`<div class="ra-sharing-strip ${control?'control':''}">${raIcon(control?'control':'monitor')}<strong>${status}</strong><div>${control?raButton('收回控制','remote-revoke','shield','','danger'):''}${raButton(paused?'继续共享':'暂停共享',paused?'remote-resume':'remote-pause',paused?'play':'pause')}${raButton('结束','remote-end','close','','danger')}</div></div>`:`<div class="ra-viewer-status">${raIcon(control?'control':'monitor')}<span>${paused?'对方已暂停共享':control?'鼠标与键盘已获本次授权':'当前仅查看，操作需要对方同意'}</span></div>`}<div class="ra-canvas ${remote.scale==='actual'?'actual':''}">${paused?`<div class="ra-paused">${raIcon('pause')}<h2>画面已暂停共享</h2><p>桌面已隐藏，鼠标键盘权限已收回。</p>${host?btn('继续共享','remote-resume','','primary'):'<span>等待对方继续共享</span>'}</div>`:remoteDesktop()}</div><footer class="ra-connection-strip"><span><i class="ra-online ${slow?'weak':''}"></i>${slow?'网络波动':'局域网直连'}</span><span>${slow?'186':'12'} ms</span><span>${slow?'8':remote.fps} FPS</span><span>${remote.screen==='1'?'1920 × 1080':'1080 × 1920'}</span><span class="ra-connection-right">${paused?'已暂停':remote.quality} · ${remote.scale==='actual'?'100%':'适应窗口'}</span></footer></div>${remote.chatOpen?remoteChatPanel():''}</div>`;
     const messages=root.querySelector('.ra-chat-messages');if(messages)messages.scrollTop=messages.scrollHeight;
   }
   function handleRemoteAction(action,target) {
@@ -317,6 +365,7 @@
   function remoteScenarioChanged() {
     if(['disconnect','locked'].includes(scenario))stopRemote('disconnected',scenario);
     else if(scenario==='timeout')stopRemote('expired');
+    else if(['mic-denied','voice-drop'].includes(scenario)){if(['active','paused'].includes(remote.stage)){remote.voice.stage='error';remote.voice.startedAt=0;remote.voice.reason=scenario==='mic-denied'?`${remoteActor()} 的麦克风权限未开启`:'语音连接已中断';closeDialog();}}
     else if(scenario!=='weak'){remote=initialRemote();role='viewer';}
   }
 
@@ -359,6 +408,7 @@
     else if(action==='restore')restoreStart();
     else if(action==='restore-check')restorePreview();
     else if(action==='restore-run')runRestore();
+    else if(action.startsWith('voice-'))handleVoiceAction(action);
     else if(action==='role'||action==='control-consent'||action.startsWith('remote-'))handleRemoteAction(action,target);
   });
   document.addEventListener('input',event=>{if(enabled&&event.target.id==='p3Search'){const position=event.target.selectionStart;query=event.target.value;renderTasks();const field=byId('p3Search');field.focus();field.setSelectionRange(position,position);}});
