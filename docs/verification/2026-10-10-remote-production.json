@@ -1,0 +1,99 @@
+{
+  "result": "passed",
+  "checks": [
+    "no peer connection before consent",
+    "real WebRTC screen frames decoded",
+    "real bidirectional audio packets",
+    "two independent backend identities",
+    "pause keeps microphone and voice",
+    "microphone state synchronized",
+    "speaker mute is independent",
+    "voice hangup retains screen and releases microphones",
+    "microphone denial ends only voice and keeps screen session",
+    "late microphone permission after hangup releases the new track",
+    "mid-session voice invitation accepted",
+    "remote chat uses durable conversation messages",
+    "quality dialog remains usable inside fullscreen",
+    "ending releases every created track and peer connection",
+    "request-control direction shares receiver screen after receiver chooses view-only",
+    "receiver rejection reaches initiator without media",
+    "initiator cancellation dismisses receiver consent"
+  ],
+  "media": {
+    "host": [
+      {
+        "type": "inbound-rtp",
+        "kind": "audio",
+        "bytes": 11734
+      },
+      {
+        "type": "outbound-rtp",
+        "kind": "audio",
+        "bytes": 7636
+      },
+      {
+        "type": "outbound-rtp",
+        "kind": "video",
+        "bytes": 36458,
+        "frames": 37
+      }
+    ],
+    "viewer": [
+      {
+        "type": "inbound-rtp",
+        "kind": "audio",
+        "bytes": 7717
+      },
+      {
+        "type": "inbound-rtp",
+        "kind": "video",
+        "bytes": 36816,
+        "frames": 38
+      },
+      {
+        "type": "outbound-rtp",
+        "kind": "audio",
+        "bytes": 11734
+      },
+      {
+        "type": "outbound-rtp",
+        "kind": "video",
+        "bytes": 0,
+        "frames": 0
+      }
+    ]
+  },
+  "layouts": [
+    {
+      "width": 1280,
+      "left": 56,
+      "right": 1280,
+      "bottom": 850,
+      "videoHeight": 570.984375,
+      "scroll": 1280
+    },
+    {
+      "width": 860,
+      "left": 56,
+      "right": 860,
+      "bottom": 850,
+      "videoHeight": 578.671875,
+      "scroll": 860
+    },
+    {
+      "width": 390,
+      "left": 0,
+      "right": 390,
+      "bottom": 850,
+      "videoHeight": 538.109375,
+      "scroll": 390
+    }
+  ],
+  "exceptions": [
+    [],
+    []
+  ],
+  "device_sources": "synthetic canvas screen + Chrome fake microphone only; signaling, backend state and WebRTC are real",
+  "frontend": "Vite current source",
+  "evidence_dir": "C:\\Users\\wangy\\AppData\\Local\\Temp\\xchat-remote-e2e-k_z44ci3"
+}

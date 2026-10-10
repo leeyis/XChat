@@ -1,0 +1,28 @@
+{
+  "result": "passed",
+  "checks": [
+    "native capture denied before peer consent",
+    "real native xcap frames decoded via WebRTC; no screen pixels persisted",
+    "authorized data input validates with no-op keepalive (no OS keys or pointer injected)",
+    "wrong actor, wrong grant and replayed input rejected",
+    "persistent toolbar revoke invalidates old grant",
+    "control re-request requires consent and rotates grant",
+    "toolbar pause revokes control, preserves voice, resumes without stale-frame teardown",
+    "end tears down media and closes persistent toolbar"
+  ],
+  "video": {
+    "width": 320,
+    "height": 180,
+    "decoded": 6,
+    "native_frames": {
+      "count": 7,
+      "bytes": 84920
+    }
+  },
+  "exceptions": [
+    [],
+    []
+  ],
+  "evidence_dir": "C:\\Users\\wangy\\AppData\\Local\\Temp\\xchat-remote-native-0k8zry0k",
+  "limitations": "Native screen bytes used only in memory; no real OS key/mouse injection; microphones are fake browser devices"
+}

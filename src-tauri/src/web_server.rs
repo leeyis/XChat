@@ -513,6 +513,7 @@ pub async fn serve_listener(
     let diagnostic_health = health.clone();
     let app = Router::new()
         .merge(crate::backup::http::routes())
+        .merge(crate::remote::http::routes())
         .route("/", get(serve_index))
         .route("/api/health", get(move || {
             let health = health.borrow().clone();

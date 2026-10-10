@@ -19,6 +19,16 @@ description = "Create, validate and merge local chat backups."
 commands.allow = ["get_backup_overview", "start_local_backup", "get_backup_job", "cancel_backup_job", "prepare_backup_restore", "restore_backup"]
 
 [[permission]]
+identifier = "allow-remote-assistance"
+description = "Manage explicitly accepted remote sessions from the main window."
+commands.allow = ["remote_bootstrap", "remote_poll", "remote_start", "remote_action", "remote_screens", "remote_frame", "remote_input"]
+
+[[permission]]
+identifier = "allow-remote-toolbar"
+description = "Observe, pause, revoke and end the local screen share."
+commands.allow = ["remote_toolbar"]
+
+[[permission]]
 identifier = "allow-get-my-id"
 description = "Allows reading the current user ID"
 commands.allow = ["get_my_id"]

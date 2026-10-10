@@ -16,6 +16,8 @@ const render = (View, props = {}) => root.render(
 // Screenshot windows can render without loading the chat UI and its dependencies.
 if (requestedView === "capture-editor" || requestedView === "capture-pin") {
   render(CaptureEditor, { mode: requestedView === "capture-pin" ? "pin" : "editor" });
+} else if (requestedView === "remote-toolbar") {
+  import("./RemoteToolbar.jsx").then(({ default: Toolbar }) => render(Toolbar));
 } else {
   import("./App.jsx").then(({ default: App }) => render(App));
 }

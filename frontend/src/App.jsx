@@ -51,6 +51,7 @@ import { VoiceComposer, VoiceBubble } from "./VoiceMessage.jsx";
 import TaskCenter, { StabilityIcon } from "./TaskCenter.jsx";
 import ConnectionDiagnostics from "./ConnectionDiagnostics.jsx";
 import BackupPanel from "./BackupPanel.jsx";
+import RemoteAssistance, { RemoteIcon, openRemote } from "./RemoteAssistance.jsx";
 import CaptureEditor from "./CaptureEditor.jsx";
 import CaptureWorkspace from "./CaptureWorkspace.jsx";
 import { createChatScrollController } from "./chat-scroll.js";
@@ -3429,6 +3430,7 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
           <span>{subtitle}</span>
         </div>
         <div className="head-actions">
+          {conversation.kind === "direct" && <button className="icon-button" aria-label="远程协助" title="远程协助" onClick={()=>openRemote(conversation.peer_id)}><RemoteIcon/></button>}
           <button
             className={`icon-button info-toggle ${infoOpen ? "active" : ""}`}
             onClick={onToggleInfo}
@@ -5619,6 +5621,7 @@ export default function App({ workspace }) {
     <section className={shellClass} data-od-id="xchat-desktop-app">
       {(state.capabilities.capture || !globalThis.window?.__TAURI__) && <CaptureWorkspace workspace={workspace} english={language === "en"} captureShortcut={state.settings.capture_shortcut} />}
       <Rail state={state} labels={labels} onOpen={openSection} />
+      <RemoteAssistance state={state} workspace={workspace}/>
       {state.activeSection !== "tasks" && <ListPane
         state={state}
         workspace={workspace}

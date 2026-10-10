@@ -1,5 +1,10 @@
 # 2026-10-10 阶段三生产实现：知识与设计记录
 
+- 远程模块独立于截图：`remote/{model,input,platform,mod,commands,http}.rs` + `RemoteAssistance/RemoteToolbar` + `remote-client/media/model`。会话/控制令牌仅在内存，接受后才建立 WebRTC；没有后台常驻控制或自动恢复授权。Windows 原生捕获/输入可用，浏览器共享仅查看，Android 不开放原生输入。
+- 信令队列有序有界、身份地址验证和邀请回查；UI actor 与对端 secret 分开。HTTP UI 只接受本机同源，WebRTC 无公网 STUN/TURN。信令仍使用项目既有 LAN HTTP，适用于可信局域网，不能宣称已经实现带证书身份认证的端到端安全远控。
+- 所有权 8 秒、对端 12 秒、请求 60 秒、连接 40 秒、无人接听语音 30 秒超时；输入 2 秒没有续租释放按键。会话/授权/输入序号和画面 revision 分别隔离，暂停/切屏必撤权。提示条使用每会话独立 label，关闭旧窗口不会影响新会话。
+- 本轮测试区分设备源与协议：Chrome 以合成画面/麦克风作为设备，信令/状态/媒体编解码全部真实；原生屏幕仅在内存验证，不归档用户屏幕。系统输入用白名单/坐标/授权边界单测和原生 no-op 验证，没有把鼠标键盘注入用户日常应用。
+
 - 用户已批准 `437bfcc` 原型并授权完整生产实现，前一轮“等待原型评审”状态已解除。
 - 实际代码为 `frontend/src/App.jsx` / `xchat.js` 的 React 19.2.8 + Vite 8.1.5，Rust 共享 `workspace.rs` / `db.rs` / network。已有 Node 测试与 Rust 测试；AGENTS 的静态前端描述已过时，按实际代码沿用。
 - 图谱找到既有 `conversation_file::retry_message`、`workspace::cancel_transfer`、`peer_identity::probe_peer_identity` 等可复用功能；没有生产远程/语音/备份符号。远程旧 7 月计划仅作技术线索，最新获批原型决定交互与授权规则。

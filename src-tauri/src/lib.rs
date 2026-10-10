@@ -33,6 +33,7 @@ pub mod voice;
 pub mod tasks;
 pub mod diagnostics;
 pub mod backup;
+pub mod remote;
 
 // 仅在桌面端编译时包含 Tauri 运行函数
 #[cfg(feature = "desktop")]
@@ -131,6 +132,14 @@ pub fn run() {
             backup::commands::cancel_backup_job,
             backup::commands::prepare_backup_restore,
             backup::commands::restore_backup,
+            remote::commands::remote_bootstrap,
+            remote::commands::remote_poll,
+            remote::commands::remote_start,
+            remote::commands::remote_action,
+            remote::commands::remote_screens,
+            remote::commands::remote_frame,
+            remote::commands::remote_input,
+            remote::commands::remote_toolbar,
             commands::run_task_action,
             commands::replace_task_source,
             commands::run_connection_diagnostics,
