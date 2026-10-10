@@ -76,6 +76,7 @@ fn toolbar(app: &tauri::AppHandle, hub: Arc<Hub>, actor: &str, id: &str) -> Resu
         .inner_size(730.0, 78.0)
         .position(100.0, 16.0)
         .decorations(false)
+        .transparent(true)
         .resizable(false)
         .minimizable(false)
         .always_on_top(true)

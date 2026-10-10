@@ -54,6 +54,9 @@ pub enum Action {
     Control {
         allow: bool,
     },
+    OfferControl {
+        revision: u64,
+    },
     Pause {
         paused: bool,
     },
@@ -750,6 +753,13 @@ impl Hub {
                 }
                 Some(session.view.host_state(allow)?)
             }
+            Action::OfferControl { revision } => {
+                session.view.require_host()?;
+                if session.view.phase != "active" || revision != session.view.revision {
+                    return Err("共享状态已变化，请重新确认本次控制授权".into());
+                }
+                Some(session.view.host_state(true)?)
+            }
             Action::Pause { paused } => {
                 session.view.require_host()?;
                 session.view.paused = paused;
@@ -980,6 +990,94 @@ mod tests {
         session.voice_ringing = Some(Instant::now() - Duration::from_secs(31));
         session.expire_voice("self");
         assert_eq!(session.view.voice.stage, "active");
+    }
+
+    #[tokio::test]
+    async fn host_offer_requires_current_revision_and_cannot_restore_revoked_control() {
+        let hub = Hub {
+            pool: sqlx::sqlite::SqlitePoolOptions::new()
+                .connect_lazy("sqlite::memory:")
+                .unwrap(),
+            peers: Arc::new(PeerManager::new()),
+            self_id: "self".into(),
+            state: Mutex::new(State::default()),
+            wake: tokio::sync::Notify::new(),
+            client: reqwest::Client::new(),
+            capture: Arc::new(tokio::sync::Semaphore::new(1)),
+        };
+        let mut session = session();
+        session.view.native_host = true;
+        session.view.phase = "active".into();
+        let id = session.view.id.clone();
+        let revision = session.view.revision;
+        {
+            let mut state = hub.lock();
+            state.actors.insert(
+                "owner".into(),
+                Actor {
+                    native: true,
+                    seen: Instant::now(),
+                },
+            );
+            state.session = Some(session);
+        }
+        assert!(hub
+            .action("foreign", &id, Action::OfferControl { revision })
+            .await
+            .is_err());
+        let granted = hub
+            .action("owner", &id, Action::OfferControl { revision })
+            .await
+            .unwrap();
+        assert!(granted.grant.is_some());
+        assert!(!granted.control_requested);
+        let revoked = hub
+            .action("owner", &id, Action::Control { allow: false })
+            .await
+            .unwrap();
+        assert!(hub
+            .action(
+                "owner",
+                &id,
+                Action::OfferControl {
+                    revision: granted.revision
+                }
+            )
+            .await
+            .is_err());
+        assert!(hub.lock().session.as_ref().unwrap().view.grant.is_none());
+        let paused = hub
+            .action("owner", &id, Action::Pause { paused: true })
+            .await
+            .unwrap();
+        assert!(hub
+            .action(
+                "owner",
+                &id,
+                Action::OfferControl {
+                    revision: paused.revision
+                }
+            )
+            .await
+            .is_err());
+        let resumed = hub
+            .action("owner", &id, Action::Pause { paused: false })
+            .await
+            .unwrap();
+        assert!(resumed.revision > revoked.revision);
+        {
+            hub.lock().session.as_mut().unwrap().view.local_host = false;
+        }
+        assert!(hub
+            .action(
+                "owner",
+                &id,
+                Action::OfferControl {
+                    revision: resumed.revision
+                }
+            )
+            .await
+            .is_err());
     }
 
     #[tokio::test]

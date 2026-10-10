@@ -1,5 +1,12 @@
 # 2026-10-10 远控工具栏交互补充
 
+本轮生产结论：面板折叠必须缩窗而不是隐藏原生窗；主窗口/原生窗用同会话 localStorage 和同页事件同步，布局变化不触发媒体操作。Tauri PhysicalPosition 必须取整，逻辑尺寸先乘显示器缩放后约束到物理 workArea。原生 125% 实测已通过；CSS innerWidth 会整数取整，边界测量须允许一个 CSS 像素误差。主动授权带 revision，避免旧确认框恢复已撤销权限。24 组同容器对照已验证全部几何/样式一致，最大截图差异 0.1788%，不得描述为整屏逐像素完全相同。报告：`docs/verification/2026-10-10-remote-toolbar-production.md`。
+
+- 用户已批准 `60240ba`，要求生产版像素级复刻。当前 RemoteAssistance 的工具区/语音区与批准原型有结构、尺寸和图标差异；应按原型构建共享 UI 原语，同时接入已有真实会话/媒体逻辑。共享方原生 RemoteToolbar 当前是 730×78 独立窗口，隐藏整个窗口会被后端判断不可见并停止共享，必须以缩窗实现浮标。
+- 采用共用 RemoteControls / RemoteSessionView 和原型提取的 scoped CSS；折叠状态只用会话 ID 隔离的本地 UI 存储，在主窗口和置顶窗口同步，位置各自保存。原生适配器使用逻辑尺寸和物理工作区坐标，支持负坐标显示器，串行合并缩窗请求。API 单位依据 Tauri 官方窗口文档：https://v2.tauri.app/reference/javascript/api/namespacewindow/ 。
+- 发现旧生产后端缺失原型已批准的共享方主动授权；新增显式 OfferControl(revision)，仍验证会话所有者、共享方、当前画面 revision、活动态和平台能力，避免迟到确认重新授权。
+- 代码图仍未收录新 remote 模块符号，已回读准确路径。仓库 package.json 在根目录，frontend/package.json 不存在；PowerShell 下 rg 不能使用裸路径通配，后续使用 -g 过滤。
+
 - 原型主 HTML 通过 `assets/stability-phase3-review.js` 和 `assets/remote-assist-v2.css` 引入远控模块；代码图暂无原型符号，已按规则回退到定位资源。主 HTML 还有其他工作流的自启动/群在线状态修改，应只提交本轮资源版本变更。
 - 原型包含查看方 `.ra-toolbar` 和共享方 `.ra-sharing-strip`。两者应支持拖动、边界约束、折叠浮标及原位恢复；隐藏工具不改变共享、控制或语音状态。
 - 生产原生窗口的可见性是当前授权检查的一部分；后续生产必须以仍可见的紧凑浮标承载状态，不能直接隐藏整个原生窗口导致断流。当前只修改原型，等待新增交互获批。

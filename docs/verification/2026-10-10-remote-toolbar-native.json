@@ -1,0 +1,137 @@
+{
+  "result": "passed",
+  "checks": [
+    "native capture denied before peer consent",
+    "real native xcap frames decoded via WebRTC; no screen pixels persisted",
+    "authorized data input validates with no-op keepalive (no OS keys or pointer injected)",
+    "wrong actor, wrong grant and replayed input rejected",
+    "native fold synchronizes main view while real frames, grant and voice continue",
+    "native keyboard move is scaled correctly and expanding restores full position",
+    "native moved window clamps to physical monitor work area",
+    "rapid fold/restore ends with current layout and size",
+    "main navigation minimizes and reopens session without stopping media",
+    "compact native toolbar revoke invalidates old grant",
+    "host proactive control offer uses explicit real consent and a fresh grant",
+    "control re-request requires consent and rotates grant",
+    "toolbar pause revokes control, preserves voice, resumes without stale-frame teardown",
+    "end tears down media and closes persistent toolbar"
+  ],
+  "video": {
+    "width": 320,
+    "height": 180,
+    "decoded": 7,
+    "native_frames": {
+      "count": 9,
+      "bytes": 88740
+    }
+  },
+  "geometry": {
+    "full": {
+      "x": 1031,
+      "y": 0,
+      "width": 587,
+      "height": 80,
+      "scale": 1.25,
+      "area": {
+        "position": {
+          "type": "Physical",
+          "x": 0,
+          "y": 0
+        },
+        "size": {
+          "type": "Physical",
+          "width": 2560,
+          "height": 1380
+        }
+      },
+      "collapsed": false
+    },
+    "compact": {
+      "x": 1031,
+      "y": 0,
+      "width": 258,
+      "height": 76,
+      "scale": 1.25,
+      "area": {
+        "position": {
+          "type": "Physical",
+          "x": 0,
+          "y": 0
+        },
+        "size": {
+          "type": "Physical",
+          "width": 2560,
+          "height": 1380
+        }
+      },
+      "collapsed": true
+    },
+    "moved": {
+      "x": 1041,
+      "y": 0,
+      "width": 258,
+      "height": 76,
+      "scale": 1.25,
+      "area": {
+        "position": {
+          "type": "Physical",
+          "x": 0,
+          "y": 0
+        },
+        "size": {
+          "type": "Physical",
+          "width": 2560,
+          "height": 1380
+        }
+      },
+      "collapsed": true
+    },
+    "restored": {
+      "x": 1031,
+      "y": 0,
+      "width": 587,
+      "height": 80,
+      "scale": 1.25,
+      "area": {
+        "position": {
+          "type": "Physical",
+          "x": 0,
+          "y": 0
+        },
+        "size": {
+          "type": "Physical",
+          "width": 2560,
+          "height": 1380
+        }
+      },
+      "collapsed": false
+    },
+    "clamped": {
+      "x": 1827,
+      "y": 1280,
+      "width": 587,
+      "height": 80,
+      "scale": 1.25,
+      "area": {
+        "position": {
+          "type": "Physical",
+          "x": 0,
+          "y": 0
+        },
+        "size": {
+          "type": "Physical",
+          "width": 2560,
+          "height": 1380
+        }
+      },
+      "collapsed": false
+    }
+  },
+  "exceptions": [
+    [],
+    [],
+    []
+  ],
+  "evidence_dir": "C:\\Users\\wangy\\AppData\\Local\\Temp\\xchat-toolbar-native-p1v1ndpc",
+  "limitations": "Native screen bytes used only in memory; no real OS key/mouse injection; microphones are fake browser devices"
+}

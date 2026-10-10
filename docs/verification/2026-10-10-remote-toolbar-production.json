@@ -1,0 +1,542 @@
+{
+  "comparisons": [
+    {
+      "width": 1280,
+      "theme": "light",
+      "role": "host",
+      "mode": "full",
+      "prototypeSize": [
+        508,
+        48
+      ],
+      "productionSize": [
+        508,
+        48
+      ],
+      "mismatch": 0.00045111548556430446,
+      "differences": [],
+      "elementCounts": [
+        19,
+        19
+      ]
+    },
+    {
+      "width": 1280,
+      "theme": "light",
+      "role": "host",
+      "mode": "compact",
+      "prototypeSize": [
+        225,
+        44
+      ],
+      "productionSize": [
+        225,
+        44
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        14,
+        14
+      ]
+    },
+    {
+      "width": 1280,
+      "theme": "light",
+      "role": "viewer",
+      "mode": "full",
+      "prototypeSize": [
+        642,
+        48
+      ],
+      "productionSize": [
+        642,
+        48
+      ],
+      "mismatch": 6.490134994807892e-05,
+      "differences": [],
+      "elementCounts": [
+        23,
+        23
+      ]
+    },
+    {
+      "width": 1280,
+      "theme": "light",
+      "role": "viewer",
+      "mode": "compact",
+      "prototypeSize": [
+        179,
+        44
+      ],
+      "productionSize": [
+        179,
+        44
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        11,
+        11
+      ]
+    },
+    {
+      "width": 1280,
+      "theme": "dark",
+      "role": "host",
+      "mode": "full",
+      "prototypeSize": [
+        508,
+        48
+      ],
+      "productionSize": [
+        508,
+        48
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        19,
+        19
+      ]
+    },
+    {
+      "width": 1280,
+      "theme": "dark",
+      "role": "host",
+      "mode": "compact",
+      "prototypeSize": [
+        225,
+        44
+      ],
+      "productionSize": [
+        225,
+        44
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        14,
+        14
+      ]
+    },
+    {
+      "width": 1280,
+      "theme": "dark",
+      "role": "viewer",
+      "mode": "full",
+      "prototypeSize": [
+        642,
+        48
+      ],
+      "productionSize": [
+        642,
+        48
+      ],
+      "mismatch": 6.490134994807892e-05,
+      "differences": [],
+      "elementCounts": [
+        23,
+        23
+      ]
+    },
+    {
+      "width": 1280,
+      "theme": "dark",
+      "role": "viewer",
+      "mode": "compact",
+      "prototypeSize": [
+        179,
+        44
+      ],
+      "productionSize": [
+        179,
+        44
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        11,
+        11
+      ]
+    },
+    {
+      "width": 860,
+      "theme": "light",
+      "role": "host",
+      "mode": "full",
+      "prototypeSize": [
+        508,
+        56
+      ],
+      "productionSize": [
+        508,
+        56
+      ],
+      "mismatch": 0.00038667041619797526,
+      "differences": [],
+      "elementCounts": [
+        19,
+        19
+      ]
+    },
+    {
+      "width": 860,
+      "theme": "light",
+      "role": "host",
+      "mode": "compact",
+      "prototypeSize": [
+        225,
+        50
+      ],
+      "productionSize": [
+        225,
+        50
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        14,
+        14
+      ]
+    },
+    {
+      "width": 860,
+      "theme": "light",
+      "role": "viewer",
+      "mode": "full",
+      "prototypeSize": [
+        622,
+        56
+      ],
+      "productionSize": [
+        622,
+        56
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        23,
+        23
+      ]
+    },
+    {
+      "width": 860,
+      "theme": "light",
+      "role": "viewer",
+      "mode": "compact",
+      "prototypeSize": [
+        179,
+        50
+      ],
+      "productionSize": [
+        179,
+        50
+      ],
+      "mismatch": 0.001787709497206704,
+      "differences": [],
+      "elementCounts": [
+        11,
+        11
+      ]
+    },
+    {
+      "width": 860,
+      "theme": "dark",
+      "role": "host",
+      "mode": "full",
+      "prototypeSize": [
+        508,
+        56
+      ],
+      "productionSize": [
+        508,
+        56
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        19,
+        19
+      ]
+    },
+    {
+      "width": 860,
+      "theme": "dark",
+      "role": "host",
+      "mode": "compact",
+      "prototypeSize": [
+        225,
+        50
+      ],
+      "productionSize": [
+        225,
+        50
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        14,
+        14
+      ]
+    },
+    {
+      "width": 860,
+      "theme": "dark",
+      "role": "viewer",
+      "mode": "full",
+      "prototypeSize": [
+        622,
+        56
+      ],
+      "productionSize": [
+        622,
+        56
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        23,
+        23
+      ]
+    },
+    {
+      "width": 860,
+      "theme": "dark",
+      "role": "viewer",
+      "mode": "compact",
+      "prototypeSize": [
+        179,
+        50
+      ],
+      "productionSize": [
+        179,
+        50
+      ],
+      "mismatch": 0.001340782122905028,
+      "differences": [],
+      "elementCounts": [
+        11,
+        11
+      ]
+    },
+    {
+      "width": 390,
+      "theme": "light",
+      "role": "host",
+      "mode": "full",
+      "prototypeSize": [
+        318,
+        124
+      ],
+      "productionSize": [
+        318,
+        124
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        19,
+        19
+      ]
+    },
+    {
+      "width": 390,
+      "theme": "light",
+      "role": "host",
+      "mode": "compact",
+      "prototypeSize": [
+        223,
+        50
+      ],
+      "productionSize": [
+        223,
+        50
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        14,
+        14
+      ]
+    },
+    {
+      "width": 390,
+      "theme": "light",
+      "role": "viewer",
+      "mode": "full",
+      "prototypeSize": [
+        318,
+        89
+      ],
+      "productionSize": [
+        318,
+        89
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        23,
+        23
+      ]
+    },
+    {
+      "width": 390,
+      "theme": "light",
+      "role": "viewer",
+      "mode": "compact",
+      "prototypeSize": [
+        177,
+        50
+      ],
+      "productionSize": [
+        177,
+        50
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        11,
+        11
+      ]
+    },
+    {
+      "width": 390,
+      "theme": "dark",
+      "role": "host",
+      "mode": "full",
+      "prototypeSize": [
+        318,
+        124
+      ],
+      "productionSize": [
+        318,
+        124
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        19,
+        19
+      ]
+    },
+    {
+      "width": 390,
+      "theme": "dark",
+      "role": "host",
+      "mode": "compact",
+      "prototypeSize": [
+        223,
+        50
+      ],
+      "productionSize": [
+        223,
+        50
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        14,
+        14
+      ]
+    },
+    {
+      "width": 390,
+      "theme": "dark",
+      "role": "viewer",
+      "mode": "full",
+      "prototypeSize": [
+        318,
+        89
+      ],
+      "productionSize": [
+        318,
+        89
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        23,
+        23
+      ]
+    },
+    {
+      "width": 390,
+      "theme": "dark",
+      "role": "viewer",
+      "mode": "compact",
+      "prototypeSize": [
+        177,
+        50
+      ],
+      "productionSize": [
+        177,
+        50
+      ],
+      "mismatch": 0.0,
+      "differences": [],
+      "elementCounts": [
+        11,
+        11
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "name": "24 prototype comparisons match geometry and computed styles",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "24 toolbar screenshots differ by at most 0.2 percent of pixels",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "React panel follows pointer and releases captured remote input",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "fold preserves grant and sharing state",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "restoring after moving compact handle restores full coordinates",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "compact revoke updates control state and stays folded",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "unmount/remount retains session fold preference",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "offscreen pointer movement clamps complete panel",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "window shrink keeps toolbar reachable",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "compact end removes session UI",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "no uncaught browser exceptions",
+      "passed": true,
+      "detail": []
+    }
+  ],
+  "evidence": "C:\\Users\\wangy\\AppData\\Local\\Temp\\xchat-toolbar-production-bw_1vlaq"
+}
