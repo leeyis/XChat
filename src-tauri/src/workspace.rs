@@ -149,6 +149,7 @@ pub struct WorkspaceConversation {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkspaceMessage {
+    pub voice: Option<crate::voice::VoiceMetadata>,
     pub id: i64,
     pub message_id: i64,
     pub client_message_id: Option<String>,
@@ -388,7 +389,10 @@ async fn message_view(
             status = "delivered".to_string();
         }
     }
-    let is_file = message.msg_type == "file";
+    let is_file = matches!(message.msg_type.as_str(), "file" | "voice");
+    let voice = if message.msg_type == "voice" {
+        crate::voice::metadata(pool, message.client_message_id.as_deref().unwrap_or_default()).await?
+    } else { None };
     let local_available = is_file && trusted_file_path(pool, message.id).await.is_ok();
     let mut delivery_state = None;
     let mut delivery_error = None;
@@ -445,6 +449,7 @@ async fn message_view(
         delivery_state = Some(state.to_string());
     }
     Ok(WorkspaceMessage {
+        voice,
         id: message.id,
         message_id: message.id,
         client_message_id: message.client_message_id,
@@ -543,7 +548,7 @@ async fn conversation_view(
         unread_count: unread_count.max(i64::from(record.forced_unread)),
         last_message: latest
             .as_ref()
-            .map(|message| message.content.clone())
+            .map(|message| if message.msg_type == "voice" { "[语音]".to_string() } else { message.content.clone() })
             .unwrap_or_default(),
         last_message_at: latest
             .as_ref()
@@ -1363,16 +1368,22 @@ pub async fn forward_message(
     }
     let note = note.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
     for conversation_id in targets {
-        if source.msg_type == "file" {
+        if matches!(source.msg_type.as_str(), "file" | "voice") {
             let path = source
                 .file_path
                 .as_deref()
                 .ok_or_else(|| "原文件已不存在，无法转发".to_string())?;
-            crate::network::conversation_file::send_path(
+            let voice = if source.msg_type == "voice" {
+                Some(crate::voice::metadata(pool, source.client_message_id.as_deref().ok_or("语音消息 ID 缺失")?)
+                    .await?.ok_or("语音元数据缺失，无法转发")?)
+            } else { None };
+            crate::network::conversation_file::send_path_identified(
                 pool,
                 peer_manager,
                 &conversation_id,
                 path,
+                &uuid::Uuid::new_v4().to_string(),
+                voice.as_ref(),
             )
             .await?;
         } else if matches!(source.msg_type.as_str(), "text" | "quote" | "announcement") {
@@ -1450,7 +1461,7 @@ pub async fn transfers(pool: &Pool<Sqlite>) -> Result<Vec<WorkspaceTransfer>, St
     let file_names = sqlx::query_as::<_, (String, String)>(
         "SELECT t.id, COALESCE(m.content, '') FROM
          (SELECT id, message_id FROM transfers ORDER BY updated_at DESC LIMIT 500) t
-         LEFT JOIN messages m ON m.id = t.message_id AND m.msg_type = 'file'",
+         LEFT JOIN messages m ON m.id = t.message_id AND m.msg_type IN ('file', 'voice')",
     )
     .fetch_all(pool)
     .await
@@ -1853,7 +1864,7 @@ async fn prepare_incoming_file_request(
                     file_status, file_size, sender_msg_id, status, conversation_id,
                     client_message_id
              FROM messages
-             WHERE sender_msg_id = ? AND msg_type = 'file' AND sender_id != ?
+             WHERE sender_msg_id = ? AND msg_type IN ('file', 'voice') AND sender_id != ?
                AND client_message_id IS NOT NULL
              ORDER BY id DESC LIMIT 1",
         )
@@ -1868,7 +1879,7 @@ async fn prepare_incoming_file_request(
     };
     if message.sender_id == self_id
         || message.sender_id == "me"
-        || message.msg_type != "file"
+        || !matches!(message.msg_type.as_str(), "file" | "voice")
         || message.client_message_id.is_none()
         || (message.sender_msg_id.as_deref() != Some(sender_msg_id_text.as_str())
             && message.id != sender_msg_id)

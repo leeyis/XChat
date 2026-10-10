@@ -2492,6 +2492,19 @@ pub async fn get_workspace_snapshot(
 }
 
 #[tauri::command]
+pub async fn send_voice_message(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    peers: State<'_, PeerState>,
+    request: crate::voice::SendVoiceRequest,
+) -> Result<crate::network::conversation_file::ConversationFileSendResult, String> {
+    let result = crate::voice::send(&state.pool, &peers.manager, request).await?;
+    let _ = app.emit("message-changed", &result.message);
+    let _ = app.emit("transfer-changed", &result.transfers);
+    Ok(result)
+}
+
+#[tauri::command]
 pub async fn sync_workspace(
     state: State<'_, DbState>,
     peer_state: State<'_, PeerState>,
@@ -2698,7 +2711,7 @@ pub async fn save_conversation_file_as(
     {
         let message = crate::db::get_message_by_id(&state.pool, message_id)
             .await?
-            .filter(|message| message.msg_type == "file")
+            .filter(|message| matches!(message.msg_type.as_str(), "file" | "voice"))
             .ok_or_else(|| "文件消息不存在".to_string())?;
         let source = message
             .file_path

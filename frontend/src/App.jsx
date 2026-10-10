@@ -46,6 +46,7 @@ import {
   validServerPort,
   withDiscoveryInterfaceSelection,
 } from "./xchat.js";
+import { VoiceComposer, VoiceBubble } from "./VoiceMessage.jsx";
 import CaptureEditor from "./CaptureEditor.jsx";
 import CaptureWorkspace from "./CaptureWorkspace.jsx";
 import { createChatScrollController } from "./chat-scroll.js";
@@ -1375,7 +1376,7 @@ function statusLabel(message, group, labels, peerOffline = false) {
     return message.delivery_state && !["delivered", "read"].includes(deliveryStatus)
       ? `${statusText(deliveryStatus, labels)} · ${totals}` : totals;
   }
-  return statusText(deliveryStatus === "sent" && message.msg_type !== "file"
+  return statusText(deliveryStatus === "sent" && !["file", "voice"].includes(message.msg_type)
     ? "awaiting_ack" : deliveryStatus, labels);
 }
 
@@ -2129,6 +2130,10 @@ function MessageFile({ message, state, workspace, labels }) {
   const percent = activeTransfer?.progress_percent || 0;
   const progressBytes = `${formatProgressSize(bytesTransferred)} / ${formatProgressSize(bytesTotal)}`;
   const progressRate = formatRate(activeTransfer?.speed_bps || 0);
+  if (message.msg_type === "voice" && ready && media.source && !failed) {
+    return <div><VoiceBubble source={media.source} message={message} playback={mediaPlaybackFor(workspace)} onError={() => setPlaybackFailed(true)} />
+      <MediaTransferProgress transfer={activeTransfer} message={message} state={state} workspace={workspace} labels={labels}/></div>;
+  }
   if (ready && media.source && !failed && ["audio", "video"].includes(kind)) {
     return <MessagePlayer kind={kind} source={media.source} message={message} transfer={activeTransfer} state={state} workspace={workspace} labels={labels} onError={() => setPlaybackFailed(true)} />;
   }
@@ -2304,13 +2309,6 @@ function formatVoiceDuration(seconds = 0) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
-// 录音手势阈值：手指上滑超过这个像素数就算「松开取消」（微信的手感）
-const VOICE_CANCEL_DISTANCE = 70;
-// 短于这个时长视为误触，不发送
-const VOICE_MIN_MS = 1000;
-// 单条语音上限，到点自动结束并发送
-const VOICE_MAX_MS = 60_000;
-
 function Composer({ state, conversation, workspace, labels, quote, onClearQuote }) {
   const [text, setText] = useState(conversation?.draft || "");
   const [attachmentOpen, setAttachmentOpen] = useState(false);
@@ -2323,23 +2321,12 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
   const [mentionTargets, setMentionTargets] = useState([]);
   const [dragActive, setDragActive] = useState(false);
   const [sending, setSending] = useState(false);
-  // 录音状态只用于渲染：null = 没在录，{ elapsed, armed } = 录音中
-  const [voiceRecording, setVoiceRecording] = useState(null);
+  const [voiceRecording, setVoiceRecording] = useState(false);
   const composer = useRef(null);
   const textarea = useRef(null);
   const input = useRef(null);
   const emojiPanel = useRef(null);
   const nativeDragInside = useRef(false);
-  // 录音手势的状态机全部放 ref：pointerup 可能早于 react 状态更新，
-  // 用 state 判断会漏事件（松手后原生还在录）。
-  const voicePending = useRef(false);
-  const voiceActive = useRef(false);
-  const voiceArmed = useRef(false);
-  const voicePressedAt = useRef(0);
-  const voiceStartY = useRef(0);
-  const voiceTimer = useRef(null);
-  const voiceRelease = useRef(null);
-  const voiceHandlers = useRef(null);
   // 拍照是异步的：记住发起时所在的会话，相机结果回来时按它入草稿
   const cameraConversation = useRef(null);
   const attachmentConversation = useRef(null);
@@ -2489,174 +2476,10 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
     return () => removeEventListener("xchat-native-attachment", onAttachment);
   }, [state.capabilities.nativeCamera, workspace]);
 
-  // ─── 录音：按住说话，松手发送，上滑取消 ───
-  const VOICE_EVENT_NAMES = globalThis.PointerEvent
-    ? ["pointermove", "pointerup", "pointercancel"]
-    : // 老 WebView 没有 Pointer Events，退回 touch 三件套
-      ["touchmove", "touchend", "touchcancel"];
-
-  const detachVoiceHandlers = () => {
-    const handlers = voiceHandlers.current;
-    if (!handlers) return;
-    voiceHandlers.current = null;
-    removeEventListener(VOICE_EVENT_NAMES[0], handlers.move);
-    removeEventListener(VOICE_EVENT_NAMES[1], handlers.up);
-    removeEventListener(VOICE_EVENT_NAMES[2], handlers.cancel);
-  };
-
-  const clearVoiceTimer = () => {
-    if (voiceTimer.current) {
-      clearInterval(voiceTimer.current);
-      voiceTimer.current = null;
-    }
-  };
-
-  // 录音附件走和拍照一样的草稿链路，区别只是松手后立刻发出去（微信的按住说话）
-  const sendVoiceAttachment = async (attachment) => {
-    const target = attachment?.conversation_id ?? conversationRef.current;
-    setSending(true);
-    try {
-      const result = await workspace.dispatch({
-        type: "message.sendFiles",
-        conversationId: target,
-        files: [attachment],
-      });
-      if (result.ok) {
-        await workspace.dispatch({ type: "draft.sent", conversationId: target, id: attachment.id });
-      }
-      // 发送失败时附件留在草稿里，用户可以改完再发或手动删掉
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const stopNativeVoice = (cancelled, reason) => {
-    workspace
-      .dispatch({
-        type: "voice.stop",
-        conversationId: conversationRef.current,
-        cancelled,
-        reason,
-      })
-      .then((dispatched) => {
-        const attachment = dispatched?.data?.attachment;
-        return attachment ? sendVoiceAttachment(attachment) : undefined;
-      })
-      .catch(() => {});
-  };
-
-  // 统一收尾：计算时长，决定「发送」还是「取消」，并通知原生侧结束录音
-  const stopVoice = (cancelled, reason) => {
-    clearVoiceTimer();
-    detachVoiceHandlers();
-    setVoiceRecording(null);
-    voiceArmed.current = false;
-    const durationMs = Date.now() - voicePressedAt.current;
-    const tooShort = durationMs < VOICE_MIN_MS;
-    if (!voiceActive.current) {
-      // 原生还没确认开始（start 请求在路上）：把结论记下来，等它回来立刻收尾
-      if (voicePending.current) {
-        voiceRelease.current = {
-          cancelled: cancelled || tooShort,
-          reason: tooShort ? "too_short" : reason,
-        };
-      }
-      return;
-    }
-    voiceActive.current = false;
-    stopNativeVoice(cancelled || tooShort, tooShort ? "too_short" : reason);
-  };
-
-  const beginVoice = async (event) => {
-    if (voicePending.current || voiceActive.current || voiceHandlers.current) return;
-    event.preventDefault?.();
-    // touch 事件里纵坐标在 touches / changedTouches 上
-    const pointY = (pointEvent) =>
-      pointEvent.clientY ??
-      pointEvent.touches?.[0]?.clientY ??
-      pointEvent.changedTouches?.[0]?.clientY ??
-      0;
-    voicePressedAt.current = Date.now();
-    voiceStartY.current = pointY(event);
-    voiceArmed.current = false;
-    voiceRelease.current = null;
-    voicePending.current = true;
-    setVoiceRecording({ elapsed: 0, armed: false });
-
-    // 松手可能发生在 start 返回之前，所以监听器在按下时就挂到 window 上，
-    // 而不是等 state 更新后再挂。
-    const move = (moveEvent) => {
-      const armed = pointY(moveEvent) <= voiceStartY.current - VOICE_CANCEL_DISTANCE;
-      if (armed === voiceArmed.current) return;
-      voiceArmed.current = armed;
-      setVoiceRecording((current) => (current ? { ...current, armed } : current));
-    };
-    const up = () => stopVoice(false, "release");
-    const cancel = () => stopVoice(true, "pointer_cancel");
-    voiceHandlers.current = { move, up, cancel };
-    addEventListener(VOICE_EVENT_NAMES[0], move);
-    addEventListener(VOICE_EVENT_NAMES[1], up);
-    addEventListener(VOICE_EVENT_NAMES[2], cancel);
-
-    // workspace.dispatch 返回的是 { ok, data }，data 才是 action 自己的返回值
-    const dispatched = await workspace.dispatch({ type: "voice.start" });
-    voicePending.current = false;
-    if (!dispatched?.ok || dispatched.data?.ok === false) {
-      voiceRelease.current = null;
-      clearVoiceTimer();
-      detachVoiceHandlers();
-      setVoiceRecording(null);
-      return;
-    }
-    const pending = voiceRelease.current;
-    voiceRelease.current = null;
-    if (pending) {
-      // 手指在原生确认之前就抬起了：直接结束（cancelled/reason 已经算好）
-      detachVoiceHandlers();
-      setVoiceRecording(null);
-      voiceArmed.current = false;
-      stopNativeVoice(pending.cancelled, pending.reason);
-      return;
-    }
-    voiceActive.current = true;
-    clearVoiceTimer();
-    voiceTimer.current = setInterval(() => {
-      const elapsed = Date.now() - voicePressedAt.current;
-      if (elapsed >= VOICE_MAX_MS) {
-        stopVoice(false, "max_duration");
-        return;
-      }
-      setVoiceRecording({
-        elapsed: Math.floor(elapsed / 1000),
-        armed: voiceArmed.current,
-      });
-    }, 200);
-  };
-
-  // 会话切换 / 组件卸载时别把录音留在后台
-  useEffect(() => {
-    const recordingConversationId = conversation.id;
-    return () => {
-      clearVoiceTimer();
-      detachVoiceHandlers();
-      if (voiceActive.current) {
-        voiceActive.current = false;
-        workspace.dispatch({
-          type: "voice.stop",
-          conversationId: recordingConversationId,
-          cancelled: true,
-          reason: "unmount",
-        });
-      }
-      voicePending.current = false;
-      voiceRelease.current = null;
-    };
-  }, [conversation.id, workspace]);
-
   const send = async () => {
     const conversationId = conversation.id;
     const content = text.trim();
-    if ((!content && !attachments.length) || sending) return;
+    if ((!content && !attachments.length) || sending || voiceRecording) return;
     setSending(true);
     try {
       if (content) {
@@ -3015,22 +2838,6 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
             </button>
           </div>
         )}
-        {voiceRecording && (
-          <div
-            className={`voice-recording ${voiceRecording.armed ? "cancel-armed" : ""}`}
-            role="status"
-            aria-live="polite"
-          >
-            <span className="voice-recording-dot" aria-hidden="true" />
-            <b>{labels.voiceRecording}</b>
-            <small className="voice-recording-time">
-              {formatVoiceDuration(voiceRecording.elapsed)}
-            </small>
-            <small className="voice-recording-hint">
-              {voiceRecording.armed ? labels.voiceReleaseToCancel : labels.voiceSlideUpToCancel}
-            </small>
-          </div>
-        )}
         <div className="compose-toolbar">
           <div className="compose-tools">
             <button
@@ -3088,21 +2895,6 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
             >
               <span className="desktop-compose-icon"><Icon name="attach" /></span><span className="mobile-compose-icon"><MobileIcon name="plus-circle" /></span>
             </button>
-            {state.capabilities.nativeVoiceRecorder && (
-              <button
-                className={`icon-button composer-tool voice-button ${voiceRecording ? "recording" : ""}`}
-                type="button"
-                onPointerDown={beginVoice}
-                onTouchStart={(event) => {
-                  if (!globalThis.PointerEvent) beginVoice(event);
-                }}
-                onContextMenu={(event) => event.preventDefault()}
-                aria-label={labels.voice}
-                title={labels.voice}
-              >
-                <Icon name="mic" />
-              </button>
-            )}
             <input
               ref={input}
               type="file"
@@ -3123,6 +2915,9 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
             <input ref={albumInput} type="file" accept="image/*" multiple hidden onChange={attachBrowserFiles}/>
             <input ref={cameraInput} type="file" accept="image/*" capture="environment" hidden onChange={attachBrowserFiles}/>
           </div>
+          <VoiceComposer key={conversation.id} workspace={workspace} conversationId={conversation.id}
+            native={Boolean(state.capabilities.nativeVoiceRecorder)} playback={mediaPlaybackFor(workspace)}
+            onActive={setVoiceRecording} disabled={sending}>
           <button
             className="primary-button send-button"
             onMouseDown={(event) => event.preventDefault()}
@@ -3131,6 +2926,7 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
           >
             {labels.send}
           </button>
+          </VoiceComposer>
         </div>
         {emojiOpen && (
           <div className="emoji-panel" ref={emojiPanel}>
@@ -3180,7 +2976,8 @@ function Composer({ state, conversation, workspace, labels, quote, onClearQuote 
 }
 
 function messageSummary(message, labels) {
-  if (message.msg_type === "file") return message.file_name || message.content || labels.attachment;
+  if (message.msg_type === "voice") return `[语音] ${Math.ceil((message.duration_ms || message.voice?.duration_ms || 1000) / 1000)}″`;
+  if (["file", "voice"].includes(message.msg_type)) return message.file_name || message.content || labels.attachment;
   if (message.msg_type === "announcement") return message.content;
   return message.content || labels.message;
 }
@@ -3257,8 +3054,8 @@ function ForwardModal({ message, messages = [message], state, workspace, labels,
           </div>
           <div className="forward-compose">
             <div className="forward-preview-card">
-              <span className="forward-preview-icon"><Icon name={message.msg_type === "file" ? "file" : "chat"} /></span>
-              <span className="forward-preview-copy"><b>{message.msg_type === "file" ? (labels.locale === "en" ? "File" : "文件") : (labels.locale === "en" ? "Message" : "消息内容")}</b><span>{messageSummary(message, labels)}</span></span>
+              <span className="forward-preview-icon"><Icon name={["file", "voice"].includes(message.msg_type) ? "file" : "chat"} /></span>
+              <span className="forward-preview-copy"><b>{["file", "voice"].includes(message.msg_type) ? (labels.locale === "en" ? "File" : "文件") : (labels.locale === "en" ? "Message" : "消息内容")}</b><span>{messageSummary(message, labels)}</span></span>
             </div>
             <textarea className="forward-note" value={note} maxLength={1000} onChange={(event) => setNote(event.target.value)} placeholder={labels.locale === "en" ? "Add a message (optional)" : "给朋友留言（可选）"} />
             <div className="forward-foot">
@@ -3283,7 +3080,7 @@ function HistoryModal({ conversation, messages, state, workspace, labels, onJump
     ? state.searchResults.filter((message) => message.conversation_id === conversation.id)
     : messages;
   const results = source.filter((message) => {
-    const type = message.msg_type === "file" ? "file" : "text";
+    const type = ["file", "voice"].includes(message.msg_type) ? "file" : "text";
     return (kind === "all" || kind === type) && messageSummary(message, labels).toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
   });
   return (
@@ -3693,7 +3490,7 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
             }
             data-message-id={message.message_id ?? message.id}
             data-client-message-id={message.client_message_id || undefined}
-            tabIndex={message.msg_type === "file" ? 0 : undefined}
+            tabIndex={["file", "voice"].includes(message.msg_type) ? 0 : undefined}
             onKeyDown={(event) => {
               if (event.target.closest("audio, video, [data-media-control]")) return;
               if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
@@ -3871,7 +3668,7 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
         </div>
       )}
       {menu?.mobile && <MobileMessageMenu anchor={menu.anchor} onClose={() => setMenu(null)} actions={[
-        ...(menu.message.msg_type === "file" ? [{ icon: "folder", label: labels.locale === "en" ? "View" : "查看", disabled: !localFileAvailable(menu.message) || !state.capabilities.revealFile, title: labels.revealFile, run: () => { workspace.dispatch({ type: "file.reveal", file: menu.message }); setMenu(null); } }] : []),
+        ...(["file", "voice"].includes(menu.message.msg_type) ? [{ icon: "folder", label: labels.locale === "en" ? "View" : "查看", disabled: !localFileAvailable(menu.message) || !state.capabilities.revealFile, title: labels.revealFile, run: () => { workspace.dispatch({ type: "file.reveal", file: menu.message }); setMenu(null); } }] : []),
         { icon: "forward", label: labels.locale === "en" ? "Forward" : "转发", run: () => { setForward(menu.message); setMenu(null); } },
         { icon: "quote", label: labels.locale === "en" ? "Quote" : "引用", run: () => { setQuote(menu.message); setMenu(null); } },
         ...(isCopyableMessage(menu.message) ? [{ icon: "copy", label: labels.locale === "en" ? "Copy" : "复制", run: async () => {
@@ -3908,7 +3705,7 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
             buttons[next]?.focus();
           }}
         >
-          {menu.message.msg_type === "file" && <div className="file-menu-title" title={menu.message.file_name}>{menu.message.file_name || menu.message.content}</div>}
+          {["file", "voice"].includes(menu.message.msg_type) && <div className="file-menu-title" title={menu.message.file_name}>{menu.message.file_name || menu.message.content}</div>}
           {menu.message.own && menu.message.client_message_id && (
             <button role="menuitem" onClick={() => {
               workspace.dispatch({
@@ -3939,7 +3736,7 @@ function ChatWorkspace({ state, workspace, labels, onBack, onToggleInfo, infoOpe
           <button role="menuitem" onClick={() => { setQuote(menu.message); setMenu(null); }}>
             <Icon name="quote" size={16} />{labels.locale === "en" ? "Quote" : "引用"}
           </button>
-          {menu.message.msg_type === "file" && <>
+          {["file", "voice"].includes(menu.message.msg_type) && <>
             <button role="menuitem" disabled={!menuFileActions.open} onClick={() => { workspace.dispatch({ type: "file.open", file: menu.message }); setMenu(null); }}>
               <Icon name="file" size={16} />{labels.openFile}
             </button>

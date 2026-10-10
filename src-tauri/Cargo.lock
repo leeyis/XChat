@@ -2824,6 +2824,7 @@ name = "lanchat"
 version = "0.1.13"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "clipboard-rs",

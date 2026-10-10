@@ -134,6 +134,7 @@ fn main() {
             lanchat::commands::open_strong_reminder,
             lanchat::commands::dismiss_strong_reminder,
             lanchat::commands::send_conversation_file,
+            lanchat::commands::send_voice_message,
             lanchat::commands::retry_conversation_file,
             lanchat::commands::get_conversation_messages,
             lanchat::commands::mark_messages_read,

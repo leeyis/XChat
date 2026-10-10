@@ -1,3 +1,17 @@
+# 2026-10-10 阶段三生产实现：知识与设计记录
+
+- 用户已批准 `437bfcc` 原型并授权完整生产实现，前一轮“等待原型评审”状态已解除。
+- 实际代码为 `frontend/src/App.jsx` / `xchat.js` 的 React 19.2.8 + Vite 8.1.5，Rust 共享 `workspace.rs` / `db.rs` / network。已有 Node 测试与 Rust 测试；AGENTS 的静态前端描述已过时，按实际代码沿用。
+- 图谱找到既有 `conversation_file::retry_message`、`workspace::cancel_transfer`、`peer_identity::probe_peer_identity` 等可复用功能；没有生产远程/语音/备份符号。远程旧 7 月计划仅作技术线索，最新获批原型决定交互与授权规则。
+- 当前 tracked 工作树干净，只有原有 analysis/ 未跟踪。以隔离端口和数据库测试，不替换安装版。
+- 已发现 Android 原生录音 start/stop 与持久文件队列，但桌面/Web 没有录制，现有音频展示为普通播放器。新增独立录制控制器与批准的气泡样式，复用媒体 URL 和单实例播放控制；现有原生截图、相机、文件上传保持独立。
+- 生产聊天顶栏已经没有重复刷新，更多设备详情仍有刷新；后续仅检查该约束，不添加无必要改动。用户明确不需要旧客户端兼容后，语音改为明确消息类型与独立时长/MIME 元数据，复用文件传输执行队列。持久消息 ID 必须支持录音重试幂等，不能在响应丢失时重新发送一条。
+- 探索命令一次 Python 行段输出括号错误，改为临时 xchat-read.py 定点读取；该临时辅助脚本不入库。
+- 媒体实现参考 Mozilla 原始文档：[MediaRecorder](https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder)、[getUserMedia](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia)、[dataavailable](https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder/dataavailable_event)。停止后等待最后一个 dataavailable/stop 再生成 Blob；录制时长使用单调时钟，不从分片数量估算。HTTP LAN 非安全上下文可能没有麦克风 API，能力需运行时判断并提供明确原因。
+- 读取命令权限文件首次把 permissions 放在 src 子目录导致不存在，已改为 `src-tauri/permissions/commands.toml`，后续 registration/permission/capability 同步更新。
+
+---
+
 # 2026-10-09 阶段三原型：知识与设计记录
 
 ## 2026-10-10 双向语音补充

@@ -251,6 +251,8 @@ pub(crate) struct ParallelChunkRange {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct ParallelPrepareRequest {
+    #[serde(default)]
+    pub voice: Option<crate::voice::VoiceMetadata>,
     pub sender_id: String,
     pub conversation_id: String,
     pub client_message_id: String,
@@ -411,6 +413,18 @@ pub async fn send_path(
     conversation_id: &str,
     source_path: &str,
 ) -> Result<ConversationFileSendResult, String> {
+    send_path_identified(pool, peer_manager, conversation_id, source_path,
+        &uuid::Uuid::new_v4().to_string(), None).await
+}
+
+pub(crate) async fn send_path_identified(
+    pool: &Pool<Sqlite>,
+    peer_manager: &PeerManager,
+    conversation_id: &str,
+    source_path: &str,
+    client_message_id: &str,
+    voice: Option<&crate::voice::VoiceMetadata>,
+) -> Result<ConversationFileSendResult, String> {
     let conversation_id = conversation_id.trim();
     if conversation_id.is_empty() {
         return Err("conversation id is required".to_string());
@@ -450,14 +464,15 @@ pub async fn send_path(
                 .unwrap_or_default();
             (
                 peer_id.clone(),
-                negotiate_upload_plan(capabilities, local_limit),
+                if voice.is_some() { UploadPlan::new(UploadProtocol::StreamingV4, local_limit) }
+                else { negotiate_upload_plan(capabilities, local_limit) },
             )
         })
         .collect();
     // Keep full-file reads out of the command path; recipients share one lazy digest.
     let parallel_hash = deferred_file_sha256(source.path.clone());
 
-    let client_message_id = uuid::Uuid::new_v4().to_string();
+    let client_message_id = client_message_id.to_string();
     let receiver_id = (conversation.kind == "direct")
         .then_some(conversation.peer_id.as_deref())
         .flatten();
@@ -497,7 +512,7 @@ pub async fn send_path(
             sender_id: &my_id,
             receiver_id,
             content: &source.file_name,
-            msg_type: "file",
+            msg_type: if voice.is_some() { "voice" } else { "file" },
             timestamp: unix_timestamp(),
             status: message_status,
             client_message_id: &client_message_id,
@@ -505,6 +520,7 @@ pub async fn send_path(
             mentions: &[],
         },
         Some(db::OutgoingFile {
+            voice,
             path: &source.path,
             size: source.size,
             status: file_status,
@@ -512,6 +528,9 @@ pub async fn send_path(
         }),
     )
     .await?;
+    if !enqueued.is_new {
+        return Ok(ConversationFileSendResult { message: enqueued.message, transfers: enqueued.transfers });
+    }
     let message = enqueued.message;
     let transfers = enqueued.transfers;
     let mut jobs = Vec::with_capacity(online_addresses.len());
@@ -891,7 +910,7 @@ pub async fn retry_message(
         .await?
         .ok_or_else(|| "file message not found".to_string())?;
     let my_id = db::get_user_id(pool).await?;
-    if message.msg_type != "file"
+    if !matches!(message.msg_type.as_str(), "file" | "voice")
         || message.sender_id != my_id
         || !matches!(message.file_status.as_deref(), Some("failed" | "cancelled"))
     {
@@ -972,7 +991,8 @@ pub async fn retry_message(
                 .unwrap_or_default();
             (
                 peer_id.clone(),
-                negotiate_upload_plan(capabilities, local_limit),
+                if message.msg_type == "voice" { UploadPlan::new(UploadProtocol::StreamingV4, local_limit) }
+                else { negotiate_upload_plan(capabilities, local_limit) },
             )
         })
         .collect();
@@ -1599,6 +1619,10 @@ async fn upload_parallel_chunks(
         Err(error) => return UploadOutcome::Failed(0, error),
     };
     let mut request = ParallelPrepareRequest {
+        voice: match crate::voice::metadata(pool, &job.client_message_id).await {
+            Ok(voice) => voice,
+            Err(error) => return UploadOutcome::Failed(0, error),
+        },
         sender_id,
         conversation_id: job.conversation_id.clone(),
         client_message_id: job.client_message_id.clone(),
@@ -2259,6 +2283,7 @@ pub(crate) fn valid_parallel_prepare(request: &ParallelPrepareRequest, version: 
         && (valid_parallel_sha256(&request.file_sha256)
             || (version == 4 && request.file_sha256.is_empty()))
         && chunks_valid
+        && request.voice.as_ref().is_none_or(|voice| version == 4 && voice.validate(request.file_size).is_ok())
 }
 
 fn valid_parallel_manifest(manifest: &ParallelTransferManifest, transfer_id: &str) -> bool {
@@ -3012,6 +3037,7 @@ mod tests {
                 length: 7,
             };
             let prepare = ParallelPrepareRequest {
+                voice: None,
                 sender_id: "sender".into(),
                 conversation_id: "direct".into(),
                 client_message_id: "message".into(),
@@ -3472,6 +3498,7 @@ mod tests {
         ));
 
         let request = ParallelPrepareRequest {
+            voice: None,
             sender_id: "sender".into(),
             conversation_id: "conversation".into(),
             client_message_id: "message".into(),

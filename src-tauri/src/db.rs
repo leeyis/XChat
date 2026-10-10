@@ -654,6 +654,8 @@ async fn init_db_with_path_and_machine_name(
     .execute(&pool)
     .await?;
 
+    crate::voice::init_schema(&pool).await?;
+
     // 初始化配置；旧版自动生成名只迁移一次，用户自定义名称不覆盖。
     let username =
         sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'username'")
@@ -754,7 +756,7 @@ pub async fn save_file_message(
     );
     // 检查是否存在
     let existing = sqlx::query_as::<_, (i64,)>(
-        "SELECT id FROM messages WHERE receiver_id = ? AND content = ? AND msg_type = 'file' AND file_status = 'uploading' ORDER BY id DESC LIMIT 1"
+        "SELECT id FROM messages WHERE receiver_id = ? AND content = ? AND msg_type IN ('file', 'voice') AND file_status = 'uploading' ORDER BY id DESC LIMIT 1"
     )
     .bind(&peer_id).bind(&file_name).fetch_optional(pool).await.map_err(|e| e.to_string())?;
 
@@ -802,7 +804,7 @@ pub async fn get_downloading_file(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     sender_id: &str,
 ) -> Result<Option<String>, String> {
-    let row = sqlx::query("SELECT content FROM messages WHERE sender_id = ? AND msg_type = 'file' AND file_status = 'downloading' ORDER BY id DESC LIMIT 1")
+    let row = sqlx::query("SELECT content FROM messages WHERE sender_id = ? AND msg_type IN ('file', 'voice') AND file_status = 'downloading' ORDER BY id DESC LIMIT 1")
         .bind(sender_id)
         .fetch_optional(pool)
         .await
@@ -822,7 +824,7 @@ pub async fn get_downloading_file_by_sender_msg_id(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     sender_msg_id: &str,
 ) -> Result<Option<String>, String> {
-    let row = sqlx::query("SELECT content FROM messages WHERE sender_msg_id = ? AND msg_type = 'file' AND file_status = 'downloading' ORDER BY id DESC LIMIT 1")
+    let row = sqlx::query("SELECT content FROM messages WHERE sender_msg_id = ? AND msg_type IN ('file', 'voice') AND file_status = 'downloading' ORDER BY id DESC LIMIT 1")
         .bind(sender_msg_id)
         .fetch_optional(pool)
         .await
@@ -846,7 +848,7 @@ pub async fn update_file_status(
     println!("[DB] 更新文件状态: {} -> {}", file_name, new_status);
 
     sqlx::query(
-        "UPDATE messages SET file_status = ? WHERE content = ? AND msg_type = 'file' AND file_status = 'downloading'"
+        "UPDATE messages SET file_status = ? WHERE content = ? AND msg_type IN ('file', 'voice') AND file_status = 'downloading'"
     )
     .bind(new_status)
     .bind(file_name)
@@ -1104,7 +1106,7 @@ pub async fn get_all_file_messages(
     println!("[DB] 获取所有文件消息（限制: {}）", limit);
 
     let rows = sqlx::query_as::<_, (i64, String, String, String, String)>(
-        "SELECT id, sender_id, content, file_path, file_status FROM messages WHERE msg_type = 'file' ORDER BY id DESC LIMIT ?"
+        "SELECT id, sender_id, content, file_path, file_status FROM messages WHERE msg_type IN ('file', 'voice') ORDER BY id DESC LIMIT ?"
     )
     .bind(limit)
     .fetch_all(pool)
@@ -2579,6 +2581,7 @@ pub struct OutgoingTransfer {
 }
 
 pub struct OutgoingFile<'a> {
+    pub voice: Option<&'a crate::voice::VoiceMetadata>,
     pub path: &'a str,
     pub size: i64,
     pub status: &'a str,
@@ -2679,12 +2682,19 @@ pub async fn enqueue_outgoing_message(
     }
     let mut transfers = Vec::new();
     if let Some(file) = file {
-        if outgoing.msg_type != "file"
+        if !matches!(outgoing.msg_type, "file" | "voice")
             || file.path.trim().is_empty()
             || file.size < 0
             || !valid_transfer_status(file.status)
         {
             return Err("invalid outgoing file metadata".into());
+        }
+        if (outgoing.msg_type == "voice") != file.voice.is_some() {
+            return Err("语音消息必须包含媒体元数据".into());
+        }
+        if let Some(voice) = file.voice {
+            voice.validate(file.size as u64)?;
+            crate::voice::save_on(&mut tx, outgoing.client_message_id, voice).await?;
         }
         if is_new {
             let targets = file
@@ -2751,7 +2761,7 @@ pub async fn enqueue_outgoing_message(
         {
             return Err("file message is missing recipient tasks".into());
         }
-    } else if outgoing.msg_type == "file" {
+    } else if matches!(outgoing.msg_type, "file" | "voice") {
         return Err("outgoing file requires metadata and tasks".into());
     }
     tx.commit()
@@ -2936,7 +2946,7 @@ pub async fn search_messages(
                 file_status, file_size, sender_msg_id, status, conversation_id,
                 client_message_id
          FROM messages
-         WHERE msg_type IN ('text', 'file', 'quote')
+         WHERE msg_type IN ('text', 'file', 'voice', 'quote')
            AND COALESCE(status, '') != 'recalled'
            AND content LIKE ? ESCAPE '\\' COLLATE NOCASE
          ORDER BY timestamp DESC, id DESC
@@ -3623,7 +3633,7 @@ pub async fn list_file_messages(
                 file_status, file_size, sender_msg_id, status, conversation_id,
                 client_message_id
          FROM messages
-         WHERE msg_type = 'file'
+         WHERE msg_type IN ('file', 'voice')
          ORDER BY timestamp DESC, id DESC
          LIMIT ? OFFSET ?",
     )
@@ -3646,7 +3656,7 @@ pub async fn get_file_message_by_id(
                 file_status, file_size, sender_msg_id, status, conversation_id,
                 client_message_id
          FROM messages
-         WHERE id = ? AND msg_type = 'file'",
+         WHERE id = ? AND msg_type IN ('file', 'voice')",
     )
     .bind(message_id)
     .fetch_optional(pool)
@@ -3667,7 +3677,7 @@ pub async fn set_file_message_metadata(
     let result = sqlx::query(
         "UPDATE messages
          SET file_path = ?, file_size = ?, file_status = ?
-         WHERE id = ? AND msg_type = 'file'",
+         WHERE id = ? AND msg_type IN ('file', 'voice')",
     )
     .bind(file_path)
     .bind(file_size)
@@ -3699,7 +3709,7 @@ pub async fn clear_file_path_and_mark_removed(
     sqlx::query(
         "UPDATE messages
          SET file_path = NULL, file_status = 'removed'
-         WHERE id = ? AND msg_type = 'file'",
+         WHERE id = ? AND msg_type IN ('file', 'voice')",
     )
     .bind(message_id)
     .execute(pool)
@@ -4642,6 +4652,7 @@ mod tests {
             .execute(&pool).await.unwrap();
         let file = || {
             Some(OutgoingFile {
+                voice: None,
                 path: "source.bin",
                 size: 100,
                 status: "queued",

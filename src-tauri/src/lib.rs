@@ -29,6 +29,7 @@ pub mod peers;
 pub mod utils;
 pub mod web_server;
 pub mod workspace;
+pub mod voice;
 
 // 仅在桌面端编译时包含 Tauri 运行函数
 #[cfg(feature = "desktop")]
@@ -119,6 +120,7 @@ pub fn run() {
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::dismiss_strong_reminder,
             commands::send_conversation_file,
+            commands::send_voice_message,
             commands::retry_conversation_file,
             commands::get_conversation_messages,
             commands::mark_messages_read,

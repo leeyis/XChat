@@ -538,11 +538,12 @@ export function normalizeMessage(raw = {}, selfId = "", conversationId = "") {
     timestamp: toSeconds(raw.timestamp ?? raw.created_at),
     status: raw.status || (own ? "sent" : "received"),
     own,
-    file_name: raw.file_name ?? (msgType === "file" ? raw.content : ""),
+    file_name: raw.file_name ?? (["file", "voice"].includes(msgType) ? raw.content : ""),
     file_path: raw.file_path ?? "",
     file_size: Number(raw.file_size ?? raw.bytes_total ?? 0),
     file_status: raw.file_status ?? "",
-    mime_type: raw.mime_type ?? raw.content_type ?? "",
+    mime_type: raw.voice?.mime_type ?? raw.mime_type ?? raw.content_type ?? "",
+    duration_ms: raw.voice?.duration_ms ?? raw.duration_ms ?? 0,
     local_available:
       raw.local_available ?? raw.local_exists ?? raw.file_available ?? undefined,
     delivered_count: Number(raw.delivered_count ?? 0),
@@ -632,7 +633,7 @@ export function incomingMessageAlert(raw = {}, selfId = "", conversationKind = "
     key: `${senderId}:${identity}`,
     fromId: senderId,
     title: raw.sender_name ?? raw.from_name ?? "Xchat",
-    body: isFile
+    body: messageType === "voice" ? uiCopy("收到语音消息", "Voice message") : isFile
       ? uiCopy(`收到文件：${fileName || content}`, `File: ${fileName || content}`)
       : content.slice(0, 160),
   };
@@ -648,6 +649,7 @@ function fileExtension(file = {}) {
 }
 
 export function fileKind(file = {}) {
+  if (file.msg_type === "voice") return "audio";
   const mime = String(file.mime_type ?? file.type ?? "").toLocaleLowerCase();
   if (mime.startsWith("image/") || IMAGE_EXTENSIONS.has(fileExtension(file))) return "image";
   if (mime.startsWith("audio/") || AUDIO_EXTENSIONS.has(fileExtension(file))) return "audio";
@@ -684,7 +686,7 @@ export function messageDeliveryStatus(message = {}, peerOffline = false) {
     if (["delivered", "read"].includes(message.status)) return message.status;
     if (message.delivery_state) return message.delivery_state;
   }
-  if (message.msg_type === "file" && fileStatus(message) === "waiting_peer") {
+  if (["file", "voice"].includes(message.msg_type) && fileStatus(message) === "waiting_peer") {
     return "waiting_peer";
   }
   if (peerOffline && message.status === "pending") return "waiting_peer";
@@ -1455,6 +1457,18 @@ export class TauriAdapter {
     });
   }
 
+  async sendVoice(conversation, recording) {
+    const blob = recording.blob || new Blob([await this.tauri.fs.readFile(recording.file_path)], { type: recording.mime_type || "audio/mp4" });
+    return this.invoke("send_voice_message", { request: {
+      conversation_id: conversation.id, recording_id: recording.recording_id,
+      duration_ms: recording.duration_ms, data_url: await dataUrlFromFile(blob),
+    } });
+  }
+
+  async discardVoice(recording) {
+    if (recording?.file_path) await this.tauri.fs?.remove?.(recording.file_path);
+  }
+
   async sendFiles(conversation, files = []) {
     const paths = files
       .map((file) =>
@@ -2043,6 +2057,13 @@ export class HttpWsAdapter {
         content,
       });
     }
+  }
+
+  async sendVoice(conversation, recording) {
+    return this.json("/api/voice-messages", "POST", {
+      conversation_id: conversation.id, recording_id: recording.recording_id,
+      duration_ms: recording.duration_ms, data_url: await dataUrlFromFile(recording.blob),
+    });
   }
 
   async sendFiles(conversation, files = []) {
@@ -3368,6 +3389,17 @@ export function createXChatModule() {
         scheduleRefresh();
         return result;
       }
+      case "message.sendVoice": {
+        const conversation = conversationForAction(action);
+        if (!conversation) throw new TransportError("会话不存在", "conversation_missing");
+        const result = await adapter.sendVoice(conversation, action.recording);
+        scheduleRefresh();
+        await loadMessages(conversation, 40, 0);
+        return result;
+      }
+      case "voice.record.start": return adapter.startVoiceRecording();
+      case "voice.record.stop": return adapter.stopVoiceRecording(Boolean(action.cancelled));
+      case "voice.record.discard": return adapter.discardVoice?.(action.recording);
       case "draft.pickFiles": {
         const conversation = activeConversation();
         if (!conversation) return [];

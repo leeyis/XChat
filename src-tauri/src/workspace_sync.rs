@@ -9,6 +9,7 @@ static PROCESS_EPOCH: std::sync::LazyLock<String> =
 const CORRECTION_SECONDS: i64 = 30;
 
 pub(crate) async fn init_schema(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+    let mut transaction = pool.begin().await?;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS workspace_revisions (
         id INTEGER PRIMARY KEY CHECK(id = 1), instance TEXT NOT NULL,
@@ -16,11 +17,11 @@ pub(crate) async fn init_schema(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> 
         files INTEGER NOT NULL DEFAULT 0, transfers INTEGER NOT NULL DEFAULT 0,
         settings INTEGER NOT NULL DEFAULT 0)",
     )
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
     sqlx::query("INSERT OR IGNORE INTO workspace_revisions(id, instance) VALUES (1, ?)")
         .bind(uuid::Uuid::new_v4().to_string())
-        .execute(pool)
+        .execute(&mut *transaction)
         .await?;
     for table in [
         "users",
@@ -30,11 +31,12 @@ pub(crate) async fn init_schema(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> 
         "message_receipts",
         "message_reactions",
         "message_delivery_attempts",
+        "voice_metadata",
         "transfers",
         "settings",
     ] {
         let columns = sqlx::query(&format!("PRAGMA table_info({table})"))
-            .fetch_all(pool)
+            .fetch_all(&mut *transaction)
             .await?;
         let changed = columns
             .iter()
@@ -50,12 +52,12 @@ pub(crate) async fn init_schema(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> 
             let row = if event == "DELETE" { "OLD" } else { "NEW" };
             let file_changed = if table == "messages" {
                 if event == "UPDATE" {
-                    "(OLD.msg_type = 'file' OR NEW.msg_type = 'file')".to_string()
+                    "(OLD.msg_type IN ('file', 'voice') OR NEW.msg_type IN ('file', 'voice'))".to_string()
                 } else {
-                    format!("{row}.msg_type = 'file'")
+                    format!("{row}.msg_type IN ('file', 'voice')")
                 }
             } else {
-                format!("EXISTS(SELECT 1 FROM messages WHERE client_message_id = {row}.message_client_id AND msg_type = 'file')")
+                format!("EXISTS(SELECT 1 FROM messages WHERE client_message_id = {row}.message_client_id AND msg_type IN ('file', 'voice'))")
             };
             let update = match table {
                 "users" if event == "UPDATE" => "devices = devices + 1,
@@ -63,7 +65,7 @@ pub(crate) async fn init_schema(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> 
                     files = files + CASE WHEN NEW.name IS NOT OLD.name OR NEW.remark IS NOT OLD.remark OR NEW.addr IS NOT OLD.addr THEN 1 ELSE 0 END".into(),
                 "users" => "devices = devices + 1, conversations = conversations + 1, files = files + 1".into(),
                 "conversations" | "conversation_members" => "conversations = conversations + 1".into(),
-                "messages" | "message_receipts" | "message_reactions" | "message_delivery_attempts" => format!("conversations = conversations + 1, files = files + CASE WHEN {file_changed} THEN 1 ELSE 0 END"),
+                "messages" | "message_receipts" | "message_reactions" | "message_delivery_attempts" | "voice_metadata" => format!("conversations = conversations + 1, files = files + CASE WHEN {file_changed} THEN 1 ELSE 0 END"),
                 "transfers" => "transfers = transfers + 1".into(),
                 "settings" => "settings = settings + 1".into(),
                 _ => unreachable!(),
@@ -73,15 +75,18 @@ pub(crate) async fn init_schema(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> 
             } else {
                 String::new()
             };
+            sqlx::query(&format!("DROP TRIGGER IF EXISTS workspace_sync_v1_{table}_{event}"))
+                .execute(&mut *transaction).await?;
             sqlx::query(&format!(
-                "CREATE TRIGGER IF NOT EXISTS workspace_sync_v1_{table}_{event}
+                "CREATE TRIGGER IF NOT EXISTS workspace_sync_v2_{table}_{event}
                 AFTER {event} ON {table} {condition}
                 BEGIN UPDATE workspace_revisions SET {update} WHERE id = 1; END"
             ))
-            .execute(pool)
+            .execute(&mut *transaction)
             .await?;
         }
     }
+    transaction.commit().await?;
     Ok(())
 }
 
@@ -431,7 +436,7 @@ pub(super) async fn conversation_views(
         .fetch_all(pool).await.map_err(|e| e.to_string())? {
         members.entry(member.conversation_id.clone()).or_default().push(member);
     }
-    let stats = sqlx::query_as::<_, (String, String, i64, i64)>("SELECT c.id, COALESCE(m.content, ''), COALESCE(m.timestamp, c.updated_at),
+    let stats = sqlx::query_as::<_, (String, String, i64, i64)>("SELECT c.id, CASE WHEN m.msg_type = 'voice' THEN '[语音]' ELSE COALESCE(m.content, '') END, COALESCE(m.timestamp, c.updated_at),
         (SELECT COUNT(*) FROM messages u WHERE u.conversation_id = c.id AND u.sender_id NOT IN ('me', ?)
             AND u.client_message_id IS NOT NULL AND COALESCE(u.status, '') != 'recalled' AND COALESCE(u.status, 'received') != 'read')
         FROM conversations c LEFT JOIN messages m ON m.id =

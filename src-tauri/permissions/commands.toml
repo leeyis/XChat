@@ -4,6 +4,11 @@ description = "Allows reading the current username"
 commands.allow = ["get_my_name"]
 
 [[permission]]
+identifier = "allow-send-voice-message"
+description = "Send a recorded voice message through the durable attachment queue"
+commands.allow = ["send_voice_message"]
+
+[[permission]]
 identifier = "allow-get-my-id"
 description = "Allows reading the current user ID"
 commands.allow = ["get_my_id"]

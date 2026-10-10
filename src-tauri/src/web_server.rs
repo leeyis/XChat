@@ -78,6 +78,19 @@ pub struct AppState {
 }
 
 type ApiResponse = axum::response::Response;
+
+async fn send_voice_http(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<crate::voice::SendVoiceRequest>,
+) -> ApiResponse {
+    match crate::voice::send(&state.pool, &state.peer_manager, request).await {
+        Ok(result) => {
+            broadcast_incoming_event(&state, serde_json::json!({ "msg_type": "workspace-changed" }));
+            Json(result).into_response()
+        }
+        Err(error) => backend_error(error),
+    }
+}
 const MAX_BROWSER_UPLOAD_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 /// 对端主动连进来的那条连接，按对端设备 ID 记住它的回送通道。
@@ -570,6 +583,8 @@ pub async fn serve_listener(
         .route("/api/get_theme_css/:theme_name", get(get_theme_css_http))
         .route("/api/save_current_theme", post(save_current_theme_http))
         .route("/api/get_current_theme", get(get_current_theme_http))
+        .route("/api/voice-messages", post(send_voice_http)
+            .layer(DefaultBodyLimit::max(crate::voice::MAX_VOICE_BYTES * 4 / 3 + 1024)))
         .route("/api/auto_download", get(auto_download_http))
         .route("/api/offer_file", post(offer_file_http))
         .route("/api/start_send", post(start_send_http))
@@ -1141,7 +1156,7 @@ async fn cancel_received_upload_http(
         Ok(id) => id,
         Err(error) => return backend_error(error),
     };
-    if message.msg_type != "file" {
+    if !matches!(message.msg_type.as_str(), "file" | "voice") {
         return api_error(StatusCode::CONFLICT, "该传输不是文件传输");
     }
     let incoming = message.sender_id != self_id && message.sender_id != "me";
@@ -3069,7 +3084,7 @@ async fn handle_websocket(socket: WebSocket, state: Arc<AppState>, peer_payload_
                             .await
                             .unwrap_or(None)
                             .filter(|message| {
-                                message.msg_type == "file"
+                                matches!(message.msg_type.as_str(), "file" | "voice")
                                     && message.client_message_id.is_some()
                                     && message.conversation_id.is_some()
                             });
@@ -3784,10 +3799,11 @@ async fn complete_received_conversation_file(
             "sender_name": sender_name,
             "from_name": sender_name,
             "content": message.content,
-            "msg_type": "file",
+            "msg_type": message.msg_type,
             "timestamp": message.timestamp,
             "status": "received",
             "file_status": "accepted",
+            "voice": crate::voice::metadata(&state.pool, client_message_id).await?,
             "file_path": message.file_path,
             "file_size": file_size,
         }),
@@ -3841,6 +3857,7 @@ async fn prepare_parallel_upload_for_version(
     {
         return api_error(StatusCode::BAD_REQUEST, "并行传输参数无效");
     }
+    let content_type = if payload.voice.is_some() { "voice" } else { "file" };
     let Some(requested_file_name) = safe_file_name(&payload.file_name) else {
         return api_error(StatusCode::BAD_REQUEST, "文件名无效");
     };
@@ -3901,7 +3918,7 @@ async fn prepare_parallel_upload_for_version(
     let message = if let Some(message) = existing {
         if message.conversation_id.as_deref() != Some(payload.conversation_id.as_str())
             || message.sender_id != payload.sender_id
-            || message.msg_type != "file"
+            || message.msg_type != content_type
             || message
                 .file_size
                 .is_some_and(|size| size != payload.file_size as i64)
@@ -3926,7 +3943,7 @@ async fn prepare_parallel_upload_for_version(
             &payload.sender_id,
             receiver_id,
             &file_name,
-            "file",
+            content_type,
             now_timestamp(),
             "received",
             &payload.client_message_id,
@@ -3936,7 +3953,7 @@ async fn prepare_parallel_upload_for_version(
             Ok(message) => message,
             Err(error) => return backend_error(error),
         };
-        let file_status = if crate::db::get_auto_download(&state.pool).await {
+        let file_status = if payload.voice.is_some() || crate::db::get_auto_download(&state.pool).await {
             "downloading"
         } else {
             "offered"
@@ -3963,6 +3980,15 @@ async fn prepare_parallel_upload_for_version(
         }
         message
     };
+    if let Some(voice) = &payload.voice {
+        let mut connection = match state.pool.acquire().await {
+            Ok(connection) => connection,
+            Err(error) => return backend_error(error.to_string()),
+        };
+        if let Err(error) = crate::voice::save_on(&mut connection, &payload.client_message_id, voice).await {
+            return api_error(StatusCode::CONFLICT, error);
+        }
+    }
     let Some(final_file_name) = safe_file_name(&message.content) else {
         return api_error(StatusCode::CONFLICT, "数据库中的接收文件名无效");
     };
@@ -4058,7 +4084,7 @@ async fn prepare_parallel_upload_for_version(
         Err(error) => return backend_error(error),
     }
 
-    let auto_download = crate::db::get_auto_download(&state.pool).await;
+    let auto_download = payload.voice.is_some() || crate::db::get_auto_download(&state.pool).await;
     let manually_accepted =
         !is_new && message.file_status.as_deref() == Some("downloading");
     let transfer_status = if auto_download || manually_accepted {
@@ -4168,7 +4194,8 @@ async fn prepare_parallel_upload_for_version(
                 "sender_name": sender_name,
                 "from_name": sender_name,
                 "content": final_file_name,
-                "msg_type": "file",
+                "msg_type": content_type,
+                "voice": payload.voice,
                 "timestamp": message.timestamp,
                 "status": "received",
                 "file_status": visible_file_status,
@@ -4577,7 +4604,7 @@ async fn receive_conversation_file_chunk(
     let message = if let Some(message) = existing {
         if message.conversation_id.as_deref() != Some(conversation_id)
             || message.sender_id != sender_id
-            || message.msg_type != "file"
+            || !matches!(message.msg_type.as_str(), "file" | "voice")
             || message.file_size.is_some_and(|size| size != file_size as i64)
             || (!sender_msg_id.is_empty()
                 && message
@@ -6935,6 +6962,7 @@ mod websocket_protocol_tests {
             crate::network::conversation_file::recipient_transfer_id("parallel-v3", &self_id);
         let file_size = 4 * 1024 * 1024 + 17;
         let payload = crate::network::conversation_file::ParallelPrepareRequest {
+            voice: None,
             sender_id: "peer-a".into(),
             conversation_id: conversation.id,
             client_message_id: "parallel-v3".into(),
@@ -7743,7 +7771,7 @@ mod websocket_protocol_tests {
             .unwrap();
         let message = messages
             .iter()
-            .find(|message| message.msg_type == "file")
+            .find(|message| matches!(message.msg_type.as_str(), "file" | "voice"))
             .unwrap();
         let response =
             download_file_http(State(state), Path(message.id.to_string())).await;
@@ -7971,6 +7999,7 @@ mod websocket_protocol_tests {
             app_handle: None,
         });
         let payload = crate::network::conversation_file::ParallelPrepareRequest {
+            voice: None,
             sender_id: "peer-a".into(),
             conversation_id: conversation.id,
             client_message_id: "parallel-conflict".into(),
@@ -8063,6 +8092,7 @@ mod websocket_protocol_tests {
             app_handle: None,
         });
         let mut payload = crate::network::conversation_file::ParallelPrepareRequest {
+            voice: None,
             sender_id: "peer-a".into(),
             conversation_id: conversation.id,
             client_message_id: "streaming-receive".into(),
@@ -8337,6 +8367,7 @@ mod websocket_protocol_tests {
             app_handle: None,
         });
         let payload = crate::network::conversation_file::ParallelPrepareRequest {
+            voice: None,
             sender_id: "peer-a".into(),
             conversation_id: conversation.id,
             client_message_id: "parallel-finalize".into(),

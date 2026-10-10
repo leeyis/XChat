@@ -80,6 +80,7 @@
     "allow-copy-file-message-content",
     "allow-send-conversation-message",
     "allow-send-conversation-file",
+    "allow-send-voice-message",
     "allow-retry-conversation-file",
     "allow-get-conversation-messages",
     "allow-mark-messages-read",
