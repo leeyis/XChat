@@ -283,14 +283,30 @@ impl PeerManager {
     // 获取所有用户（包括离线的）
     pub fn get_all_peers(&self) -> Vec<Peer> {
         // The watchdog owns offline transitions so snapshot reads cannot consume notifications.
-        let peers = self.peers.read().unwrap();
-        peers.values().cloned().collect()
+        let peers = self
+            .peers
+            .read()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        peers
+            .into_iter()
+            .map(|mut peer| {
+                // Discovery can still hear a device whose TCP service is unreachable.
+                // Expose that failed connection consistently to desktop and web callers.
+                peer.is_offline |= self.connections.is_unreachable(&peer.id);
+                peer
+            })
+            .collect()
     }
 
     // 获取所有在线用户（过滤掉离线的）
     pub fn get_active_peers(&self) -> Vec<Peer> {
-        let peers = self.peers.read().unwrap();
-        peers.values().filter(|p| !p.is_offline).cloned().collect()
+        self.get_all_peers()
+            .into_iter()
+            .filter(|peer| !peer.is_offline)
+            .collect()
     }
 
     pub fn connection_snapshot(&self, id: &str) -> Option<PeerConnectionStatus> {

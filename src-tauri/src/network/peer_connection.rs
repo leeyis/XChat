@@ -37,6 +37,9 @@ impl PeerConnectionStatus {
 
 struct ConnectionEntry {
     status: PeerConnectionStatus,
+    // Keep the last reachability result through discovery and in-flight retries.
+    // UDP presence alone must not undo a failed message-service connection.
+    unreachable: bool,
     observed: Vec<(String, u64)>,
     gate: Arc<tokio::sync::Mutex<()>>,
     persistence_gate: Arc<tokio::sync::Mutex<()>>,
@@ -74,6 +77,7 @@ impl ConnectionRegistry {
                     verified_at: None,
                     error: None,
                 },
+                unreachable: false,
                 observed: Vec::new(),
                 gate: Arc::new(tokio::sync::Mutex::new(())),
                 persistence_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -114,6 +118,14 @@ impl ConnectionRegistry {
         Some(entries.get(id)?.status.clone())
     }
 
+    pub(crate) fn is_unreachable(&self, id: &str) -> bool {
+        self.entries
+            .lock()
+            .unwrap()
+            .get(id)
+            .is_some_and(|entry| entry.unreachable)
+    }
+
     fn begin_verification(&self, id: &str) -> Option<PeerConnectionStatus> {
         let mut entries = self.entries.lock().unwrap();
         let entry = entries.get_mut(id)?;
@@ -131,6 +143,9 @@ impl ConnectionRegistry {
         let entry = entries.get_mut(id)?;
         entry.status.status = phase.to_string();
         entry.status.error = error;
+        if matches!(phase, "missing" | "mismatch" | "policy_disabled") {
+            entry.unreachable = true;
+        }
         Some(entry.status.clone())
     }
 
@@ -483,6 +498,7 @@ async fn resolve_peer_connection_with_visibility(
         let entry = entries
             .get_mut(peer_id)
             .ok_or_else(|| "设备已删除".to_string())?;
+        entry.unreachable = !matches!(phase, "ready" | "updated");
         entry.status = PeerConnectionStatus {
             peer_id: peer_id.to_string(),
             status: if Some(entry.revision) != checked_revision {
@@ -865,6 +881,9 @@ mod tests {
         assert_eq!(disconnected.status, "missing");
         assert_eq!(disconnected.address, address);
         assert!(!disconnected.is_fresh_at(now()));
+        manager.add_or_update("expected".into(), "Peer".into(), address);
+        assert!(manager.get_all_peers()[0].is_offline);
+        assert!(manager.get_active_peers().is_empty());
 
         let registry = ConnectionRegistry::default();
         registry.observe("expected", "127.0.0.1:8888");
@@ -1058,16 +1077,27 @@ mod tests {
             assert_eq!(outcome.status, "mismatch");
             assert_eq!(outcome.address, wrong);
         }
+        assert!(manager.get_all_peers()[0].is_offline);
+        assert!(manager.get_active_peers().is_empty());
+        // A live UDP broadcaster can have a blocked TCP port or a reassigned address.
+        // Its next announcement must not restore online status or disable removal.
+        manager.add_or_update("expected".into(), "Peer".into(), wrong.clone());
+        assert!(manager.get_all_peers()[0].is_offline);
         wrong_task.await.unwrap();
         let (good, good_task) = identity_server("expected").await;
         save_fixed(&pool, &good, 1).await;
         manager.connections.observe("expected", &good);
+        assert!(manager.get_all_peers()[0].is_offline);
+        manager.connections.begin_verification("expected");
+        assert!(manager.get_all_peers()[0].is_offline);
         let outcome = resolve_peer_connection(&pool, &manager, "expected")
             .await
             .unwrap();
         assert_eq!(outcome.status, "updated");
         assert_eq!(outcome.previous_address, Some(wrong));
         assert_eq!(outcome.address, good);
+        assert!(!manager.get_all_peers()[0].is_offline);
+        assert_eq!(manager.get_active_peers().len(), 1);
         assert_eq!(
             manager
                 .get_all_peers()
@@ -1094,5 +1124,13 @@ mod tests {
             good
         );
         good_task.await.unwrap();
+
+        invalidate_peer_connection(&manager, "expected", "connection timed out");
+        assert!(manager.get_all_peers()[0].is_offline);
+        manager.remove_peer("expected");
+        assert!(manager.get_all_peers().is_empty());
+        assert!(manager.connection_snapshot("expected").is_none());
+        manager.add_or_update("expected".into(), "Peer".into(), good);
+        assert!(!manager.connections.is_unreachable("expected"));
     }
 }

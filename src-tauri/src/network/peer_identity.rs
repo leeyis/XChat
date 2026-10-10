@@ -141,6 +141,8 @@ pub async fn probe_peer_identity(
 ) -> Result<PeerIdentityTestResult, String> {
     let endpoint = normalize_peer_endpoint(endpoint, default_port)?;
     let client = reqwest::Client::builder()
+        // Peer traffic uses the OS route (including VPNs), never an HTTP proxy.
+        .no_proxy()
         .connect_timeout(PEER_IDENTITY_CONNECT_TIMEOUT)
         .timeout(PEER_IDENTITY_REQUEST_TIMEOUT)
         .build()
@@ -151,7 +153,13 @@ pub async fn probe_peer_identity(
         .get(url)
         .send()
         .await
-        .map_err(|error| format!("无法连接到该地址: {error}"))?;
+        .map_err(|error| {
+            if error.is_timeout() {
+                format!("连接 {endpoint} 超时，请检查对方 XChat 的服务端口及防火墙设置")
+            } else {
+                format!("无法连接到 {endpoint}: {error}")
+            }
+        })?;
     if !response.status().is_success() {
         return Err(format!("对方拒绝身份测试 ({})", response.status()));
     }
