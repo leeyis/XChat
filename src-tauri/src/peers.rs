@@ -94,7 +94,7 @@ impl PeerManager {
                 mac_address: user.mac_address,
                 remark: user.remark,
                 discovery_source: user.discovery_source,
-                capabilities: Vec::new(),
+                capabilities: user.capabilities,
                 app_version: user.app_version,
             };
             peers.insert(user.id, peer);

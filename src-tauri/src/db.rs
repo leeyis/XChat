@@ -145,6 +145,9 @@ pub struct UserRecord {
     pub remark: Option<String>,
     pub discovery_source: Option<String>,
     pub app_version: Option<String>,
+    #[serde(default)]
+    #[sqlx(json)]
+    pub capabilities: Vec<String>,
 }
 
 fn unix_timestamp() -> i64 {
@@ -487,6 +490,9 @@ async fn init_db_with_path_and_machine_name(
         .execute(&pool)
         .await;
     let _ = sqlx::query("ALTER TABLE users ADD COLUMN app_version TEXT")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'")
         .execute(&pool)
         .await;
 
@@ -1277,6 +1283,7 @@ pub async fn save_or_update_discovered_user(
     mac_address: Option<&str>,
     discovery_source: Option<&str>,
     app_version: Option<&str>,
+    capabilities: &[String],
     authoritative: bool,
 ) -> Result<(), String> {
     save_or_update_user(
@@ -1294,6 +1301,13 @@ pub async fn save_or_update_discovered_user(
     .await?;
     if authoritative {
         update_user_metadata(pool, id, hostname, mac_address, discovery_source, app_version).await?;
+        // Keep the last advertised feature set across restarts, including an explicit empty set.
+        sqlx::query("UPDATE users SET capabilities = ? WHERE id = ?")
+            .bind(sqlx::types::Json(capabilities))
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|error| format!("保存设备能力失败: {error}"))?;
     }
     Ok(())
 }
@@ -4142,7 +4156,7 @@ pub async fn get_user_metadata(
 ) -> Result<Option<UserRecord>, String> {
     sqlx::query_as::<_, UserRecord>(
         "SELECT id, name, addr, last_seen, is_offline, available_memory_mb,
-                hostname, mac_address, remark, discovery_source, app_version
+                hostname, mac_address, remark, discovery_source, app_version, capabilities
          FROM users WHERE id = ?",
     )
     .bind(user_id)
@@ -4156,7 +4170,7 @@ pub async fn list_users_with_metadata(
 ) -> Result<Vec<UserRecord>, String> {
     sqlx::query_as::<_, UserRecord>(
         "SELECT id, name, addr, last_seen, is_offline, available_memory_mb,
-                hostname, mac_address, remark, discovery_source, app_version
+                hostname, mac_address, remark, discovery_source, app_version, capabilities
          FROM users ORDER BY last_seen DESC",
     )
     .fetch_all(pool)
@@ -5168,7 +5182,8 @@ mod tests {
                 mac_address TEXT,
                 remark TEXT,
                 discovery_source TEXT,
-                app_version TEXT
+                app_version TEXT,
+                capabilities TEXT NOT NULL DEFAULT '[]'
             )",
         )
         .execute(&pool)
@@ -5185,10 +5200,17 @@ mod tests {
             Some("ac:de:48:00:11:22"),
             Some("lan"),
             None,
+            &["group_chat".into()],
             false,
         )
         .await
         .unwrap();
+        assert!(get_user_metadata(&pool, "peer-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .capabilities
+            .is_empty());
         sqlx::query(
             "UPDATE users
              SET hostname = 'reply-host', mac_address = 'ac:de:48:00:11:22'
@@ -5207,6 +5229,7 @@ mod tests {
             Some("82:ae:17:28:c4:04"),
             Some("lan"),
             Some("0.1.5"),
+            &["group_chat".into()],
             true,
         )
         .await
@@ -5221,6 +5244,7 @@ mod tests {
             Some("ac:de:48:00:11:22"),
             Some("lan"),
             None,
+            &[],
             false,
         )
         .await
@@ -5235,6 +5259,7 @@ mod tests {
             Some("82:ae:17:28:c4:04"),
             Some("lan"),
             Some("0.1.5"),
+            &["group_chat".into()],
             true,
         )
         .await
@@ -5245,6 +5270,7 @@ mod tests {
         assert_eq!(peer.app_version.as_deref(), Some("0.1.5"));
         assert_eq!(peer.hostname.as_deref(), Some("alice-mac"));
         assert_eq!(peer.mac_address.as_deref(), Some("82:ae:17:28:c4:04"));
+        assert_eq!(peer.capabilities, vec!["group_chat"]);
 
         // 权威路径带 None（旧设备心跳无 app_version）不应覆盖已存版本
         save_or_update_discovered_user(
@@ -5257,12 +5283,14 @@ mod tests {
             Some("82:ae:17:28:c4:04"),
             Some("lan"),
             None,
+            &[],
             true,
         )
         .await
         .unwrap();
         let peer = get_user_metadata(&pool, "peer-1").await.unwrap().unwrap();
         assert_eq!(peer.app_version.as_deref(), Some("0.1.5"));
+        assert!(peer.capabilities.is_empty());
     }
 
     #[tokio::test]
@@ -5895,6 +5923,7 @@ mod tests {
         assert_eq!(peer.available_memory_mb, 42);
         assert_eq!(peer.hostname.as_deref(), Some("peer-host"));
         assert_eq!(peer.app_version.as_deref(), Some("0.1.5"));
+        assert!(peer.capabilities.is_empty());
 
         pool.close().await;
         remove_test_database(&pool, &app_dir).await;

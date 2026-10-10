@@ -282,7 +282,7 @@ async fn devices(
                 is_offline: user.is_offline,
                 last_seen: user.last_seen,
                 available_memory_mb: user.available_memory_mb,
-                capabilities: Vec::new(),
+                capabilities: user.capabilities,
                 app_version: user.app_version,
                 connection: None,
             },
@@ -2065,6 +2065,120 @@ pub async fn update_preference(pool: &Pool<Sqlite>, key: &str, value: &str) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn discovered_mobile_peers_can_join_groups_after_restart_without_rediscovery() {
+        let app_dir =
+            std::env::temp_dir().join(format!("xchat-group-capabilities-{}", uuid::Uuid::new_v4()));
+        let pool = db::init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        for id in ["phone-create", "desktop", "phone-add", "legacy"] {
+            let capabilities = if id == "legacy" {
+                Vec::new()
+            } else {
+                vec!["group_chat".to_string(), "receipts".to_string()]
+            };
+            db::save_or_update_discovered_user(
+                &pool,
+                id,
+                id,
+                "127.0.0.1:9",
+                0,
+                Some("localhost"),
+                None,
+                Some("lan"),
+                Some("0.1.12"),
+                &capabilities,
+                true,
+            )
+            .await
+            .unwrap();
+            // A legacy reply must not erase the previously advertised capabilities.
+            db::save_or_update_discovered_user(
+                &pool,
+                id,
+                id,
+                "127.0.0.1:9",
+                0,
+                None,
+                None,
+                None,
+                None,
+                &[],
+                false,
+            )
+            .await
+            .unwrap();
+            db::mark_user_offline(&pool, id).await.unwrap();
+        }
+        pool.close().await;
+
+        let pool = db::init_db_standalone(Some(app_dir.clone())).await.unwrap();
+        let peers = PeerManager::new();
+        let self_id = db::get_user_id(&pool).await.unwrap();
+        let stored_devices = devices(&pool, &peers, &self_id).await.unwrap();
+        assert!(stored_devices
+            .iter()
+            .find(|device| device.id == "phone-add")
+            .unwrap()
+            .capabilities
+            .iter()
+            .any(|capability| capability == "group_chat"));
+        peers.load_from_db(&pool).await.unwrap();
+        assert!(peers.get_all_peers().iter().all(|peer| peer.is_offline));
+
+        let group = create_group(
+            &pool,
+            &peers,
+            "Mobile group",
+            vec!["phone-create".into(), "desktop".into()],
+        )
+        .await
+        .unwrap();
+        update_group(
+            &pool,
+            &peers,
+            &group.id,
+            "add_members",
+            None,
+            vec!["phone-add".into()],
+        )
+        .await
+        .unwrap();
+        let members = db::get_conversation_members(&pool, &group.id).await.unwrap();
+        assert_eq!(members.len(), 4);
+        assert!(members.iter().any(|member| member.peer_id == "phone-add"));
+
+        assert!(create_group(
+            &pool,
+            &peers,
+            "Unsupported group",
+            vec!["legacy".into(), "desktop".into()],
+        )
+        .await
+        .unwrap_err()
+        .contains("不支持群聊协议"));
+        assert!(update_group(
+            &pool,
+            &peers,
+            &group.id,
+            "add_members",
+            None,
+            vec!["legacy".into()],
+        )
+        .await
+        .unwrap_err()
+        .contains("不支持群聊协议"));
+        assert_eq!(
+            db::get_conversation_members(&pool, &group.id)
+                .await
+                .unwrap()
+                .len(),
+            4
+        );
+
+        pool.close().await;
+        crate::db::remove_test_database(&pool, &app_dir).await;
+    }
 
     #[tokio::test]
     async fn workspace_settings_include_default_max_parallel_channels() {

@@ -2007,6 +2007,7 @@ pub async fn listen_on(
                     announcement.mac_address.as_deref(),
                     Some("lan"),
                     announcement.app_version.as_deref(),
+                    &announcement.capabilities,
                     announcement.has_authoritative_metadata(),
                 )
                 .await;
@@ -2252,6 +2253,7 @@ pub async fn listen_on(
                     announcement.mac_address.as_deref(),
                     Some("lan"),
                     announcement.app_version.as_deref(),
+                    &announcement.capabilities,
                     announcement.has_authoritative_metadata(),
                 )
                 .await;
