@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.14 - 2026-10-10
+
+### Features
+
+- Open remote desktops in an independent window with fullscreen and host information; keep conversation and voice controls in the main chat window.
+- Add desktop launch-at-login settings with verified system state and explicit save feedback.
+- Show online/offline status in the group member picker and list online devices first without changing selections.
+
+### Fixes
+
+- Remove the sharer's recursive preview and the extra frame around the floating sharing toolbar.
+- Recover the input channel without ending healthy video or voice, replaying stale input, or automatically restoring control permission.
+- Preserve HEVC video during control-channel replacement with a bounded protocol-message queue; discard stale messages when a session changes or pauses.
+- Guard unavailable microphone APIs, add macOS microphone permission metadata, and scope asynchronous voice callbacks to the current call.
+- Fall back to GDI when DXGI never supplies an initial frame, while allowing already active static desktops to remain idle.
+
+### Performance
+
+- Add persistent DXGI capture, GPU scaling/NV12 conversion and hardware Media Foundation HEVC encoding on supported Windows systems.
+- Move encoded frame delivery to an authenticated local WebSocket and DedicatedWorker, with bounded queues and WebCodecs presentation; retain the compatible RTP fallback.
+- In a monitored 1080p Windows RDP session, same-machine delivery measured 31.4 displayed FPS both foreground and minimized. Mean source-pixel age was 164.68 ms; the requested two-device/macOS performance baseline is still unverified.
+
+### Tests
+
+- Verify eight real native/browser integration flows, including independent windows, fullscreen, control-channel recovery, pause/resume and synthetic microphone calls.
+- Cover voice cancellation, stale revisions, capture ownership, codec negotiation, queue limits and fallback behavior. Physical macOS audio and hardware decode remain to be tested.
+
 ## 0.1.13 - 2026-10-08
 
 ### Features

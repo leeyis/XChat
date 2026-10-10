@@ -1,6 +1,6 @@
 # Xchat
 
-Xchat `0.1.12` 是一款基于 Tauri 2、React 和 Rust 的局域网聊天客户端。每台设备只需安装并运行客户端；客户端自身负责局域网发现、消息、文件传输和本地 SQLite 存储，不需要单独部署服务端。
+Xchat `0.1.14` 是一款基于 Tauri 2、React 和 Rust 的局域网聊天客户端。每台设备只需安装并运行客户端；客户端自身负责局域网发现、消息、文件传输和本地 SQLite 存储，不需要单独部署服务端。
 
 ## 功能
 
@@ -13,10 +13,15 @@ Xchat `0.1.12` 是一款基于 Tauri 2、React 和 Rust 的局域网聊天客户
 - 直接框选、原位贴图与继续标注：支持缩放、旋转、透明度、窗口阴影和隐藏恢复；Web贴图保留在当前页面内
 - 中英文、主题、通知、下载目录和网络参数设置
 - 可选的 headless Web 运行模式
+- 独立远程桌面窗口与全屏、紧凑共享工具条、会话内授权控制，以及和聊天布局分离的语音通话
+- Windows DXGI 采集与硬件 HEVC 传输，能力不足时回退兼容 RTP 链路
+- 桌面开机自启动设置，以及建群时的在线状态与在线优先排序
 
 截图按钮和已配置的快捷键直接进入选区。截图文字编辑时，Enter直接换行，点击编辑框外部完成编辑；拖动边框可移动文字，Delete删除当前激活的标注。鼠标滚轮调整当前工具的大小。贴图右键打开操作菜单，Space进入标注并保持贴图位置与缩放；Ctrl+Shift+P开启鼠标穿透，F3恢复隐藏或穿透贴图，Esc隐藏，Shift+Esc销毁。关闭窗口阴影时也会移除贴图边框。
 
 ## 开发
+
+远控性能仍在验证：本机 Windows RDP 测试中，1080p 前台与最小化均约 31.4 FPS，源图像更新时间平均 164.68 ms。这不能代表双机局域网性能；macOS 麦克风与硬件解码也待实机确认，详见[验证记录](docs/verification/2026-10-10-remote-followup.md)。
 
 前置要求：Node.js、Rust、Tauri 2 的平台依赖，以及 `cargo-tauri`。
 
@@ -62,7 +67,7 @@ macOS 产物通常位于：
 
 ```text
 src-tauri/target/release/bundle/macos/Xchat.app
-src-tauri/target/release/bundle/dmg/Xchat_0.1.12_*.dmg
+src-tauri/target/release/bundle/dmg/Xchat_0.1.14_*.dmg
 ```
 
 指定架构：
@@ -98,7 +103,7 @@ cargo run --manifest-path src-tauri/Cargo.toml \
   -- --port 8888 --db-path /tmp/xchat-web
 ```
 
-内部 Rust 包和兼容二进制仍使用 `lanchat` / `lanchat-web` 名称；应用界面、安装包、版本和 bundle identifier 分别为 `Xchat`、`0.1.12` 和 `com.xchat.app`。
+内部 Rust 包和兼容二进制仍使用 `lanchat` / `lanchat-web` 名称；应用界面、安装包、版本和 bundle identifier 分别为 `Xchat`、`0.1.14` 和 `com.xchat.app`。
 
 ## 验证
 

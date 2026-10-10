@@ -446,7 +446,7 @@ test("every prop passed to Icon is actually destructured by Icon", async () => {
   }
 });
 
-test("user-visible version sources stay synchronized at 0.1.13", async () => {
+test("user-visible version sources stay synchronized at 0.1.14", async () => {
   const [packageJson, tauriConfig, cargoToml, app, android] = await Promise.all([
     readFile(new URL("../../package.json", import.meta.url), "utf8"),
     readFile(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
@@ -455,9 +455,9 @@ test("user-visible version sources stay synchronized at 0.1.13", async () => {
     readFile(new URL("../../src-tauri/gen/android/app/build.gradle.kts", import.meta.url), "utf8"),
   ]);
 
-  assert.equal(JSON.parse(packageJson).version, "0.1.13");
-  assert.equal(JSON.parse(tauriConfig).version, "0.1.13");
-  assert.match(cargoToml, /^version = "0\.1\.13"$/m);
-  assert.match(app, /:\s*"0\.1\.13";/);
-  assert.match(android, /versionName[^\n]*"0\.1\.13"/);
+  assert.equal(JSON.parse(packageJson).version, "0.1.14");
+  assert.equal(JSON.parse(tauriConfig).version, "0.1.14");
+  assert.match(cargoToml, /^version = "0\.1\.14"$/m);
+  assert.match(app, /:\s*"0\.1\.14";/);
+  assert.match(android, /versionName[^\n]*"0\.1\.14"/);
 });

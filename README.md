@@ -1,6 +1,6 @@
 # Xchat
 
-Xchat `0.1.12` is a LAN chat client built with Tauri 2, React, and Rust. Install and run the client on each device; discovery, messaging, file transfer, and SQLite storage are built in, so normal desktop use does not require a separate server.
+Xchat `0.1.14` is a LAN chat client built with Tauri 2, React, and Rust. Install and run the client on each device; discovery, messaging, file transfer, and SQLite storage are built in, so normal desktop use does not require a separate server.
 
 ## Features
 
@@ -13,10 +13,15 @@ Xchat `0.1.12` is a LAN chat client built with Tauri 2, React, and Rust. Install
 - Direct region capture and editable pins that retain their screen position, with zoom, rotation, opacity, window-shadow controls, and hide/recover actions; Web pins stay inside the page
 - Chinese/English UI, themes, notifications, download, network, and local IP/MAC identity settings
 - Optional headless Web mode
+- Remote assistance in a separate fullscreen-capable viewer, a compact sharing toolbar, session-scoped control permission, and voice calls independent of chat layout
+- Windows DXGI capture and hardware HEVC delivery when supported, with compatible RTP fallback
+- Desktop launch-at-login settings and online-first group member selection
 
 The capture button and configured shortcut open region selection directly. In the capture editor, Enter inserts a new text line and clicking outside commits the edit. Drag a text box by its border; Delete removes the active annotation. The mouse wheel adjusts the current tool size. Right-click a pin for its menu; Space starts annotation while preserving its position and scale. Ctrl+Shift+P enables click-through, F3 restores hidden or click-through pins, Esc hides a pin, and Shift+Esc destroys it. Disabling the window shadow also removes the pin border.
 
 ## Development
+
+Remote performance remains under validation. The monitored Windows RDP test delivered about 31.4 FPS at 1080p, including while minimized, with 164.68 ms mean source-pixel age. This same-machine result does not certify two-device LAN performance or macOS microphone/hardware decoding; see the [verification record](docs/verification/2026-10-10-remote-followup.md).
 
 Install Node.js, Rust, the Tauri 2 platform prerequisites, and `cargo-tauri`.
 
@@ -62,7 +67,7 @@ Typical macOS outputs:
 
 ```text
 src-tauri/target/release/bundle/macos/Xchat.app
-src-tauri/target/release/bundle/dmg/Xchat_0.1.12_*.dmg
+src-tauri/target/release/bundle/dmg/Xchat_0.1.14_*.dmg
 ```
 
 Build a specific macOS architecture:
@@ -98,7 +103,7 @@ cargo run --manifest-path src-tauri/Cargo.toml \
   -- --port 8888 --db-path /tmp/xchat-web
 ```
 
-The internal Rust package and compatibility binaries remain named `lanchat` / `lanchat-web`. The visible app name, version, and bundle identifier are `Xchat`, `0.1.12`, and `com.xchat.app`.
+The internal Rust package and compatibility binaries remain named `lanchat` / `lanchat-web`. The visible app name, version, and bundle identifier are `Xchat`, `0.1.14`, and `com.xchat.app`.
 
 ## Verification
 

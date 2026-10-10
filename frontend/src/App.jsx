@@ -1244,7 +1244,7 @@ function formatTime(timestamp, locale) {
 function appVersion() {
   return typeof globalThis.__XCHAT_VERSION__ === "string" && globalThis.__XCHAT_VERSION__
     ? globalThis.__XCHAT_VERSION__
-    : "0.1.13";
+    : "0.1.14";
 }
 
 function formatRate(bytesPerSecond) {
