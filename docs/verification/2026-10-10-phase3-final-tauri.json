@@ -1,0 +1,15 @@
+{
+  "result": "passed",
+  "runtime": "Tauri WebView2",
+  "recording": [
+    1,
+    "voice",
+    "92ecb7d2-5981-4730-8d36-0eb27c9e1c15",
+    1996,
+    "audio/webm"
+  ],
+  "permissions": "send_voice_message + get_workspace_media_source + get_task_center + run_task_action + run_connection_diagnostics allowed",
+  "task_cancelled": true,
+  "diagnostic_redacted": true,
+  "exceptions": []
+}

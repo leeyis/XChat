@@ -430,7 +430,27 @@ mod tests {
 
     #[tokio::test]
     async fn occupied_port_recovers_readiness_and_shutdown_releases_listeners() {
-        let occupied = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
+        // TCP ephemeral allocation does not exclude Windows' UDP reserved ranges.
+        // Reserve both protocols so this test isolates the deliberate TCP conflict.
+        let mut reservation = None;
+        for _ in 0..64 {
+            let tcp = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
+            let address = tcp.local_addr().unwrap();
+            match tokio::net::UdpSocket::bind(address).await {
+                Ok(udp) => {
+                    reservation = Some((tcp, udp));
+                    break;
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+                    ) => continue,
+                Err(error) => panic!("cannot reserve test UDP listener: {error}"),
+            }
+        }
+        let (occupied, udp_reservation) =
+            reservation.expect("no port available to both TCP and UDP");
         let port = occupied.local_addr().unwrap().port();
         let app_dir = std::env::temp_dir().join(format!("xchat-runtime-{}", uuid::Uuid::new_v4()));
         let pool = crate::db::init_db_standalone(Some(app_dir.clone()))
@@ -470,6 +490,7 @@ mod tests {
         assert!(!failed.http_ready && !failed.discovery_ready && !failed.announcing);
         assert!(failed.last_error.as_deref().unwrap().contains("http bind"));
         assert_eq!(failed.retry_in_seconds, 1);
+        drop(udp_reservation);
         drop(occupied);
         let ready = runtime.wait_ready(Duration::from_secs(8)).await.unwrap();
         assert!(

@@ -1,0 +1,24 @@
+{
+  "result": "passed",
+  "runtime": "Tauri WebView2",
+  "commands": 6,
+  "created": "33ebab40-3494-4e73-a0b8-8d7d32ea362d",
+  "preview": {
+    "attachments": 1,
+    "created_at": 1791611593,
+    "duplicates": 1,
+    "messages": 1,
+    "new_messages": 0,
+    "settings": true
+  },
+  "restore": {
+    "added": 0,
+    "duplicates": 1,
+    "pre_restore_copy": "C:\\Users\\wangy\\AppData\\Local\\Temp\\xchat-p3-tauri-7wzihzy1\\db\\backups\\before-restore-8184ec3e-f93b-42ad-aa65-9bd8ff2fc3d6.sqlite",
+    "preferences_restored": false
+  },
+  "identity_preserved": true,
+  "preview_cancelled": true,
+  "ui_backup_records": 1,
+  "exceptions": []
+}
