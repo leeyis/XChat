@@ -14,6 +14,11 @@ description = "Read and manage local durable tasks and run connection diagnostic
 commands.allow = ["get_task_center", "run_task_action", "replace_task_source", "run_connection_diagnostics"]
 
 [[permission]]
+identifier = "allow-backup"
+description = "Create, validate and merge local chat backups."
+commands.allow = ["get_backup_overview", "start_local_backup", "get_backup_job", "cancel_backup_job", "prepare_backup_restore", "restore_backup"]
+
+[[permission]]
 identifier = "allow-get-my-id"
 description = "Allows reading the current user ID"
 commands.allow = ["get_my_id"]

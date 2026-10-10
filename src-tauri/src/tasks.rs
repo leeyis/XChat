@@ -105,8 +105,9 @@ pub struct TaskPage { pub tasks: Vec<Task>, pub next_before: Option<i64> }
 pub async fn list(pool: &Pool<Sqlite>, before: Option<i64>) -> Result<TaskPage, String> {
     let self_id = db::get_user_id(pool).await?;
     let messages = sqlx::query_as::<_, db::MessageRecord>(
-        "SELECT m.* FROM messages m WHERE m.id < ? AND m.client_message_id IS NOT NULL
+        "SELECT m.* FROM messages m WHERE m.id < ? AND m.client_message_id IS NOT NULL AND COALESCE(m.status,'')!='restored'
          AND NOT EXISTS(SELECT 1 FROM task_hidden h WHERE h.message_id=m.id)
+         AND NOT EXISTS(SELECT 1 FROM restored_messages h WHERE h.message_client_id=m.client_message_id)
          AND (EXISTS(SELECT 1 FROM transfers t WHERE t.message_id = m.id)
            OR (m.sender_id IN (?, 'me') AND m.msg_type IN ('text','quote','announcement')
                AND EXISTS(SELECT 1 FROM message_receipts r WHERE r.message_client_id = m.client_message_id)))
@@ -158,6 +159,9 @@ pub struct TaskAction {
 
 pub async fn act(pool: &Pool<Sqlite>, peers: &PeerManager, request: TaskAction) -> Result<(), String> {
     let message = db::get_message_by_id(pool, request.message_id).await?.ok_or("任务不存在")?;
+    if crate::backup::is_history(pool, message.client_message_id.as_deref().unwrap_or_default()).await? {
+        return Err("恢复的历史不属于发送任务；需要再次发送时，请转发为新消息".into());
+    }
     if request.action == "dismiss" {
         let changed = sqlx::query("INSERT OR IGNORE INTO task_hidden(message_id) SELECT ?
             WHERE NOT EXISTS(SELECT 1 FROM transfers WHERE message_id=? AND status NOT IN ('completed','cancelled','rejected','expired'))

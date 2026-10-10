@@ -705,7 +705,7 @@ export function messageDeliveryStatus(message = {}, peerOffline = false) {
 export function canRetryMessage(message = {}) {
   return Boolean(message.own && message.client_message_id &&
     ["text", "quote", "announcement"].includes(message.msg_type) &&
-    !["delivered", "read", "recalled"].includes(message.status) &&
+    !["delivered", "read", "recalled", "restored"].includes(message.status) &&
     (message.status === "failed" ||
       ["unconfirmed", "waiting_connection"].includes(message.delivery_state)));
 }
@@ -1313,6 +1313,16 @@ export class TauriAdapter {
   }
 
   getTasks(before = null) { return this.invoke("get_task_center", { before }); }
+  backupOverview() { return this.invoke("get_backup_overview"); }
+  createBackup(request) { return this.invoke("start_local_backup", { request }); }
+  backupStatus(id) { return this.invoke("get_backup_job", { id }); }
+  cancelBackup(id) { return this.invoke("cancel_backup_job", { id }); }
+  async prepareBackup({ backupId }) {
+    const path = backupId ? null : await this.tauri.dialog.open({ multiple: false, directory: false, title: "选择 XChat 备份", filters: [{ name: "XChat 备份", extensions: ["xchatbackup"] }] });
+    if (!backupId && !path) return { cancelled: true };
+    return this.invoke("prepare_backup_restore", { path, backupId: backupId || null });
+  }
+  restoreBackup(id, includeSettings) { return this.invoke("restore_backup", { id, includeSettings }); }
   actTask(request) { return this.invoke("run_task_action", { request }); }
   async replaceTaskSource(messageId) {
     const path = await this.tauri.dialog.open({ multiple: false, directory: false, title: "选择原始文件（将校验内容）" });
@@ -1940,6 +1950,16 @@ export class HttpWsAdapter {
   }
 
   getTasks(before = null) { return this.request(`/api/tasks${before == null ? "" : `?before=${encodeURIComponent(before)}`}`); }
+  backupOverview() { return this.request("/api/backups"); }
+  createBackup(request) { return this.json("/api/backups", "POST", request); }
+  backupStatus(id) { return this.request(`/api/backups/jobs/${encodeURIComponent(id)}`); }
+  cancelBackup(id) { return this.json(`/api/backups/jobs/${encodeURIComponent(id)}/cancel`, "POST", {}); }
+  prepareBackup({ backupId, file }) {
+    if (backupId) return this.json(`/api/backups/${encodeURIComponent(backupId)}/preview`, "POST", {});
+    const body = new FormData(); body.append("file", file, file.name);
+    return this.request("/api/backups/import", { method: "POST", body });
+  }
+  restoreBackup(id, includeSettings) { return this.json(`/api/backups/jobs/${encodeURIComponent(id)}/restore`, "POST", { include_settings: includeSettings }); }
   actTask(request) { return this.json("/api/tasks", "POST", request); }
   replaceTaskSource(messageId, file) {
     const body = new FormData(); body.append("file", file, file.name);
@@ -3197,6 +3217,12 @@ export function createXChatModule() {
         patch({ activeSection: action.section });
         return;
       case "tasks.list": return adapter.getTasks(action.before ?? null);
+      case "backup.overview": return adapter.backupOverview();
+      case "backup.create": return adapter.createBackup(action.request);
+      case "backup.status": return adapter.backupStatus(action.id);
+      case "backup.cancel": return adapter.cancelBackup(action.id);
+      case "backup.prepare": return adapter.prepareBackup(action);
+      case "backup.restore": return adapter.restoreBackup(action.id, action.includeSettings);
       case "tasks.act": {
         const result = await adapter.actTask(action.request); scheduleRefresh(); return result;
       }

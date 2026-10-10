@@ -656,6 +656,7 @@ async fn init_db_with_path_and_machine_name(
 
     crate::voice::init_schema(&pool).await?;
     crate::tasks::init_schema(&pool).await?;
+    crate::backup::init_schema(&pool).await?;
 
     // 初始化配置；旧版自动生成名只迁移一次，用户自定义名称不覆盖。
     let username =
@@ -2982,7 +2983,8 @@ pub async fn claim_message_delivery(
              JOIN messages m ON m.client_message_id = r.message_client_id
              WHERE r.message_client_id = ? AND r.reader_id = ?
                AND r.delivered_at IS NULL AND r.read_at IS NULL
-               AND COALESCE(m.status, '') NOT IN ('recalled', 'delivered', 'read')
+               AND COALESCE(m.status, '') NOT IN ('recalled', 'delivered', 'read', 'restored')
+               AND NOT EXISTS(SELECT 1 FROM restored_messages history WHERE history.message_client_id=m.client_message_id)
                AND m.msg_type IN ('text', 'quote', 'announcement')
          )
          ON CONFLICT(message_client_id, reader_id) DO UPDATE SET
@@ -3117,7 +3119,8 @@ pub async fn get_due_messages_for_peer(
          LEFT JOIN message_delivery_attempts a
            ON a.message_client_id = r.message_client_id AND a.reader_id = r.reader_id
          WHERE r.reader_id = ? AND r.delivered_at IS NULL AND r.read_at IS NULL
-           AND COALESCE(m.status, '') NOT IN ('recalled', 'delivered', 'read')
+           AND COALESCE(m.status, '') NOT IN ('recalled', 'delivered', 'read', 'restored')
+           AND NOT EXISTS(SELECT 1 FROM restored_messages history WHERE history.message_client_id=m.client_message_id)
             AND m.msg_type IN ('text', 'quote', 'announcement')
             AND COALESCE(a.state, '') != 'cancelled'
            AND COALESCE(a.next_retry_at, 0) <= ? AND COALESCE(a.lease_until, 0) <= ?

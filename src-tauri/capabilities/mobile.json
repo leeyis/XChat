@@ -82,6 +82,7 @@
     "allow-send-conversation-file",
     "allow-send-voice-message",
     "allow-task-center",
+    "allow-backup",
     "allow-retry-conversation-file",
     "allow-get-conversation-messages",
     "allow-mark-messages-read",

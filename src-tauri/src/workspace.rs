@@ -415,7 +415,7 @@ async fn message_view(
                 })
             })
             .collect::<Vec<_>>();
-        let state = if matches!(status.as_str(), "delivered" | "read") {
+        let state = if matches!(status.as_str(), "delivered" | "read" | "restored") {
             status.as_str()
         } else if !pending.is_empty() && pending.iter().all(|attempt| attempt.state == "cancelled") {
             "cancelled"

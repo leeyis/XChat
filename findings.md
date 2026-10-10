@@ -420,3 +420,13 @@
 任务中心投影原消息/传输队列；取消撤销租约，迟到 ACK 可记录但不能重启取消。文件恢复保存基线 SHA-256，重选复制进受管目录后校验；逐收件人仅展示最新传输，历史重试不重复计数。所有加载分页持续更新。诊断输出采用白名单且默认隐藏地址。178 项 web Rust、187 项当前前端测试、双实例 Chrome 和独立 Tauri WebView2 通过；证据见 docs/verification/2026-10-10-task-center-production.md。
 
 同一工作区另有自启动、群成员在线状态与网络连接修复同时开发；通过基线重建暂存片段与独立 Vite 构建分离提交，不覆盖这些源文件，不纳入 analysis/。P3-3 的新备份目录暂不进入 P3-2 提交。
+
+## 2026-10-10 P3-3 备份知识
+
+实际 SQLite 为 DELETE 日志模式。备份最终使用 SQLite Online Backup API，每批 256 页、批间释放锁，专用 spawn_blocking 工作者，复用 SQLx 已有的 libsqlite3-sys 0.30.1。清单和内容都有 SHA-256，固定表结构白名单、只读暂存库、数字附件路径。恢复前保留副本，事务合并，仅显式选择时恢复白名单偏好；历史有独立 durable marker，防止回调状态变化导致重新发送。
+
+P3-3 验证文档位于 docs/verification/2026-10-10-backup-production.md。默认并行全库测试发现 workspace_sync 空闲断言偶现失败；独立通过，代码使用进程级 receive_processing_revision，其他测试的变化会影响孤立数据库。后续全库验收同时记录并行与串行结果。
+
+远程独立模块草稿已在 src-tauri/src/remote/ 写入，尚未注册进生产或编译。契约 docs/plans/2026-10-10-remote-production-contract.md。UI owner token 与 peer secret 分离，localhost 同源控制入口，已验证设备回连 challenge 绑定邀请，有限有序信令队列与 watchdog；Windows 独立捕获/输入不引用截图模块。仍需完成命令、工具条、WebRTC、UI 和真实验证。
+
+P3-3 最终全库串行回归：181 项全部通过，命令 `rtk cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features web --lib -- --test-threads=1`；首次并行的单项失败仍按原样记录。

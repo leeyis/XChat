@@ -912,6 +912,9 @@ pub async fn retry_message(
         .await?
         .ok_or_else(|| "file message not found".to_string())?;
     let my_id = db::get_user_id(pool).await?;
+    if crate::backup::is_history(pool, message.client_message_id.as_deref().unwrap_or_default()).await? {
+        return Err("恢复的历史文件不会重新入队；请转发为新消息".into());
+    }
     if !matches!(message.msg_type.as_str(), "file" | "voice")
         || message.sender_id != my_id
         || !matches!(message.file_status.as_deref(), Some("failed" | "cancelled"))

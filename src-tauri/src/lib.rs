@@ -32,6 +32,7 @@ pub mod workspace;
 pub mod voice;
 pub mod tasks;
 pub mod diagnostics;
+pub mod backup;
 
 // 仅在桌面端编译时包含 Tauri 运行函数
 #[cfg(feature = "desktop")]
@@ -124,6 +125,12 @@ pub fn run() {
             commands::send_conversation_file,
             commands::send_voice_message,
             commands::get_task_center,
+            backup::commands::get_backup_overview,
+            backup::commands::start_local_backup,
+            backup::commands::get_backup_job,
+            backup::commands::cancel_backup_job,
+            backup::commands::prepare_backup_restore,
+            backup::commands::restore_backup,
             commands::run_task_action,
             commands::replace_task_source,
             commands::run_connection_diagnostics,

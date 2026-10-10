@@ -2834,6 +2834,7 @@ dependencies = [
  "getifaddrs",
  "jni",
  "libc",
+ "libsqlite3-sys",
  "log",
  "mime_guess",
  "ndk-context",

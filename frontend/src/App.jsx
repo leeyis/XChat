@@ -50,6 +50,7 @@ import {
 import { VoiceComposer, VoiceBubble } from "./VoiceMessage.jsx";
 import TaskCenter, { StabilityIcon } from "./TaskCenter.jsx";
 import ConnectionDiagnostics from "./ConnectionDiagnostics.jsx";
+import BackupPanel from "./BackupPanel.jsx";
 import CaptureEditor from "./CaptureEditor.jsx";
 import CaptureWorkspace from "./CaptureWorkspace.jsx";
 import { createChatScrollController } from "./chat-scroll.js";
@@ -189,6 +190,7 @@ const copy = {
       download: { label: "下载与传输", icon: "download" },
       network: { label: "网络", icon: "network" },
       diagnostics: { label: "连接诊断", icon: "diagnostics" },
+      backup: { label: "备份与恢复", icon: "folder" },
       shortcut: { label: "快捷键", icon: "keyboard" },
       about: { label: "关于", icon: "info" },
     },
@@ -434,6 +436,7 @@ const copy = {
       sending: "发送中",
       awaiting_ack: "已发出 · 等待回执",
       unconfirmed: "未确认送达",
+      restored: "已恢复的历史记录",
       waiting_connection: "等待连接",
       delivered: "已送达",
       read: "已读",
@@ -560,6 +563,7 @@ const copy = {
       download: { label: "Downloads & transfers", icon: "download" },
       network: { label: "Network", icon: "network" },
       diagnostics: { label: "Connection diagnostics", icon: "diagnostics" },
+      backup: { label: "Backup & restore", icon: "folder" },
       shortcut: { label: "Shortcuts", icon: "keyboard" },
       about: { label: "About", icon: "info" },
     },
@@ -808,6 +812,7 @@ const copy = {
       sending: "Sending",
       awaiting_ack: "Sent · Awaiting receipt",
       unconfirmed: "Delivery unconfirmed",
+      restored: "Restored history",
       waiting_connection: "Waiting for connection",
       delivered: "Delivered",
       read: "Read",
@@ -842,7 +847,7 @@ const copy = {
 // shortcut 保留在列表里，窄屏由 .settings-shortcut 隐藏。
 const SETTINGS_GROUPS = [
   ["identity", "appearance", "notification"],
-  ["download", "network", "diagnostics", "shortcut"],
+  ["download", "network", "diagnostics", "backup", "shortcut"],
   ["about"],
 ];
 
@@ -4776,6 +4781,7 @@ function SettingsWorkspace({
           )}
         </section>
         <ConnectionDiagnostics state={state} workspace={workspace}/>
+        <BackupPanel workspace={workspace}/>
         <section className="settings-section" id="settings-shortcut">
           <h2>{labels.shortcuts}</h2>
           <SettingRow
