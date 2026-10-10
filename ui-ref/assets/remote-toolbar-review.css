@@ -1,0 +1,36 @@
+/* Review only: movable remote tools. No native window or capture APIs. */
+.ra-canvas-wrap{position:relative}
+.ra-floating-panel{position:absolute;z-index:6;max-width:calc(100% - 16px);width:max-content;border-radius:12px;box-shadow:0 8px 30px #101c2d3d;isolation:isolate}
+.ra-floating-panel .ra-panel-tools{margin:0;max-width:100%;min-height:48px;gap:4px;padding:7px;border:1px solid var(--border);border-radius:12px;box-shadow:none;flex-wrap:wrap;background:var(--surface);color:var(--fg)}
+.ra-floating-panel .ra-toolbar-spacer,.ra-floating-panel .ra-tool-divider{display:none}
+.ra-floating-panel .ra-screen-label{padding:0 4px}
+.ra-floating-panel .ra-tool{white-space:nowrap}
+.ra-floating-panel .ra-panel-grip{display:grid;place-items:center;align-self:stretch;flex:0 0 24px;min-height:32px;width:24px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--muted);cursor:grab;touch-action:none;user-select:none}
+.ra-floating-panel .ra-panel-grip:hover{color:var(--fg);background:color-mix(in oklch,var(--fg) 7%,transparent)}
+.ra-floating-panel .ra-panel-grip:focus-visible,.ra-floating-panel button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.ra-floating-panel.dragging{user-select:none;box-shadow:0 12px 35px #101c2d66}
+.ra-floating-panel.dragging .ra-panel-grip{cursor:grabbing}
+.ra-floating-panel .ra-panel-hide{margin-left:auto;border-left:1px solid var(--border);border-radius:0 7px 7px 0;color:var(--muted)}
+.ra-floating-panel .ra-sharing-strip{border-color:color-mix(in oklch,var(--accent) 35%,var(--border));background:color-mix(in oklch,var(--accent) 7%,var(--surface))}
+.ra-floating-panel .ra-sharing-strip.control{border-color:color-mix(in oklch,var(--warning) 55%,var(--border));background:color-mix(in oklch,var(--warning) 9%,var(--surface))}
+.ra-floating-panel .ra-sharing-strip>strong{padding-right:9px;white-space:nowrap}
+.ra-floating-panel .ra-sharing-strip>div{width:auto;margin-left:0;flex-wrap:wrap}
+.ra-floating-panel .ra-sharing-strip .danger,.ra-panel-compact .danger{color:var(--danger)}
+.ra-panel-compact{display:flex;align-items:center;gap:3px;padding:4px;border:1px solid color-mix(in oklch,var(--accent) 35%,var(--border));border-radius:10px;background:var(--surface);color:var(--fg)}
+.ra-panel-compact.control{border-color:color-mix(in oklch,var(--warning) 55%,var(--border))}
+.ra-panel-restore{display:flex;align-items:center;gap:8px;min-height:34px;padding:5px 8px;border:0;border-radius:6px;background:transparent;font-size:11px;white-space:nowrap}
+.ra-panel-restore:hover{background:var(--bg)}
+.ra-panel-restore .ra-icon{width:14px;height:14px;color:var(--muted)}
+.ra-panel-dot{width:6px;height:6px;border-radius:50%;background:var(--accent)}
+.ra-panel-compact.control .ra-panel-dot{background:var(--warning)}
+.ra-panel-compact.paused .ra-panel-dot{background:var(--muted)}
+.ra-floating-panel .ra-compact-action{display:grid;place-items:center;min-height:32px;width:32px;padding:0;border:0;border-radius:6px;background:transparent}
+.ra-compact-action>span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+.ra-floating-panel .ra-compact-action:hover{background:color-mix(in oklch,var(--danger) 8%,var(--surface))}
+@media(max-width:600px){
+  .ra-floating-panel .ra-panel-tools{gap:3px;padding:6px}
+  .ra-floating-panel .ra-panel-tools .ra-tool{font-size:10px;padding:5px 7px;min-height:32px!important}
+  .ra-floating-panel .ra-sharing-strip>strong{font-size:11px;padding-right:0}
+  .ra-floating-panel .ra-sharing-strip>div{margin-left:28px}
+  .ra-floating-panel .ra-panel-grip{flex-basis:22px;width:22px}
+}

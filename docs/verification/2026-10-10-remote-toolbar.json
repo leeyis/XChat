@@ -1,0 +1,1091 @@
+{
+  "method": "Independent headless Chrome CDP, real pointer/keyboard input; prototype states only",
+  "url": "http://127.0.0.1:18893/xchat-desktop-prototype.html?review=phase3&p3=remote&toolbar-review=1",
+  "time": "2026-10-10 14:10:46",
+  "results": [
+    {
+      "name": "共享方面板初始可见且在画面范围内",
+      "passed": true,
+      "detail": {
+        "x": 277,
+        "y": 242.1875,
+        "width": 516.125,
+        "height": 48,
+        "right": 793.125,
+        "bottom": 290.1875,
+        "localX": 221,
+        "localY": 12,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "Eason 正在控制我的电脑\n收回控制\n暂停共享\n结束\n隐藏",
+        "permission": "允许控制",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-review p3-page p3-remote-live"
+      }
+    },
+    {
+      "name": "鼠标手柄可真实拖动，释放后结束拖动",
+      "passed": true,
+      "detail": {
+        "x": 187,
+        "y": 372.1875,
+        "width": 516.125,
+        "height": 48,
+        "right": 703.125,
+        "bottom": 420.1875,
+        "localX": 131,
+        "localY": 142,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "Eason 正在控制我的电脑\n收回控制\n暂停共享\n结束\n隐藏",
+        "permission": "允许控制",
+        "desktop": true,
+        "voice": true,
+        "focus": "ra-panel-grip"
+      }
+    },
+    {
+      "name": "隐藏仅收起面板，共享与控制保持，焦点进入浮标",
+      "passed": true,
+      "detail": {
+        "x": 187,
+        "y": 372.1875,
+        "width": 225,
+        "height": 44,
+        "right": 412,
+        "bottom": 416.1875,
+        "localX": 131,
+        "localY": 142,
+        "hidden": true,
+        "dragging": false,
+        "fits": true,
+        "status": "对方正在控制\n收回控制\n结束协助",
+        "permission": "允许控制",
+        "desktop": true,
+        "voice": true,
+        "focus": "ra-panel-restore"
+      }
+    },
+    {
+      "name": "隐藏工具栏保留双向语音",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "浮标支持独立拖动",
+      "passed": true,
+      "detail": {
+        "x": 247,
+        "y": 417.1875,
+        "width": 225,
+        "height": 44,
+        "right": 472,
+        "bottom": 461.1875,
+        "localX": 191,
+        "localY": 187,
+        "hidden": true,
+        "dragging": false,
+        "fits": true,
+        "status": "对方正在控制\n收回控制\n结束协助",
+        "permission": "允许控制",
+        "desktop": true,
+        "voice": true,
+        "focus": "ra-panel-grip"
+      }
+    },
+    {
+      "name": "展开回到完整面板原位置并恢复焦点",
+      "passed": true,
+      "detail": {
+        "x": 187,
+        "y": 372.1875,
+        "width": 516.125,
+        "height": 48,
+        "right": 703.125,
+        "bottom": 420.1875,
+        "localX": 131,
+        "localY": 142,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "Eason 正在控制我的电脑\n收回控制\n暂停共享\n结束\n隐藏",
+        "permission": "允许控制",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-btn ra-tool ra-panel-hide"
+      }
+    },
+    {
+      "name": "隐藏时可直接撤销控制且浮标及时更新",
+      "passed": true,
+      "detail": {
+        "x": 187,
+        "y": 372.1875,
+        "width": 179,
+        "height": 44,
+        "right": 366,
+        "bottom": 416.1875,
+        "localX": 131,
+        "localY": 142,
+        "hidden": true,
+        "dragging": false,
+        "fits": true,
+        "status": "屏幕共享中\n结束协助",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-review p3-page p3-remote-live"
+      }
+    },
+    {
+      "name": "共享暂停后浮标保留暂停状态",
+      "passed": true,
+      "detail": {
+        "x": 187,
+        "y": 372.1875,
+        "width": 179,
+        "height": 44,
+        "right": 366,
+        "bottom": 416.1875,
+        "localX": 131,
+        "localY": 142,
+        "hidden": true,
+        "dragging": false,
+        "fits": true,
+        "status": "共享已暂停\n结束协助",
+        "permission": "已暂停",
+        "desktop": false,
+        "voice": true,
+        "focus": "ra-panel-restore"
+      }
+    },
+    {
+      "name": "恢复共享保留面板位置且不继承控制",
+      "passed": true,
+      "detail": {
+        "x": 187,
+        "y": 372.1875,
+        "width": 427.125,
+        "height": 48,
+        "right": 614.125,
+        "bottom": 420.1875,
+        "localX": 131,
+        "localY": 142,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "Eason 正在查看我的屏幕\n暂停共享\n结束\n隐藏",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-review p3-page p3-remote-live"
+      }
+    },
+    {
+      "name": "向屏幕外拖动自动限制到可见范围",
+      "passed": true,
+      "detail": {
+        "x": 64,
+        "y": 238.1875,
+        "width": 427.125,
+        "height": 48,
+        "right": 491.125,
+        "bottom": 286.1875,
+        "localX": 8,
+        "localY": 8,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "Eason 正在查看我的屏幕\n暂停共享\n结束\n隐藏",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "ra-panel-grip"
+      }
+    },
+    {
+      "name": "手柄方向键移动八像素",
+      "passed": true,
+      "detail": {
+        "x": 72,
+        "y": 238.1875,
+        "width": 427.125,
+        "height": 48,
+        "right": 499.125,
+        "bottom": 286.1875,
+        "localX": 16,
+        "localY": 8,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "Eason 正在查看我的屏幕\n暂停共享\n结束\n隐藏",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "ra-panel-grip"
+      }
+    },
+    {
+      "name": "Home 复位到顶部居中",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "查看方使用独立的浮动操作栏",
+      "passed": true,
+      "detail": {
+        "x": 213.5,
+        "y": 222.1875,
+        "width": 642.953125,
+        "height": 48,
+        "right": 856.453125,
+        "bottom": 270.1875,
+        "localX": 157.5,
+        "localY": 46,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "屏幕 1\n显示\n适应窗口\n原始比例 100%\n自动\n全屏\n申请控制\n沟通\n隐藏",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-review p3-page p3-remote-live"
+      }
+    },
+    {
+      "name": "普通工具按钮打开对话框且不触发拖动",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "切换视角互不污染折叠状态",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "返回查看方保留折叠状态",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "重新渲染保留查看方面板位置",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "1280px light viewer 展开后边界完整",
+      "passed": true,
+      "detail": {
+        "x": 173.5,
+        "y": 322.1875,
+        "width": 642.953125,
+        "height": 48,
+        "right": 816.453125,
+        "bottom": 370.1875,
+        "localX": 117.5,
+        "localY": 146,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "屏幕 1\n显示\n适应窗口\n原始比例 100%\n自动\n全屏\n申请控制\n沟通\n隐藏",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-btn ra-tool ra-panel-hide"
+      }
+    },
+    {
+      "name": "1280px light viewer 浮标边界完整",
+      "passed": true,
+      "detail": {
+        "x": 173.5,
+        "y": 322.1875,
+        "width": 179,
+        "height": 44,
+        "right": 352.5,
+        "bottom": 366.1875,
+        "localX": 117.5,
+        "localY": 146,
+        "hidden": true,
+        "dragging": false,
+        "fits": true,
+        "status": "远程查看中\n结束协助",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "ra-panel-restore"
+      }
+    },
+    {
+      "name": "1280px light host 展开后边界完整",
+      "passed": true,
+      "detail": {
+        "x": 321.5,
+        "y": 242.1875,
+        "width": 427.125,
+        "height": 48,
+        "right": 748.625,
+        "bottom": 290.1875,
+        "localX": 265.5,
+        "localY": 12,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "Eason 正在查看我的屏幕\n暂停共享\n结束\n隐藏",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-review p3-page p3-remote-live"
+      }
+    },
+    {
+      "name": "1280px light host 浮标边界完整",
+      "passed": true,
+      "detail": {
+        "x": 321.5,
+        "y": 242.1875,
+        "width": 179,
+        "height": 44,
+        "right": 500.5,
+        "bottom": 286.1875,
+        "localX": 265.5,
+        "localY": 12,
+        "hidden": true,
+        "dragging": false,
+        "fits": true,
+        "status": "屏幕共享中\n结束协助",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "ra-panel-restore"
+      }
+    },
+    {
+      "name": "1280px dark viewer 展开后边界完整",
+      "passed": true,
+      "detail": {
+        "x": 173.5,
+        "y": 322.1875,
+        "width": 642.953125,
+        "height": 48,
+        "right": 816.453125,
+        "bottom": 370.1875,
+        "localX": 117.5,
+        "localY": 146,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "屏幕 1\n显示\n适应窗口\n原始比例 100%\n自动\n全屏\n申请控制\n沟通\n隐藏",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-review p3-page p3-remote-live"
+      }
+    },
+    {
+      "name": "1280px dark viewer 浮标边界完整",
+      "passed": true,
+      "detail": {
+        "x": 173.5,
+        "y": 322.1875,
+        "width": 179,
+        "height": 44,
+        "right": 352.5,
+        "bottom": 366.1875,
+        "localX": 117.5,
+        "localY": 146,
+        "hidden": true,
+        "dragging": false,
+        "fits": true,
+        "status": "远程查看中\n结束协助",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "ra-panel-restore"
+      }
+    },
+    {
+      "name": "1280px dark host 展开后边界完整",
+      "passed": true,
+      "detail": {
+        "x": 321.5,
+        "y": 242.1875,
+        "width": 427.125,
+        "height": 48,
+        "right": 748.625,
+        "bottom": 290.1875,
+        "localX": 265.5,
+        "localY": 12,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "Eason 正在查看我的屏幕\n暂停共享\n结束\n隐藏",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-review p3-page p3-remote-live"
+      }
+    },
+    {
+      "name": "1280px dark host 浮标边界完整",
+      "passed": true,
+      "detail": {
+        "x": 321.5,
+        "y": 242.1875,
+        "width": 179,
+        "height": 44,
+        "right": 500.5,
+        "bottom": 286.1875,
+        "localX": 265.5,
+        "localY": 12,
+        "hidden": true,
+        "dragging": false,
+        "fits": true,
+        "status": "屏幕共享中\n结束协助",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "ra-panel-restore"
+      }
+    },
+    {
+      "name": "860px light viewer 展开后边界完整",
+      "passed": true,
+      "detail": {
+        "x": 173.5,
+        "y": 323,
+        "width": 622.953125,
+        "height": 56,
+        "right": 796.453125,
+        "bottom": 379,
+        "localX": 117.5,
+        "localY": 146,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "屏幕 1\n显示\n适应窗口\n原始比例 100%\n自动\n全屏\n申请控制\n沟通\n隐藏",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-review p3-page p3-remote-live"
+      }
+    },
+    {
+      "name": "860px light viewer 浮标边界完整",
+      "passed": true,
+      "detail": {
+        "x": 173.5,
+        "y": 323,
+        "width": 179,
+        "height": 50,
+        "right": 352.5,
+        "bottom": 373,
+        "localX": 117.5,
+        "localY": 146,
+        "hidden": true,
+        "dragging": false,
+        "fits": true,
+        "status": "远程查看中\n结束协助",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "ra-panel-restore"
+      }
+    },
+    {
+      "name": "860px light host 展开后边界完整",
+      "passed": true,
+      "detail": {
+        "x": 321.5,
+        "y": 248,
+        "width": 427.125,
+        "height": 56,
+        "right": 748.625,
+        "bottom": 304,
+        "localX": 265.5,
+        "localY": 12,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "Eason 正在查看我的屏幕\n暂停共享\n结束\n隐藏",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-review p3-page p3-remote-live"
+      }
+    },
+    {
+      "name": "860px light host 浮标边界完整",
+      "passed": true,
+      "detail": {
+        "x": 321.5,
+        "y": 248,
+        "width": 179,
+        "height": 50,
+        "right": 500.5,
+        "bottom": 298,
+        "localX": 265.5,
+        "localY": 12,
+        "hidden": true,
+        "dragging": false,
+        "fits": true,
+        "status": "屏幕共享中\n结束协助",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "ra-panel-restore"
+      }
+    },
+    {
+      "name": "860px dark viewer 展开后边界完整",
+      "passed": true,
+      "detail": {
+        "x": 173.5,
+        "y": 323,
+        "width": 622.953125,
+        "height": 56,
+        "right": 796.453125,
+        "bottom": 379,
+        "localX": 117.5,
+        "localY": 146,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "屏幕 1\n显示\n适应窗口\n原始比例 100%\n自动\n全屏\n申请控制\n沟通\n隐藏",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-review p3-page p3-remote-live"
+      }
+    },
+    {
+      "name": "860px dark viewer 浮标边界完整",
+      "passed": true,
+      "detail": {
+        "x": 173.5,
+        "y": 323,
+        "width": 179,
+        "height": 50,
+        "right": 352.5,
+        "bottom": 373,
+        "localX": 117.5,
+        "localY": 146,
+        "hidden": true,
+        "dragging": false,
+        "fits": true,
+        "status": "远程查看中\n结束协助",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "ra-panel-restore"
+      }
+    },
+    {
+      "name": "860px dark host 展开后边界完整",
+      "passed": true,
+      "detail": {
+        "x": 321.5,
+        "y": 248,
+        "width": 427.125,
+        "height": 56,
+        "right": 748.625,
+        "bottom": 304,
+        "localX": 265.5,
+        "localY": 12,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "Eason 正在查看我的屏幕\n暂停共享\n结束\n隐藏",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-review p3-page p3-remote-live"
+      }
+    },
+    {
+      "name": "860px dark host 浮标边界完整",
+      "passed": true,
+      "detail": {
+        "x": 321.5,
+        "y": 248,
+        "width": 179,
+        "height": 50,
+        "right": 500.5,
+        "bottom": 298,
+        "localX": 265.5,
+        "localY": 12,
+        "hidden": true,
+        "dragging": false,
+        "fits": true,
+        "status": "屏幕共享中\n结束协助",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "ra-panel-restore"
+      }
+    },
+    {
+      "name": "390px light viewer 展开后边界完整",
+      "passed": true,
+      "detail": {
+        "x": 64,
+        "y": 419.1875,
+        "width": 318,
+        "height": 89,
+        "right": 382,
+        "bottom": 508.1875,
+        "localX": 8,
+        "localY": 146,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "屏幕 1\n显示\n适应窗口\n原始比例 100%\n自动\n全屏\n申请控制\n沟通\n隐藏",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-review p3-page p3-remote-live"
+      }
+    },
+    {
+      "name": "390px light viewer 浮标边界完整",
+      "passed": true,
+      "detail": {
+        "x": 64,
+        "y": 419.1875,
+        "width": 177,
+        "height": 50,
+        "right": 241,
+        "bottom": 469.1875,
+        "localX": 8,
+        "localY": 146,
+        "hidden": true,
+        "dragging": false,
+        "fits": true,
+        "status": "远程查看中\n结束协助",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "ra-panel-restore"
+      }
+    },
+    {
+      "name": "390px light host 展开后边界完整",
+      "passed": true,
+      "detail": {
+        "x": 64,
+        "y": 366.1875,
+        "width": 318,
+        "height": 89,
+        "right": 382,
+        "bottom": 455.1875,
+        "localX": 8,
+        "localY": 12,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "Eason 正在查看我的屏幕\n暂停共享\n结束\n隐藏",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-review p3-page p3-remote-live"
+      }
+    },
+    {
+      "name": "390px light host 浮标边界完整",
+      "passed": true,
+      "detail": {
+        "x": 64,
+        "y": 366.1875,
+        "width": 177,
+        "height": 50,
+        "right": 241,
+        "bottom": 416.1875,
+        "localX": 8,
+        "localY": 12,
+        "hidden": true,
+        "dragging": false,
+        "fits": true,
+        "status": "屏幕共享中\n结束协助",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "ra-panel-restore"
+      }
+    },
+    {
+      "name": "390px dark viewer 展开后边界完整",
+      "passed": true,
+      "detail": {
+        "x": 64,
+        "y": 419.1875,
+        "width": 318,
+        "height": 89,
+        "right": 382,
+        "bottom": 508.1875,
+        "localX": 8,
+        "localY": 146,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "屏幕 1\n显示\n适应窗口\n原始比例 100%\n自动\n全屏\n申请控制\n沟通\n隐藏",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-review p3-page p3-remote-live"
+      }
+    },
+    {
+      "name": "390px dark viewer 浮标边界完整",
+      "passed": true,
+      "detail": {
+        "x": 64,
+        "y": 419.1875,
+        "width": 177,
+        "height": 50,
+        "right": 241,
+        "bottom": 469.1875,
+        "localX": 8,
+        "localY": 146,
+        "hidden": true,
+        "dragging": false,
+        "fits": true,
+        "status": "远程查看中\n结束协助",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "ra-panel-restore"
+      }
+    },
+    {
+      "name": "390px dark host 展开后边界完整",
+      "passed": true,
+      "detail": {
+        "x": 64,
+        "y": 366.1875,
+        "width": 318,
+        "height": 89,
+        "right": 382,
+        "bottom": 455.1875,
+        "localX": 8,
+        "localY": 12,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "Eason 正在查看我的屏幕\n暂停共享\n结束\n隐藏",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-review p3-page p3-remote-live"
+      }
+    },
+    {
+      "name": "390px dark host 浮标边界完整",
+      "passed": true,
+      "detail": {
+        "x": 64,
+        "y": 366.1875,
+        "width": 177,
+        "height": 50,
+        "right": 241,
+        "bottom": 416.1875,
+        "localX": 8,
+        "localY": 12,
+        "hidden": true,
+        "dragging": false,
+        "fits": true,
+        "status": "屏幕共享中\n结束协助",
+        "permission": "仅查看",
+        "desktop": true,
+        "voice": true,
+        "focus": "ra-panel-restore"
+      }
+    },
+    {
+      "name": "展开远程桌面后自动约束位置",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "浮标在窗口缩小和展开模式中持续可见",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "隐藏状态仍可结束协助并移除浮标",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "新会话重新显示面板",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "断线清理隐藏浮标",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "既有远程授权、语音及状态流程回归",
+      "passed": true,
+      "detail": {
+        "time": "2026-10-10T06:10:45.230Z",
+        "viewport": [
+          1280,
+          900
+        ],
+        "results": [
+          {
+            "name": "入口明确区分请求协助与请求控制",
+            "passed": true
+          },
+          {
+            "name": "请求协助选择我的屏幕且控制默认关闭",
+            "passed": true
+          },
+          {
+            "name": "求助方等待时没有共享画面",
+            "passed": true
+          },
+          {
+            "name": "协助方收到正确方向的请求",
+            "passed": true
+          },
+          {
+            "name": "接受协助后查看Eason且不能控制",
+            "passed": true
+          },
+          {
+            "name": "仅查看升级需等待授权",
+            "passed": true
+          },
+          {
+            "name": "控制授权由Eason授予张三",
+            "passed": true
+          },
+          {
+            "name": "拒绝升级维持仅查看",
+            "passed": true
+          },
+          {
+            "name": "共享方可明确授予本次控制",
+            "passed": true
+          },
+          {
+            "name": "共享方即时收回控制",
+            "passed": true
+          },
+          {
+            "name": "求助方向重试仍共享本机且不继承控制",
+            "passed": true
+          },
+          {
+            "name": "求助时明确勾选的权限告知协助方",
+            "passed": true
+          },
+          {
+            "name": "协助方接受已明确授权的控制",
+            "passed": true
+          },
+          {
+            "name": "控制请求不选择或共享自己的屏幕",
+            "passed": true
+          },
+          {
+            "name": "被控方选择屏幕并有三种回应",
+            "passed": true
+          },
+          {
+            "name": "对方降级同意后只查看张三",
+            "passed": true
+          },
+          {
+            "name": "直接控制路径无需重复申请",
+            "passed": true
+          },
+          {
+            "name": "授权后示意桌面可响应操作",
+            "passed": true
+          },
+          {
+            "name": "协助方可以主动释放控制",
+            "passed": true
+          },
+          {
+            "name": "原始比例可滚动查看",
+            "passed": true
+          },
+          {
+            "name": "画质刷新色彩设置保存",
+            "passed": true
+          },
+          {
+            "name": "全屏桌面展开",
+            "passed": true
+          },
+          {
+            "name": "Esc退出展开桌面",
+            "passed": true
+          },
+          {
+            "name": "协助沟通保留本地演示消息",
+            "passed": true
+          },
+          {
+            "name": "沟通面板可收起",
+            "passed": true
+          },
+          {
+            "name": "沟通面板重开保留消息",
+            "passed": true
+          },
+          {
+            "name": "共享方始终可见收回暂停和结束",
+            "passed": true
+          },
+          {
+            "name": "暂停隐藏桌面并收回控制",
+            "passed": true
+          },
+          {
+            "name": "恢复只查看不继承控制",
+            "passed": true
+          },
+          {
+            "name": "共享方切换屏幕收回控制",
+            "passed": true
+          },
+          {
+            "name": "网络波动提示与画质处理入口",
+            "passed": true
+          },
+          {
+            "name": "断线隐藏桌面并清理展开状态",
+            "passed": true
+          },
+          {
+            "name": "断线重试仍请求控制对方",
+            "passed": true
+          },
+          {
+            "name": "锁屏不保留共享画面",
+            "passed": true
+          },
+          {
+            "name": "拒绝不建立会话",
+            "passed": true
+          },
+          {
+            "name": "发起方可以取消请求",
+            "passed": true
+          },
+          {
+            "name": "连接中取消不被迟到回调激活",
+            "passed": true
+          },
+          {
+            "name": "请求超时可重新发起",
+            "passed": true
+          },
+          {
+            "name": "超时重试保持求助方向",
+            "passed": true
+          },
+          {
+            "name": "不可用时禁用两个发起入口：offline",
+            "passed": true
+          },
+          {
+            "name": "不可用时禁用两个发起入口：unsupported",
+            "passed": true
+          },
+          {
+            "name": "不可用时禁用两个发起入口：busy",
+            "passed": true
+          },
+          {
+            "name": "离开远程页面恢复正常布局",
+            "passed": true
+          },
+          {
+            "name": "返回保留当前远程会话",
+            "passed": true
+          },
+          {
+            "name": "诊断入口保留",
+            "passed": true
+          },
+          {
+            "name": "备份入口保留",
+            "passed": true
+          },
+          {
+            "name": "退出评审清理远程扩展布局",
+            "passed": true
+          },
+          {
+            "name": "截图入口与资源仍存在",
+            "passed": true
+          }
+        ],
+        "passed": 48,
+        "failed": 0
+      }
+    },
+    {
+      "name": "host 原型直达入口显示模拟会话",
+      "passed": true,
+      "detail": {
+        "x": 414,
+        "y": 242.1875,
+        "width": 508.3125,
+        "height": 48,
+        "right": 922.3125,
+        "bottom": 290.1875,
+        "localX": 358,
+        "localY": 12,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "张三 正在控制我的电脑\n收回控制\n暂停共享\n结束\n隐藏",
+        "permission": "允许控制",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-review p3-page p3-remote-live"
+      }
+    },
+    {
+      "name": "viewer 原型直达入口显示模拟会话",
+      "passed": true,
+      "detail": {
+        "x": 346.5,
+        "y": 222.1875,
+        "width": 642.953125,
+        "height": 48,
+        "right": 989.453125,
+        "bottom": 270.1875,
+        "localX": 290.5,
+        "localY": 46,
+        "hidden": false,
+        "dragging": false,
+        "fits": true,
+        "status": "屏幕 1\n显示\n适应窗口\n原始比例 100%\n自动\n全屏\n释放控制\n沟通\n隐藏",
+        "permission": "允许控制",
+        "desktop": true,
+        "voice": true,
+        "focus": "p3-review p3-page p3-remote-live"
+      }
+    },
+    {
+      "name": "无浏览器未捕获异常",
+      "passed": true,
+      "detail": []
+    }
+  ],
+  "exceptions": [],
+  "passed": 50,
+  "failed": 0
+}

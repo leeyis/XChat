@@ -32,9 +32,11 @@
   let enabled = false, page = 'tasks', tasks = initialTasks(), filter = 'all', kind = 'all', query = '', selected = new Set(), detailId = '', epoch = 0;
   let scenario = 'normal', diagnostic = 'issue', diagnosticPeer = 'zhang', backups = [{name:'XChat-2026-10-08.xchatbackup',date:'昨天 18:30',size:'128 MB',contents:'聊天记录、偏好设置'}];
   const initialVoice = () => ({stage:'idle',offered:false,caller:'Eason',startedAt:0,reason:'',muted:{Eason:false,张三:false},deafened:{Eason:false,张三:false},input:{Eason:'default',张三:'default'},output:{Eason:'default',张三:'default'}});
-  const initialRemote = () => ({stage:'idle',mode:'control',permission:'view',offered:'view',screen:'1',quality:'自动',fps:'30',color:'full',scale:'fit',reason:'',controlPending:false,owner:'peer',note:'',expanded:false,chatOpen:true,chatDraft:'',demoOpen:false,startedAt:0,generation:0,voice:initialVoice(),chat:[{name:'张三',text:'网络设置这里好像不太对，方便一起看一下吗？'},{name:'Eason',text:'可以，我先看看连接状态。'}]});
+  const initialPanel = () => ({position:null,compactPosition:null,hidden:false});
+  const initialRemote = () => ({stage:'idle',mode:'control',permission:'view',offered:'view',screen:'1',quality:'自动',fps:'30',color:'full',scale:'fit',reason:'',controlPending:false,owner:'peer',note:'',expanded:false,chatOpen:true,chatDraft:'',demoOpen:false,startedAt:0,generation:0,panels:{host:initialPanel(),viewer:initialPanel()},voice:initialVoice(),chat:[{name:'张三',text:'网络设置这里好像不太对，方便一起看一下吗？'},{name:'Eason',text:'可以，我先看看连接状态。'}]});
   let role = 'viewer', remote = initialRemote(), backupToken = 0, restoreChoice = 'valid', priorFocus;
   let dialogOperation = '';
+  let disposeRemotePanel = () => {};
   const remotePeople = () => remote.owner==='self' ? {host:'Eason',viewer:'张三'} : {host:'张三',viewer:'Eason'};
   const diagTarget = () => diagnosticPeer==='lisi' ? {name:'李四',address:'192.168.1.63:8888'} : {name:'张三',address:'192.168.1.42:8888'};
   const diagResult = () => scenario==='healthy' ? '连接正常' : scenario==='identity' ? '身份不匹配' : '连接超时';
@@ -83,7 +85,7 @@
     tasksEntry.hidden=!enabled;
   }
   const previousTab = setTab;
-  setTab = function(tab) { root.hidden=true; document.body.classList.remove('p3-page','p3-remote-live','p3-remote-expanded'); clearInterval(remoteTimer); rail.classList.remove('active'); byId('settingsListTitle').textContent='设置'; previousTab(tab); if(enabled) { page=''; renderBar(); enhanceEntrances(); } };
+  setTab = function(tab) { disposeRemotePanel(); root.hidden=true; document.body.classList.remove('p3-page','p3-remote-live','p3-remote-expanded'); clearInterval(remoteTimer); rail.classList.remove('active'); byId('settingsListTitle').textContent='设置'; previousTab(tab); if(enabled) { page=''; renderBar(); enhanceEntrances(); } };
   const previousSelect = selectDevice;
   selectDevice = function(id) { previousSelect(id); if(enabled) enhanceEntrances(); };
   const previousSettings = renderSettingsNav;
@@ -104,6 +106,7 @@
   }
   function render() {
     if(!enabled || !page) return;
+    disposeRemotePanel();
     renderBar();
     if(page==='tasks') renderTasks(); else if(page==='diagnostics') renderDiagnostics(); else if(page==='backup') renderBackup(); else renderRemote();
     if(['diagnostics','backup'].includes(page)) { document.querySelectorAll('#list .settings-nav-row').forEach(n=>n.classList.toggle('selected',n.dataset.page===page)); }
@@ -201,6 +204,8 @@
     speakerOff:'<path d="M3 9h4l5-5v16l-5-5H3Zm13 0 6 6m0-6-6 6"/>',
     phone:'<path d="M7 3H3v3c0 8 7 15 15 15h3v-4l-5-2-2 2a16 16 0 0 1-7-7l2-2Z"/>',
     hangup:'<path d="M3 15v-4a17 17 0 0 1 18 0v4h-5v-4a14 14 0 0 0-8 0v4Z"/>',
+    grip:'<circle cx="9" cy="5" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="19" r="1"/>',
+    hide:'<path d="M5 12h14"/>',
     monitor:paths.screen, shield:paths.shield, chat:paths.chat, lock:paths.lock, close:paths.close, check:paths.check,
   };
   const raIcon = name => `<svg class="ra-icon" viewBox="0 0 24 24" aria-hidden="true">${raPaths[name]||paths.screen}</svg>`;
@@ -332,7 +337,82 @@
     const people=remotePeople(),host=role==='host',paused=remote.stage==='paused',control=remote.permission==='control',slow=scenario==='weak';
     const status=paused?'共享已暂停':control?(host?`${people.viewer} 正在控制我的电脑`:`正在控制 ${people.host} 的电脑`):(host?`${people.viewer} 正在查看我的屏幕`:`正在查看 ${people.host} 的屏幕`);
     root.innerHTML=`<header class="ra-session-head"><div class="ra-session-identity"><span class="ra-avatar small">${host?people.viewer[0]:people.host[0]}</span><div><h1>${host?(paused?'我的屏幕已暂停共享':'我的屏幕正在共享'):`${people.host}的远程桌面`}</h1><p><span class="ra-online"></span>${remoteActor()} · ${host?'共享方':'协助方'}<span class="ra-dot">·</span><span data-ra-elapsed>${remoteElapsed()}</span></p></div></div><div class="ra-session-head-actions"><span class="ra-session-permission ${control?'control':''}">${raIcon(control?'control':'monitor')}${paused?'已暂停':control?'允许控制':'仅查看'}</span>${raButton('结束协助','remote-end','close','','danger')}</div></header><div class="ra-toolbar"><span class="ra-screen-label">${raIcon('monitor')}屏幕 ${remote.screen}</span>${host?raButton('切换屏幕','remote-screen','monitor'):''}<span class="ra-tool-divider"></span><label class="ra-scale-label">显示<select id="raScale" aria-label="画面缩放"><option value="fit" ${remote.scale==='fit'?'selected':''}>适应窗口</option><option value="actual" ${remote.scale==='actual'?'selected':''}>原始比例 100%</option></select></label>${raButton(remote.quality,'remote-quality','tune')}${raButton(remote.expanded?'退出全屏':'全屏','remote-expand',remote.expanded?'shrink':'expand')}<span class="ra-toolbar-spacer"></span>${!host&&!control&&!paused?raButton(remote.controlPending?'等待授权':'申请控制','remote-control','control',remote.controlPending?'disabled':'','primary'):''}${!host&&control?raButton('释放控制','remote-revoke','control'):''}${host&&!control&&!paused?raButton(remote.controlPending?'处理控制请求':'允许对方控制',remote.controlPending?'control-consent':'remote-offer-control','control','','primary'):''}${raButton('沟通','remote-chat-toggle','chat',`aria-pressed="${remote.chatOpen}"`)}</div>${voiceBar()}${slow?`<div class="ra-network-warning">${icon('alert')}网络有波动，画面可能稍有延迟。${link('切换为优先流畅','remote-fast')}</div>`:''}<div class="ra-workspace ${remote.chatOpen?'with-chat':''}"><div class="ra-canvas-wrap">${host?`<div class="ra-sharing-strip ${control?'control':''}">${raIcon(control?'control':'monitor')}<strong>${status}</strong><div>${control?raButton('收回控制','remote-revoke','shield','','danger'):''}${raButton(paused?'继续共享':'暂停共享',paused?'remote-resume':'remote-pause',paused?'play':'pause')}${raButton('结束','remote-end','close','','danger')}</div></div>`:`<div class="ra-viewer-status">${raIcon(control?'control':'monitor')}<span>${paused?'对方已暂停共享':control?'鼠标与键盘已获本次授权':'当前仅查看，操作需要对方同意'}</span></div>`}<div class="ra-canvas ${remote.scale==='actual'?'actual':''}">${paused?`<div class="ra-paused">${raIcon('pause')}<h2>画面已暂停共享</h2><p>桌面已隐藏，鼠标键盘权限已收回。</p>${host?btn('继续共享','remote-resume','','primary'):'<span>等待对方继续共享</span>'}</div>`:remoteDesktop()}</div><footer class="ra-connection-strip"><span><i class="ra-online ${slow?'weak':''}"></i>${slow?'网络波动':'局域网直连'}</span><span>${slow?'186':'12'} ms</span><span>${slow?'8':remote.fps} FPS</span><span>${remote.screen==='1'?'1920 × 1080':'1080 × 1920'}</span><span class="ra-connection-right">${paused?'已暂停':remote.quality} · ${remote.scale==='actual'?'100%':'适应窗口'}</span></footer></div>${remote.chatOpen?remoteChatPanel():''}</div>`;
+    mountRemotePanel();
     const messages=root.querySelector('.ra-chat-messages');if(messages)messages.scrollTop=messages.scrollHeight;
+  }
+  function mountRemotePanel() {
+    const host=role==='host', memory=remote.panels[role];
+    const stage=root.querySelector('.ra-canvas-wrap');
+    const tools=root.querySelector(host?'.ra-sharing-strip':'.ra-toolbar');
+    const panel=document.createElement('section');
+    panel.className=`ra-floating-panel ${host?'host':'viewer'}`;
+    panel.setAttribute('aria-label',host?'屏幕共享控制栏':'远控工具栏');
+    const grip=()=>`<button type="button" class="ra-panel-grip" aria-label="拖动工具栏" title="拖动调整位置；方向键微调，Home 复位">${raIcon('grip')}</button>`;
+    tools.classList.add('ra-panel-tools');
+    tools.insertAdjacentHTML('afterbegin',grip());
+    tools.insertAdjacentHTML('beforeend',raButton('隐藏','remote-toolbar-hide','hide','title="隐藏工具栏，保留恢复浮标"','ra-panel-hide'));
+    const compact=document.createElement('div');
+    const control=remote.permission==='control', paused=remote.stage==='paused';
+    compact.className=`ra-panel-compact ${control?'control':''} ${paused?'paused':''}`;
+    const status=paused?'共享已暂停':host?(control?'对方正在控制':'屏幕共享中'):(control?'远程控制中':'远程查看中');
+    compact.innerHTML=grip()+`<button type="button" class="ra-panel-restore" data-p3-action="remote-toolbar-restore" title="展开工具栏" aria-label="${status}，展开工具栏"><i class="ra-panel-dot"></i><span>${status}</span>${raIcon('expand')}</button>`+(host&&control?raButton('收回控制','remote-revoke','shield','aria-label="收回控制" title="收回控制"','ra-compact-action danger'):'')+raButton('结束协助','remote-end','close','aria-label="结束协助" title="结束协助"','ra-compact-action danger');
+    panel.append(tools,compact);stage.append(panel);
+    let drag=null;
+    const key=()=>memory.hidden?'compactPosition':'position';
+    function place(point=memory[key()]) {
+      const width=stage.clientWidth,height=stage.clientHeight;
+      if(!width||!height)return;
+      const w=panel.offsetWidth,h=panel.offsetHeight;
+      const top=(root.querySelector('.ra-viewer-status')?.offsetHeight||0)+12;
+      const x=Math.max(8,Math.min(point?.x??(width-w)/2,Math.max(8,width-w-8)));
+      const y=Math.max(8,Math.min(point?.y??top,Math.max(8,height-h-8)));
+      panel.style.left=`${x}px`;panel.style.top=`${y}px`;
+      return {x,y};
+    }
+    function display() {
+      tools.hidden=memory.hidden;compact.hidden=!memory.hidden;
+      panel.classList.toggle('collapsed',memory.hidden);place();
+    }
+    const current=()=>({x:parseFloat(panel.style.left)||0,y:parseFloat(panel.style.top)||0});
+    panel.addEventListener('click',event=>{
+      const action=event.target.closest('[data-p3-action]')?.dataset.p3Action;
+      if(!['remote-toolbar-hide','remote-toolbar-restore'].includes(action))return;
+      event.preventDefault();event.stopPropagation();
+      if(action==='remote-toolbar-hide') {
+        memory.position=current();memory.compactPosition={...memory.position};memory.hidden=true;
+      } else memory.hidden=false;
+      display();panel.querySelector(memory.hidden?'.ra-panel-restore':'.ra-panel-hide').focus({preventScroll:true});
+    });
+    panel.addEventListener('pointerdown',event=>{
+      if(!event.target.closest('.ra-panel-grip')||event.button!==0||event.isPrimary===false)return;
+      event.preventDefault();event.stopPropagation();
+      event.target.closest('.ra-panel-grip').focus({preventScroll:true});
+      drag={id:event.pointerId,startX:event.clientX,startY:event.clientY,...current()};
+      panel.setPointerCapture(event.pointerId);panel.classList.add('dragging');
+    });
+    panel.addEventListener('pointermove',event=>{
+      if(!drag||event.pointerId!==drag.id)return;
+      event.preventDefault();event.stopPropagation();
+      memory[key()]=place({x:drag.x+event.clientX-drag.startX,y:drag.y+event.clientY-drag.startY});
+    });
+    function finishDrag() {
+      const id=drag?.id;drag=null;panel.classList.remove('dragging');
+      if(id!==undefined&&panel.hasPointerCapture(id))panel.releasePointerCapture(id);
+    }
+    for(const name of ['pointerup','pointercancel','lostpointercapture'])panel.addEventListener(name,finishDrag);
+    window.addEventListener('blur',finishDrag);
+    panel.addEventListener('keydown',event=>{
+      if(!event.target.classList.contains('ra-panel-grip'))return;
+      const delta={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]}[event.key];
+      if(!delta&&event.key!=='Home')return;
+      event.preventDefault();event.stopPropagation();
+      if(event.key==='Home'){memory[key()]=null;place();return;}
+      const point=current(),step=event.shiftKey?24:8;
+      memory[key()]=place({x:point.x+delta[0]*step,y:point.y+delta[1]*step});
+    });
+    display();
+    const resize=new ResizeObserver(()=>place());resize.observe(stage);resize.observe(panel);
+    disposeRemotePanel=()=>{finishDrag();resize.disconnect();window.removeEventListener('blur',finishDrag);disposeRemotePanel=()=>{};};
   }
   function handleRemoteAction(action,target) {
     if(action==='role'){if(remote.stage==='idle')return;role=role==='viewer'?'host':'viewer';render();if(remote.stage==='waiting'&&remoteRecipient())incomingRemoteConsent();else if(role==='host'&&remote.controlPending)controlConsent();}
@@ -371,7 +451,7 @@
 
   function reset() { epoch++;backupToken++;dialogOperation='';closeDialog();tasks=initialTasks();filter='all';kind='all';query='';selected.clear();detailId='';scenario='normal';diagnostic='issue';diagnosticPeer='zhang';role='viewer';remote=initialRemote();backups=[{name:'XChat-2026-10-08.xchatbackup',date:'昨天 18:30',size:'128 MB',contents:'聊天记录、偏好设置'}];openPage(page||'tasks',true); }
   function enable() { if(enabled)return;enabled=true;document.body.classList.add('p3-review');bar.hidden=false;rail.hidden=false;scenarioSelect.value='phase3';openPage(new URLSearchParams(location.search).get('p3')||'tasks'); }
-  function disable() { epoch++;backupToken++;enabled=false;dialogOperation='';closeDialog();bar.hidden=true;rail.hidden=true;root.hidden=true;document.body.classList.remove('p3-review','p3-page','p3-remote-live','p3-remote-expanded');clearInterval(remoteTimer);byId('p3RemoteEntry')?.remove();byId('p3FileTasks')?.remove();byId('p3SettingsLinks')?.remove();byId('settingsListTitle').textContent='设置';previousTab('sessions'); }
+  function disable() { disposeRemotePanel();epoch++;backupToken++;enabled=false;dialogOperation='';closeDialog();bar.hidden=true;rail.hidden=true;root.hidden=true;document.body.classList.remove('p3-review','p3-page','p3-remote-live','p3-remote-expanded');clearInterval(remoteTimer);byId('p3RemoteEntry')?.remove();byId('p3FileTasks')?.remove();byId('p3SettingsLinks')?.remove();byId('settingsListTitle').textContent='设置';previousTab('sessions'); }
 
   document.addEventListener('click',event=>{
     const target=event.target.closest('[data-p3-action]');if(!target||!enabled||target.disabled)return;
@@ -429,5 +509,15 @@
   });
   document.addEventListener('change',event=>{if(event.target===scenarioSelect&&scenarioSelect.value!=='phase3'&&enabled)disable();},true);
   scenarioSelect.addEventListener('change',()=>{if(scenarioSelect.value==='phase3')enable();});
-  if(new URLSearchParams(location.search).get('review')==='phase3')enable();
+  const reviewParams=new URLSearchParams(location.search);
+  if(reviewParams.get('review')==='phase3') {
+    enable();
+    // Direct review entry creates fictional state only; it never requests a real session.
+    const toolbarRole=reviewParams.get('toolbar');
+    if(['host','viewer'].includes(toolbarRole)) {
+      remote=initialRemote();role=toolbarRole;remote.owner=role==='host'?'self':'peer';
+      remote.mode=role==='host'?'help':'control';remote.stage='active';remote.permission='control';
+      remote.startedAt=Date.now();remote.chatOpen=false;connectVoice(remoteActor());openPage('remote');
+    }
+  }
 })();
